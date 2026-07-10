@@ -107,6 +107,51 @@ func TestCursor_Close(t *testing.T) {
 	}
 }
 
+// TestCursor_Close_afterTxn_v10 verifies that closing a readonly cursor
+// after its transaction has ended — documented as legal by LMDB (see
+// mdb_cursor_open) — is safe on the LMDB 1.0 engine.  Upstream LMDB 1.0.0
+// crashes on this (mdb_cursor_close dereferences the freed transaction via
+// the reader page cache); anylmdb works around it by detaching engine
+// cursors when a read transaction ends.  If that regresses, this test
+// brings the test binary down with SIGSEGV.
+func TestCursor_Close_afterTxn_v10(t *testing.T) {
+	env, err := NewEnv()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer env.Close()
+	err = env.setVersion10()
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = env.Open(t.TempDir(), 0, 0644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v, err := env.Version(); err != nil || v.Major != 1 {
+		t.Fatalf("environment is not using the LMDB 1.0 engine: %v (%v)", v, err)
+	}
+
+	txn, err := env.BeginTxn(nil, Readonly)
+	if err != nil {
+		t.Fatal(err)
+	}
+	db, err := txn.OpenRoot(0)
+	if err != nil {
+		txn.Abort()
+		t.Fatal(err)
+	}
+	cur, err := txn.OpenCursor(db)
+	if err != nil {
+		txn.Abort()
+		t.Fatal(err)
+	}
+	txn.Abort()
+
+	// Legal per the LMDB documentation; must not crash on the 1.0 engine.
+	cur.Close()
+}
+
 func TestCursor_bytesBuffer(t *testing.T) {
 	env := setup(t)
 	defer clean(env, t)

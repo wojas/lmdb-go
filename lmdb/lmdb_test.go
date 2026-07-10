@@ -118,6 +118,7 @@ func TestTest1(t *testing.T) {
 
 func TestVersion(t *testing.T) {
 	maj, min, patch, str := Version()
+	t.Logf("LMDB version: %s (%d.%d.%d)", str, maj, min, patch)
 	if maj < 0 || min < 0 || patch < 0 {
 		t.Error("invalid version number: ", maj, min, patch)
 	}

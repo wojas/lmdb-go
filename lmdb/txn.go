@@ -138,6 +138,11 @@ func (txn *Txn) ID() uintptr {
 }
 
 func (txn *Txn) getID() uintptr {
+	if txn._txn == nil {
+		// mdb_txn_id(NULL) returns 0; avoid relying on the C library
+		// tolerating a NULL argument.
+		return 0
+	}
 	return uintptr(C.mdb_txn_id(txn._txn))
 }
 

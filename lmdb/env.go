@@ -5,6 +5,14 @@ package lmdb
 #include <stdio.h>
 #include "lmdb.h"
 #include "lmdbgo.h"
+#include "anylmdb.h"
+
+// Version entry points of the two LMDB engines vendored via anylmdb.  These
+// are internal symbols of the vendored anylmdb snapshot (every extern LMDB
+// symbol is prefixed per stream); anylmdb has no public per-engine version
+// call, and the public mdb_version() reports the combined wrapper version.
+char *mdb09_version(int *major, int *minor, int *patch);
+char *mdb10_version(int *major, int *minor, int *patch);
 */
 import "C"
 
@@ -97,6 +105,69 @@ func (env *Env) Open(path string, flags uint, mode os.FileMode) error {
 	defer C.free(unsafe.Pointer(cpath))
 	ret := C.mdb_env_open(env._env, cpath, C.uint(NoTLS|flags), C.mdb_mode_t(mode))
 	return operrno("mdb_env_open", ret)
+}
+
+// ErrVersionUndetermined is returned by Env.Version before the environment
+// has been opened, when the LMDB version has not been decided yet.
+var ErrVersionUndetermined = errors.New("lmdb: LMDB version is not determined before Open")
+
+// EnvVersion describes the version of LMDB used by an environment.
+type EnvVersion struct {
+	Major int
+	Minor int
+	Patch int
+
+	// Release is the LMDB release string, e.g.
+	// "LMDB 0.9.35: (Jan 27, 2026)".
+	Release string
+}
+
+// String returns the LMDB release string.
+func (v EnvVersion) String() string {
+	return v.Release
+}
+
+// Version returns the version of LMDB used by this environment.  The
+// bundled anylmdb library carries both LMDB 0.9 and LMDB 1.0 and selects
+// one per environment at Open time, based on the format of an existing
+// database.  The package-level Version function reports the combined
+// anylmdb library version instead.
+//
+// Before Open, the result reflects an explicitly requested version; if none
+// was requested the version is not yet known and ErrVersionUndetermined is
+// returned.
+//
+// See anylmdb_env_get_version.
+func (env *Env) Version() (EnvVersion, error) {
+	var ver C.anylmdb_ver
+	ret := C.anylmdb_env_get_version(env._env, &ver)
+	if ret != success {
+		return EnvVersion{}, operrno("anylmdb_env_get_version", ret)
+	}
+	var maj, min, pat C.int
+	var verstr *C.char
+	switch ver {
+	case C.ANYLMDB_VER_09:
+		verstr = C.mdb09_version(&maj, &min, &pat)
+	case C.ANYLMDB_VER_10:
+		verstr = C.mdb10_version(&maj, &min, &pat)
+	default:
+		return EnvVersion{}, ErrVersionUndetermined
+	}
+	return EnvVersion{
+		Major:   int(maj),
+		Minor:   int(min),
+		Patch:   int(pat),
+		Release: C.GoString(verstr),
+	}, nil
+}
+
+// setVersion10 requests the LMDB 1.0 format for a not-yet-opened
+// environment.  Only used by tests; new environments default to the LMDB
+// 0.9 format (see the anylmdb documentation).
+func (env *Env) setVersion10() error {
+	ret := C.anylmdb_env_set_version(env._env, C.ANYLMDB_VER_10)
+	return operrno("anylmdb_env_set_version", ret)
 }
 
 var errNotOpen = errors.New("enivornment is not open")
@@ -376,7 +447,11 @@ func (env *Env) MaxReaders() (int, error) {
 // See mdb_env_get_maxkeysize.
 func (env *Env) MaxKeySize() int {
 	if env == nil {
-		return int(C.mdb_env_get_maxkeysize(nil))
+		// With LMDB 1.0 mdb_env_get_maxkeysize dereferences the env (the
+		// maximum key size depends on the page size there), so passing NULL
+		// is no longer safe. Return LMDB 0.9's compile-time constant, which
+		// is what mdb_env_get_maxkeysize(NULL) returned before.
+		return 511
 	}
 	return int(C.mdb_env_get_maxkeysize(env._env))
 }

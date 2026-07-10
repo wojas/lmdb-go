@@ -94,6 +94,40 @@ func TestEnv_Open(t *testing.T) {
 	}
 }
 
+func TestEnv_Version(t *testing.T) {
+	env, err := NewEnv()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer env.Close()
+
+	// Before Open, no LMDB version has been selected.
+	_, err = env.Version()
+	if err != ErrVersionUndetermined {
+		t.Errorf("version before open: expected ErrVersionUndetermined, got %v", err)
+	}
+
+	// After Open an engine has been selected: LMDB 0.9 by default, LMDB 1.0
+	// e.g. when the ANYLMDB_DEFAULT environment variable overrides it.
+	err = env.Open(t.TempDir(), 0, 0644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	v, err := env.Version()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("engine version: %s (%d.%d.%d)", v, v.Major, v.Minor, v.Patch)
+	v09 := v.Major == 0 && v.Minor == 9
+	v10 := v.Major == 1 && v.Minor == 0
+	if !v09 && !v10 {
+		t.Errorf("expected engine 0.9.x or 1.0.x, got %d.%d.%d", v.Major, v.Minor, v.Patch)
+	}
+	if v.Release == "" {
+		t.Error("empty release string")
+	}
+}
+
 func TestEnv_FD(t *testing.T) {
 	env, err := NewEnv()
 	if err != nil {
