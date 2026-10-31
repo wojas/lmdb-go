@@ -6,9 +6,9 @@ Prerequisites:
 - [ ] Create a milestone for the version
 - [ ] Merge all PRs you want to include
 - [ ] Mark all solved issues and PRs with the milestone for future reference
-- [ ] Check if there is a new LMDB version and update if needed, see `update-lmdb.sh`
+- [ ] Check for rlmdb changes to port; `internal/engine/PORTING.md` records the rlmdb commit the engine is synced to
 - [ ] Create a draft release on Github and let it auto-generate the changelog
-- [ ] Add LMDB C library changes to draft release changelog, when applicable
+- [ ] Add the rlmdb commit the engine is synced to to the draft release changelog
 
 In this pull request:
 - [ ] Update CI for newer Go releases
