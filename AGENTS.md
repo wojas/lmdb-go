@@ -186,6 +186,29 @@ compare separate runs. Report units (ns/op) and say what a ratio is
 (Go/C: below 1 means Go is faster). DUPSORT and sequential-append
 performance matter less; do not spend much effort there.
 
+## Allocations (owner)
+
+Allocations are expensive in Go; memory is cheap on the systems this
+targets. Therefore:
+
+* Prefer fixed, predictable sizes (arrays, not slices, where the bound is
+  known: cursor stacks, page-number scratch, key/value scratch) so values
+  stay on the stack or inside an existing object, and check with
+  `go build -gcflags=-m` that hot-path values do not escape.
+* Preallocate the buffers you expect to use, and keep them in long-lived
+  objects (`Env`, the reusable write `Txn`, cursors) for reuse across
+  transactions, as C reuses `me_txn0`. Making `Env` or `Txn` larger by
+  tens or hundreds of KiB of preallocated space is fine; do not squeeze
+  memory at the cost of allocations.
+* Size buffers for modern machines (many cores, GiBs of RAM, 16 KiB
+  pages on Apple silicon), not for decades-old hardware.
+* Give slices a realistic initial capacity (`make([]T, 0, n)` with `n` what
+  a typical transaction needs) instead of letting `append` grow them
+  1, 2, 4, 8, ...; reset with `s = s[:0]` to reuse.
+* Measure allocations per operation (`-benchmem`, `testing.AllocsPerRun`)
+  for every hot path, read and write; the target is zero steady-state
+  allocations per operation wherever C has none.
+
 ## Style
 
 Idiomatic, documented Go. Each file starts with a comment saying what it
