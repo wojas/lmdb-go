@@ -107,6 +107,10 @@ func genData(r *rng, p *profile) []byte {
 		for len(d) < p.dupfixedSize {
 			d = append(d, 'f')
 		}
+		if p.dupfixedSize < 8 {
+			// The low bytes, which differ.
+			return d[8-p.dupfixedSize : 8]
+		}
 		return d[:p.dupfixedSize]
 	}
 	if p.dbflags&format.DupSort != 0 {
@@ -816,9 +820,19 @@ func runRound(t testing.TB, o *oracle, p *profile, ncur int, g *gen, nops int, l
 		t.Fatalf("%s: dumps differ", tag)
 	}
 	if rc, out, errs := run(t, o.peer, "check-freelist", gdir); rc != 0 {
-		t.Fatalf("%s: check-freelist of Go:\n%s\n%s", tag, out, errs)
-	}
-	if rc, _, errs := run(t, o.peer, "check-freelist", cdir); rc != 0 {
+		// cpeer's audit wants mp_lower within a sub-page, which a P_LEAF2
+		// sub-page of 1-byte items outgrows (mp_lower counts 2 bytes per
+		// item): C's file then fails it alike, and must be the same.
+		crc, cout, cerrs := run(t, o.peer, "check-freelist", cdir)
+		if p.dupfixedSize != 1 || crc != rc || subpageComplaints(cerrs) != subpageComplaints(errs) {
+			t.Fatalf("%s: check-freelist of Go:\n%s\n%s", tag, out, errs)
+		}
+		t.Logf("NOTE: %s: C's and Go's file fail cpeer's audit alike: %s", tag, strings.TrimSpace(errs))
+		if cout != out || cerrs != errs {
+			// And md_entries differ: KNOWN_C_BUGS.md #14, as below.
+			return true
+		}
+	} else if rc, _, errs := run(t, o.peer, "check-freelist", cdir); rc != 0 {
 		// KNOWN_C_BUGS.md #14: C's MDB_NODUPDATA cursor delete subtracts a
 		// stale count; only md_entries may be off, so files differ there.
 		t.Logf("NOTE: %s: C's page audit: %s", tag, strings.TrimSpace(errs))
@@ -835,6 +849,17 @@ func runRound(t testing.TB, o *oracle, p *profile, ncur int, g *gen, nops int, l
 }
 
 func (o *oracle) dumpTool() string { return o.dump }
+
+// subpageComplaints are the lines of cpeer's audit about sub-pages.
+func subpageComplaints(errs string) string {
+	var out []string
+	for _, l := range strings.Split(errs, "\n") {
+		if strings.Contains(l, "bad sub-page") {
+			out = append(out, l)
+		}
+	}
+	return strings.Join(out, "\n")
+}
 
 // normDump drops the mapaddr= header line that C 1.0's mdb_dump writes
 // with the process's own map address (rlmdb KNOWN_C_BUGS.md, LMDB 1.0
@@ -892,6 +917,10 @@ func profiles(long bool) map[string]struct {
 		"nested_plain":    {profile{dbflags: 0, keys: 300, big: true, nested: true, drops: true}, 0xe1, 10, 800},
 		"nested_dupsort":  {profile{dbflags: format.DupSort, keys: 40, nested: true, drops: true}, 0xe2, 10, 800},
 		"nested_dupfixed": {profile{dbflags: format.DupSort | format.DupFixed, keys: 20, dupfixedSize: 8, nested: true, drops: true}, 0xe3, 8, 800},
+		// Odd item sizes, 1 byte in particular (P_LEAF2 pages where C's
+		// mp_upper grows with each item).
+		"dupfixed1": {profile{dbflags: format.DupSort | format.DupFixed, keys: 6, dupfixedSize: 1}, 0xe5, 8, 800},
+		"dupfixed3": {profile{dbflags: format.DupSort | format.DupFixed, keys: 6, dupfixedSize: 3, nested: true}, 0xe6, 8, 800},
 	}
 	if long {
 		m["deep_plain"] = pr{profile{dbflags: 0, keys: 3000, big: true, longKeys: true}, 0xda, 3, 3000}

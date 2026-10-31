@@ -439,7 +439,7 @@ func (t *Txn) splitLeaf2(mc cref, mp, rp uint64, src, newkey []byte, newindx, sp
 	split := hdr + splitIndx*ksize
 	rsize := (nkeys - splitIndx) * ksize
 	lsize := (nkeys - splitIndx) * 2
-	if split < 0 || rsize < 0 || split+rsize > len(src) || ksize < 2 {
+	if split < 0 || rsize < 0 || split+rsize > len(src) || ksize < 1 {
 		return nil, format.Corrupted
 	}
 	keys := src[split : split+rsize]
