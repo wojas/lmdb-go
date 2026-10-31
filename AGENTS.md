@@ -56,13 +56,21 @@ messages) until that is established.
 
 ## Hard rules
 
-1. **No cgo in the library.** The `lmdb` package and everything it imports
-   must build with `CGO_ENABLED=0` on Linux and macOS. Use `syscall`,
-   `golang.org/x/sys/unix` and, where the OS offers no syscall (macOS POSIX
-   semaphores), dynamic imports of libSystem with assembly trampolines in
-   the style of `x/sys/unix`'s darwin files. Tests, oracles and benchmarks
-   may use cgo, in separate packages or modules that the library does not
-   import.
+1. **cgo only for the shared locks.** The writer and reader-table locks
+   are libc objects (Linux: process-shared robust `pthread_mutex_t`s inside
+   the lock file; macOS: POSIX named semaphores). They are taken and
+   released through libc via cgo, in one small file pair in
+   `internal/lockfile` selected by the standard `cgo` build constraint
+   (`//go:build cgo` / `//go:build !cgo`; no extra build tags). That keeps
+   interop exact on glibc, musl and macOS. The size of `pthread_mutex_t`
+   (which moves the reader table) comes from cgo, not from a table.
+   Everything else (B-tree, mmap, file I/O, fsync, `fcntl` record locks)
+   is Go using `syscall` / `golang.org/x/sys/unix`, without cgo. Built with
+   `CGO_ENABLED=0`, the library compiles and works with `NoLock` (C's
+   `MDB_NOLOCK`: no lock file at all); `Env.Open` without `NoLock` returns
+   a clear error saying that shared locking needs a cgo build. No cgo call
+   on the read path: reader slots the process already owns are reused
+   without the reader mutex, as rlmdb does.
    The cgo reference lives in exactly one place: the nested module
    `tests/` (`module github.com/PowerDNS/lmdb-go/tests`, `replace`s the
    parent with `../`). Its package `tests/cgolmdb` is a pinned copy of
@@ -76,17 +84,15 @@ messages) until that is established.
    environment open through both implementations (LMDB's file locks are
    per process, in C and in the port); tests that need that run a second
    process, normally the test binary itself (`exec.Command(os.Args[0])`).
-2. **Interoperability with C locking is an absolute must.** On Linux the
-   writer and reader-table mutexes are glibc's process-shared robust
-   `pthread_mutex_t`s inside the lock file; the Go implementation must
-   take and release them with the exact glibc protocol (futex word, owner
-   TID, `FUTEX_WAITERS`, `FUTEX_OWNER_DIED`, the per-thread robust list
-   via `set_robust_list`, `EOWNERDEAD` recovery, `NOTRECOVERABLE`) so that a
-   C process waiting on a mutex a Go process holds behaves exactly as if
-   the holder were C, including when the holder dies. On macOS they are
-   POSIX named semaphores whose names are stored in the lock file (read
-   them, never recompute them; rlmdb `AGENTS.md` §1). Both lock-file
-   versions (0.9's and 1.0's) as rlmdb implements them.
+2. **Interoperability with C locking is an absolute must**: C, rlmdb and
+   Go processes exclude each other as writers, see each other's readers,
+   and recover from a holder that died (Linux `EOWNERDEAD`), exactly as C
+   processes do among themselves. On macOS the semaphore names are stored
+   in the lock file (0.9) or derived from data stored there (1.0): read
+   them, never recompute what C reads (rlmdb `AGENTS.md` §1). Both
+   lock-file versions as rlmdb implements them. A write transaction holds
+   the writer mutex on one OS thread (`runtime.LockOSThread`), as lmdb-go
+   requires today.
 3. Binary compatibility invariants of rlmdb `AGENTS.md` §1 hold: data
    files, lock files, free list, reader slots, meta protocol, sort order.
    Layout exactness against C is the default test oracle (a Go writer
@@ -95,7 +101,7 @@ messages) until that is established.
 4. Malformed input returns an error, never a panic, hang or out-of-range
    access. Crafted files must not crash the process (except the MVCC
    damage cases rlmdb documents).
-5. `unsafe` only where needed: the OS layer (mmap, futexes, semaphores,
+5. `unsafe` only where needed: the OS layer (mmap, the cgo lock calls,
    shared memory atomics) and measured hot paths. Each use has a comment
    saying why it is sound. Values returned to users are zero-copy slices
    into the map, as in lmdb-go, with the same lifetime caveats.
@@ -110,7 +116,14 @@ messages) until that is established.
 ## Testing
 
 * `go vet ./...`, `gofmt -l` clean, `staticcheck` if available.
-* `CGO_ENABLED=0 go build ./...` must pass for the library packages.
+* `CGO_ENABLED=0 go build ./...` must pass for the library packages, and
+  the `NoLock` tests must pass in that build.
+* musl is supported: run the Linux tests in Alpine as well
+  (`LINUX_TEST_IMAGE=golang:1.25-alpine scripts/linux-test.sh sh -c 'apk
+  add -q build-base && go test ./...'`), with C peers built against musl
+  for the interop tests. glibc and musl lock files differ on arm64
+  (`pthread_mutex_t` is 48 vs 40 bytes); test each against C of the same
+  libc.
 * Run everything on macOS **and** Linux before declaring done:
   `scripts/linux-test.sh` runs a command in a Debian golang container
   (arm64 native; `LINUX_TEST_PLATFORM=linux/amd64` for x86-64 under

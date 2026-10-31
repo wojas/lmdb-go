@@ -73,15 +73,14 @@ uses a test fake of the interface (in-process only).
 ## Stages
 
 1. **Parallel foundations.**
-   * L (lockfile): `internal/lockfile` and the OS mutex code it needs
-     (Linux: glibc robust mutex protocol over futexes, no cgo; macOS:
-     POSIX semaphores through libSystem trampolines, no cgo), both lock
-     file versions, with cross-process tests against C (the `cpeer`
+   * L (lockfile): `internal/lockfile` and the libc mutex/semaphore calls
+     it needs (cgo, one small file pair; `!cgo` builds support `NoLock`
+     only), both lock file versions, with cross-process tests against C (the `cpeer`
      binaries, or a cgo helper in `tests/`): C and Go writers excluding
      each other, readers registering and being seen by C's `mdb_stat -r`
      / reader check, a writer dying while holding the mutex on either
-     side and the other side recovering (Linux `EOWNERDEAD`), Linux arm64
-     and x86-64 (emulated) layouts.
+     side and the other side recovering (Linux `EOWNERDEAD`), Linux glibc
+     arm64 and x86-64 (emulated) and musl (Alpine) layouts.
    * E (engine): `internal/format`, `internal/sys`, `internal/engine`
      against the interface above: the read path, then the write path,
      nested transactions, copy (plain and compacting), both data formats,
