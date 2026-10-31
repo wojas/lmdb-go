@@ -144,14 +144,15 @@ messages) until that is established.
 * `go vet ./...`, `gofmt -l` clean, `staticcheck` if available.
 * `CGO_ENABLED=0 go build ./...` must pass for the library packages, and
   the `NoLock` tests must pass in that build.
-* **Test cost follows risk.** While developing, run macOS (fast, native)
-  and only the targets a change can affect: Linux glibc arm64 for
+* **Test cost follows risk.** While developing, run the local target
+  (the machine you work on; fast, native) and only the other targets a
+  change can affect: Linux glibc arm64 for
   anything OS-, layout- or lock-related; musl and x86-64 (emulated) only
   when the change touches libc-dependent code (lock file layouts, the cgo
   lock calls, `internal/sys`, build constraints) or cross-process
-  behaviour. Pure engine, API or test changes need macOS plus one Linux
-  run at most. The full matrix (macOS, glibc arm64, glibc x86-64, musl,
-  `CGO_ENABLED=0`) runs once, before a stage or task is declared done.
+  behaviour. Pure engine, API or test changes need the local target plus
+  one other platform run at most. The full matrix (macOS, glibc arm64,
+  glibc x86-64, musl, `CGO_ENABLED=0`) runs once, before a stage or task is declared done.
   Run slow targets in the background while continuing other work rather
   than waiting on them.
 * musl is supported: run the Linux tests in Alpine as well
