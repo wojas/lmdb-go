@@ -149,6 +149,9 @@ type writerState struct {
 	// newestTxnID is the callback of LockWriter, made once (a closure
 	// passed through an interface escapes: one allocation per call).
 	newestTxnID func() (uint64, error)
+	// waitMap is the map the goroutine waiting in LockWriter pinned before
+	// it began to wait (see lockWriter).
+	waitMap *sys.DataMap
 }
 
 // canonicalPath is the absolute form of the data file's path with

@@ -23,6 +23,7 @@ import (
 	"syscall"
 
 	"github.com/PowerDNS/lmdb-go/internal/format"
+	"github.com/PowerDNS/lmdb-go/internal/sys"
 )
 
 // mt_flags of a write transaction.
@@ -149,13 +150,7 @@ func (e *Env) beginWrite() (*Txn, error) {
 	}
 	defer pin.Release()
 	e.writerMu.Lock()
-	if e.writer.newestTxnID == nil {
-		e.writer.newestTxnID = func() (uint64, error) {
-			m, err := e.pickMeta()
-			return m.TxnID, err
-		}
-	}
-	if err := e.lock.LockWriter(e.writer.newestTxnID); err != nil {
+	if err := e.lockWriter(pin); err != nil {
 		e.writerMu.Unlock()
 		return nil, err
 	}
@@ -224,6 +219,27 @@ func (e *Env) beginWrite() (*Txn, error) {
 	return t, nil
 }
 
+// lockWriter takes the shared writer lock (LockRegion.LockWriter) for a
+// goroutine that holds writerMu; m is a map it pinned before it began to
+// wait. If the lock's owner died, the repair (mdb_mutex_failed) publishes
+// the newest meta page's txnid, read through m: Close may have cleared the
+// current map while we waited, and the repair must complete all the same,
+// or the mutex is left unrecoverable for every process (C repairs it
+// before it refuses this process's transaction, as here: the caller fails
+// with EINVAL after Close once it holds the lock).
+func (e *Env) lockWriter(m *sys.DataMap) error {
+	if e.writer.newestTxnID == nil {
+		e.writer.newestTxnID = func() (uint64, error) {
+			meta, err := e.pickMetaIn(e.writer.waitMap)
+			return meta.TxnID, err
+		}
+	}
+	e.writer.waitMap = m
+	err := e.lock.LockWriter(e.writer.newestTxnID)
+	e.writer.waitMap = nil
+	return err
+}
+
 // end is mdb_txn_end for a top-level write transaction: export (keep) or
 // close the handles of databases this transaction created
 // (mdb_dbis_update), drop the dirty pages and cursors, unlock.
@@ -274,11 +290,19 @@ func (t *Txn) end(keep bool) error {
 		// Handles fail with EINVAL until the next write transaction takes
 		// the table up again (initDBs).
 		t.dbs, t.ndbs = t.dbs[:0], 0
-		// The map last: its release may tear the environment down (a
-		// write transaction left open across Close).
+		// Once the writer locks are released, t belongs to the next write
+		// transaction (writerState.txn): take the map off it before. The
+		// map is released last: that may tear the environment down (a
+		// write transaction left open across Close), and the unlock needs
+		// the lock region.
+		m := t.dmap
+		t.dmap = nil
 		err := e.lock.UnlockWriter()
 		e.writerMu.Unlock()
-		t.releaseMap()
+		if testHookWriterUnlocked != nil {
+			testHookWriterUnlocked(e)
+		}
+		m.Release()
 		return err
 	}
 	return nil
@@ -1063,3 +1087,8 @@ func (c *Cursor) Del(flags uint32) error {
 	}
 	return t.delAt(mainRef(slot), flags)
 }
+
+// testHookWriterUnlocked, if set (tests only), runs in the end of a
+// top-level write transaction right after the writer locks are released,
+// before the transaction's map is.
+var testHookWriterUnlocked func(e *Env)

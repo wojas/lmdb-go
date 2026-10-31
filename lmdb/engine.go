@@ -105,9 +105,7 @@ func (env *Env) readerList(fn func(string) error) error {
 
 // copyFD is mdb_env_copyfd2 (op names the C function).
 func (env *Env) copyFD(op string, fd uintptr, flags uint) error {
-	env.closeLock.RLock()
-	defer env.closeLock.RUnlock()
-	e, err := env.engine()
+	e, err := env.copySource()
 	if err != nil {
 		return err
 	}
@@ -116,13 +114,22 @@ func (env *Env) copyFD(op string, fd uintptr, flags uint) error {
 
 // copy is mdb_env_copy2 (op names the C function).
 func (env *Env) copy(op, path string, flags uint) error {
-	env.closeLock.RLock()
-	defer env.closeLock.RUnlock()
-	e, err := env.engine()
+	e, err := env.copySource()
 	if err != nil {
 		return err
 	}
 	return operr(op, e.Copy(path, uint32(flags)))
+}
+
+// copySource is the open environment for a copy.  The copy runs without
+// closeLock: a plain copy waits for the writer lock, and a writer's commit
+// must not wait for a Close queued behind the copy.  The engine keeps what
+// the copy uses until its read transaction ends; after a Close the copy
+// fails (EINVAL).
+func (env *Env) copySource() (*engine.Env, error) {
+	env.closeLock.RLock()
+	defer env.closeLock.RUnlock()
+	return env.engine()
 }
 
 // setFlags is mdb_env_set_flags: on an open environment, or remembered
