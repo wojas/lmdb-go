@@ -14,6 +14,10 @@
 // tracked so the nested split's fixups adjust it (WITH_CURSOR_TRACKING).
 // Finally every other cursor on the split page moves to where its node
 // went.
+//
+// A root split adds a level under every cursor on the tree; one that would
+// not fit a cursor stack fails with MDB_CURSOR_FULL, where C overruns the
+// stack (checkRootPush).
 
 package engine
 
@@ -65,6 +69,11 @@ func (t *Txn) pageSplit0(mc cref, newkey []byte, newdata *nodeVal, newpgno uint6
 	mpFlags, mpPad, nkeys := top0.Flags(), top0.Pad(), top0.NumKeys()
 	isLeaf := mpFlags&format.PLeaf != 0
 	isLeaf2 := mpFlags&format.PLeaf2 != 0
+	if t.cur(mc).top < 1 {
+		if err := t.checkRootPush(mc, mp); err != nil {
+			return err
+		}
+	}
 	// Create a right sibling.
 	rp, err := t.pageNew(mc, mpFlags, 1)
 	if err != nil {
@@ -85,9 +94,10 @@ func (t *Txn) pageSplit0(mc cref, newkey []byte, newdata *nodeVal, newpgno uint6
 		if err != nil {
 			return err
 		}
-		// Shift current top to make room for new parent.
+		// Shift current top to make room for new parent (checkRootPush
+		// made sure level snum exists).
 		w := t.cur(mc)
-		for i := min(w.snum, format.CursorStack-1); i >= 1; i-- {
+		for i := w.snum; i >= 1; i-- {
 			w.pg[i] = w.pg[i-1]
 			w.ki[i] = w.ki[i-1]
 		}
@@ -525,26 +535,19 @@ func (t *Txn) splitFixups(mc, mn cref, mp, rp uint64, newindx int, nflags uint32
 	mcPgPtop, mcKiPtop := w.pg[ptop], w.ki[ptop]
 	m := *t.cur(mn)
 	for s := range t.w.cursors.slots {
-		m3, ok := t.w.cursors.peer(s, dbi, sub)
-		if !ok || m3 == mc {
+		m3, ok := t.splitPeer(s, mc, dbi, sub)
+		if !ok {
 			continue
 		}
-		sl := t.w.cursors.slot(s)
-		m2Init := sl != nil && sl.main.isInit()
 		w3 := t.cur(m3)
-		if !(m2Init && w3.flags&cInitialized != 0) {
-			continue
-		}
-		if w3.subp && w3.snum <= 1 {
-			// A sub-page cursor: sub-pages are never split.
-			continue
-		}
 		if newRoot >= 0 {
 			// Sub cursors may be on a different DB.
 			if w3.pg[0] != mp {
 				continue
 			}
-			// Root split.
+			// Root split. checkRootPush made sure level snum exists;
+			// newRoot is the old md_depth, which a damaged file may
+			// record larger than the stack.
 			for k := min(newRoot, format.CursorStack-2); k >= 0; k-- {
 				w3.ki[k+1] = w3.ki[k]
 				w3.pg[k+1] = w3.pg[k]
@@ -570,6 +573,52 @@ func (t *Txn) splitFixups(mc, mn cref, mp, rp uint64, newindx int, nflags uint32
 			}
 		} else if !didSplit && w3.top >= ptop && w3.pg[ptop] == mcPgPtop && w3.ki[ptop] >= mcKiPtop {
 			w3.ki[ptop]++
+		}
+	}
+	return nil
+}
+
+// splitPeer is the cursor of slot s that a split through mc (on dbi, a
+// sub-cursor if sub) fixes up, if any: a tracked cursor of the same tree
+// other than mc, positioned (its slot's main cursor too), and not on a
+// P_SUBP sub-page (sub-pages are never split).
+func (t *Txn) splitPeer(s int, mc cref, dbi int, sub bool) (cref, bool) {
+	m3, ok := t.w.cursors.peer(s, dbi, sub)
+	if !ok || m3 == mc {
+		return cref{}, false
+	}
+	sl := t.w.cursors.slot(s)
+	m2Init := sl != nil && sl.main.isInit()
+	w3 := t.cur(m3)
+	if !(m2Init && w3.flags&cInitialized != 0) || (w3.subp && w3.snum <= 1) {
+		return cref{}, false
+	}
+	return m3, true
+}
+
+// checkRootPush runs before the root page mp is split through mc: it
+// fails with MDB_CURSOR_FULL if the new root would not fit under a cursor
+// it is pushed under, mc itself or one of the cursors on mp that
+// splitFixups moves down a level (other tracked cursors, and the copies of
+// the outer splits of a split that went up the tree). Only a tree as deep
+// as the stack gets there (CursorStack levels: a damaged file, or in
+// theory one of more than 2^31 pages).
+//
+// C has no such check and writes past the end of mc_pg and mc_ki (rlmdb
+// KNOWN_C_BUGS.md #36, split.rs check_root_push); the split fails instead,
+// before it changes anything, and with it the write transaction, as after
+// any error of mdb_page_split.
+func (t *Txn) checkRootPush(mc cref, mp uint64) error {
+	w := t.cur(mc)
+	if w.snum >= format.CursorStack {
+		return format.CursorFull
+	}
+	dbi, sub := w.dbi, w.isSub()
+	for s := range t.w.cursors.slots {
+		if m3, ok := t.splitPeer(s, mc, dbi, sub); ok {
+			if w3 := t.cur(m3); w3.pg[0] == mp && w3.snum >= format.CursorStack {
+				return format.CursorFull
+			}
 		}
 	}
 	return nil
