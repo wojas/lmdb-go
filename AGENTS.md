@@ -15,8 +15,10 @@ messages) until that is established.
 
 ## Sources of truth
 
-* **rlmdb** at `$RLMDB_DIR`, a
-  detached worktree pinned at commit `9ea2373`. Read-only for you: do not
+* **rlmdb**, a checkout pinned at commit `9ea2373` (`$RLMDB_DIR`; its
+  Rust workspace is `$RLMDB_DIR/rust`, called `$RLMDB` below). Where it is
+  on this machine is in `AGENTS.local.md` (git-ignored; ask the
+  coordinator if it is missing). Read-only for you: do not
   commit there, do not edit sources there. Building in it is fine (its
   `target/` is already built in release mode, see below). Its documents are
   the specification of behaviour:
