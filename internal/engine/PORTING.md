@@ -97,11 +97,19 @@ Status of the stage-1 engine port (PLAN.md, agent E). rlmdb sources:
   write transaction costs O(DBs in use), not O(`MaxDBs`) (stage 2:
   lmdb-go's tests set `MaxDBs` to 65536).
 * `Env.Close` with transactions still alive (stage 2, for lmdb-go's
-  finalizers): they keep their data map, may still `Reset` and `Abort`
-  (without touching the closed lock region, whose slots `Close` cleared),
-  and `BeginRead`, `Renew` and write `BeginTxn` fail with `EINVAL`. The
-  caller serialises `Close` with transactions ending (package `lmdb` does,
-  with its `closeLock`).
+  finalizers; C requires them all to end first): `BeginRead`, `Renew` and
+  write `BeginTxn` fail with `EINVAL`, and the live ones keep working
+  until they end. The teardown (pooled slots, lock region, files,
+  registry entry) runs when the last data map is unmapped
+  (`Env.mapFreed`): every transaction holds a map reference from its begin
+  to its end, Reset included, and takes it before it touches the lock
+  region; the environment holds one on its current map until `Close`. So
+  surviving transactions keep their reader slots and the process's
+  liveness lock (their snapshots stay protected against writers here and
+  in other processes) and never use a torn-down region, without a lock
+  around their operations; reopening the path meanwhile is `EBUSY`
+  (stage 4, review findings P1-4 and P1-5: `Close` cleared their slots and
+  closed the lock file under them).
 * `LockRegion.UnlockWriter` returns an error (the Linux mutex refuses an
   unlock from another thread, EPERM): `Commit` reports it if the commit
   itself succeeded, `Abort` ignores it as C does; the in-process writer

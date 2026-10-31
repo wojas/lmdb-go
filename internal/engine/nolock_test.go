@@ -223,9 +223,9 @@ func fileExists(p string) bool {
 	return err == nil
 }
 
-// TestEndAfterClose: transactions that outlive Close may still end (Reset,
-// Abort) without touching the closed lock region (whose slots Close
-// cleared); beginning or renewing one fails.
+// TestEndAfterClose: transactions that outlive Close may still be used
+// and end (Reset, Abort); beginning or renewing one fails. (See
+// lifetime_test.go for what stays alive until they end.)
 func TestEndAfterClose(t *testing.T) {
 	env, _ := openTest(t, format.V09, Options{OpenLock: OpenMemLock})
 	r1, err := env.BeginTxn(nil, format.ReadOnly)

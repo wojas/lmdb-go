@@ -38,9 +38,11 @@
 //     process holds that lock from its first slot until Env.Close. A slot
 //     that fails the check (cleared by something else) is dropped from the
 //     pool, not released, since it may be someone else's now.
-//   - Env.Close releases every pooled slot (mr_pid = 0) before closing the
-//     lock file, which in turn clears any slot of this process left over
-//     (mdb_env_close0).
+//   - The environment's teardown releases every pooled slot (mr_pid = 0)
+//     before closing the lock file, which in turn clears any slot of this
+//     process left over (mdb_env_close0). It runs at Close, or, if
+//     transactions outlive Close, when the last of them ends; those
+//     release their slots rather than pool them.
 //
 // The pool is bounded, so that idle slots of this process never take more
 // than a quarter of the reader table from other processes (C processes in
@@ -206,6 +208,11 @@ func (e *Env) acquireSlot(hint int) (slot, cell int, err error) {
 // table if the pool does not take it. It returns the pool cell for the
 // next acquireSlot.
 func (e *Env) releaseSlot(slot, hint int) int {
+	if e.closed.Load() {
+		// No more transactions will take it.
+		e.lock.ReleaseSlot(slot)
+		return hint
+	}
 	e.lock.ResetSlot(slot)
 	cell, ok := e.slots.put(slot, hint)
 	if !ok {

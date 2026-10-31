@@ -560,3 +560,106 @@ func TestNoLock_snapshotMatchesID(t *testing.T) {
 	stop.Store(true)
 	wg.Wait()
 }
+
+// Read transactions reset, renewed, committed and aborted by their own
+// goroutines while another goroutine closes the environment (review
+// finding P1-5, the reviewer's reproducer: -race reported Close unmapping
+// the lock table under ResetSlot). Run with -race.
+func TestEnv_Close_racesWithTxns(t *testing.T) {
+	rounds := 20
+	if testing.Short() || raceEnabled {
+		rounds = 10
+	}
+	for i := 0; i < rounds; i++ {
+		env := setup(t)
+		var wg sync.WaitGroup
+		start := make(chan struct{})
+		for j := 0; j < 64; j++ {
+			txn, err := env.BeginTxn(nil, Readonly)
+			if err != nil {
+				t.Fatal(err)
+			}
+			wg.Add(1)
+			go func(j int) {
+				defer wg.Done()
+				<-start
+				switch j % 3 {
+				case 0:
+					txn.Reset()
+					txn.Abort()
+				case 1:
+					txn.Reset()
+					_ = txn.Renew()
+					txn.Abort()
+				default:
+					_ = txn.Commit()
+				}
+			}(j)
+		}
+		close(start)
+		clean(env, t)
+		wg.Wait()
+	}
+}
+
+// A read transaction that outlives Close keeps its snapshot (review
+// finding P1-4): the environment stays open underneath until it ends, so
+// the same path cannot be opened again in this process (EBUSY) and its
+// pages are not reused; afterwards it can.
+func TestEnv_Close_liveSnapshot(t *testing.T) {
+	for _, flags := range []uint{0, NoLock} {
+		t.Run(fmt.Sprint(flags), func(t *testing.T) {
+			if flags == 0 {
+				requireLockFile(t)
+			}
+			env := setupFlags(t, flags)
+			path, err := env.Path()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer os.RemoveAll(path)
+			var db DBI
+			want := bytes.Repeat([]byte("A"), 5000)
+			err = env.Update(func(txn *Txn) (err error) {
+				if db, err = txn.OpenRoot(0); err != nil {
+					return err
+				}
+				return txn.Put(db, []byte("key"), want, 0)
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			txn, err := env.BeginTxn(nil, Readonly)
+			if err != nil {
+				t.Fatal(err)
+			}
+			txn.RawRead = true
+			old, err := txn.Get(db, []byte("key"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			env.Close()
+			env2, err := NewEnv()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := env2.Open(path, testFlags(flags), 0o644); !IsErrnoSys(err, syscall.EBUSY) {
+				t.Fatalf("Open while a transaction outlives Close: %v, want EBUSY", err)
+			}
+			if !bytes.Equal(old, want) {
+				t.Fatal("snapshot changed")
+			}
+			txn.Abort()
+			if err := env2.Open(path, testFlags(flags), 0o644); err != nil {
+				t.Fatalf("Open after the transaction ended: %v", err)
+			}
+			defer env2.Close()
+			for i := 0; i < 5; i++ {
+				v := bytes.Repeat([]byte{byte('B' + i)}, 5000)
+				if err := env2.Update(func(txn *Txn) error { return txn.Put(db, []byte("key"), v, 0) }); err != nil {
+					t.Fatal(err)
+				}
+			}
+		})
+	}
+}

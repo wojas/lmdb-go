@@ -93,11 +93,18 @@ differently from C is in `internal/engine/PORTING.md` and in rlmdb's
 * **`Cursor.Renew`** is `EINVAL` for a cursor of a write transaction, onto
   a write transaction, and onto a transaction of another environment (C
   does not check the last one and writes past its cursor).
-* **Ending transactions after `Env.Close`.** A read transaction that
-  outlives `Close` keeps its snapshot readable and may still be reset and
-  aborted (the finalizer does that), without touching the closed lock file;
-  `Renew` and new transactions fail. `Commit` of a write transaction after
-  `Close` aborts it and returns `EINVAL`.
+* **Transactions that outlive `Env.Close`.** C requires every transaction
+  to end before `mdb_env_close` (v1 then used freed C memory). Here `Close`
+  stops new transactions and `Renew` (`EINVAL`), but a read transaction
+  that outlives it keeps its snapshot readable and protected, and may
+  still be read, reset and aborted (the finalizer does that): the
+  environment stays open underneath, with the transaction's reader slot,
+  the process's liveness lock in the lock file (so other processes' reader
+  checks leave the slot alone), the files and the registry entry, until
+  the last such transaction (active or reset) has ended, and is torn down
+  then. Until that moment, opening the same path again in this process
+  fails with `EBUSY`. `Commit` of a write transaction after `Close` aborts
+  it and returns `EINVAL`.
 * **`SetMapSize` on an open environment** may run while read transactions
   are active (they keep the map they began with); `EINVAL` while this
   process has a write transaction, as in C.
@@ -130,7 +137,7 @@ differently from C is in `internal/engine/PORTING.md` and in rlmdb's
   table's high-water mark) counts them. At most `MaxReaders/4` slots (and
   at most 64) are kept; when the table gets nearly full (a new slot in
   its top quarter, or `MDB_READERS_FULL`) ending transactions release
-  their slots instead; `Env.Close` releases them all. A reused slot keeps
+  their slots instead; closing the environment releases them all. A reused slot keeps
   the thread id of the thread that claimed it (diagnostic only). See
   `internal/engine/slotpool.go`.
 * **Finalizers.** `Env` and unmanaged `Txn`s have v1's finalizers. Cursors

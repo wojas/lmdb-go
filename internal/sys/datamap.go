@@ -48,6 +48,8 @@ type DataMap struct {
 	// knownSize is the last known size of the data file.
 	knownSize atomic.Int64
 	refs      atomic.Int64
+	// onFree runs after the mapping was removed (SetOnFree).
+	onFree func()
 }
 
 // MapReadOnly maps size bytes of f read-only and shared. random applies
@@ -144,12 +146,20 @@ func (m *DataMap) TryAcquire() bool {
 	}
 }
 
+// SetOnFree sets f to run once the last reference is released and the
+// mapping removed, on the goroutine that released it. It must be called
+// before the map is shared.
+func (m *DataMap) SetOnFree(f func()) { m.onFree = f }
+
 // Release drops a reference; the last one removes the mapping.
 func (m *DataMap) Release() {
 	if m.refs.Add(-1) == 0 {
 		_ = syscall.Munmap(m.data)
 		m.data = nil
 		syscall.Close(m.fd)
+		if m.onFree != nil {
+			m.onFree()
+		}
 	}
 }
 

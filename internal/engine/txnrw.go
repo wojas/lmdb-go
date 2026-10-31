@@ -141,9 +141,13 @@ func (e *Env) beginWrite() (*Txn, error) {
 	if e.isReadOnly() {
 		return nil, syscall.EACCES
 	}
-	if e.closed.Load() {
-		return nil, syscall.EINVAL
+	// Keeps the environment (its lock region) from being torn down by a
+	// concurrent Close until the transaction holds its own map.
+	pin, err := e.pin()
+	if err != nil {
+		return nil, err
 	}
+	defer pin.Release()
 	e.writerMu.Lock()
 	if e.writer.newestTxnID == nil {
 		e.writer.newestTxnID = func() (uint64, error) {
@@ -159,7 +163,9 @@ func (e *Env) beginWrite() (*Txn, error) {
 		_ = e.lock.UnlockWriter() // same goroutine as LockWriter: cannot fail
 		e.writerMu.Unlock()
 	}
-	m, err := e.acquireMap()
+	// The current map: SetMapSize may have replaced the pinned one before
+	// the writer lock was ours; Close may have happened (EINVAL).
+	m, err := e.pin()
 	if err != nil {
 		unlock()
 		return nil, err
@@ -267,14 +273,11 @@ func (t *Txn) end(keep bool) error {
 		// Handles fail with EINVAL until the next write transaction takes
 		// the table up again (initDBs).
 		t.dbs, t.ndbs = t.dbs[:0], 0
-		t.releaseMap()
-		var err error
-		if !e.closed.Load() {
-			// After Close the lock region is gone (a write transaction
-			// left open across Close: a caller error, as in C).
-			err = e.lock.UnlockWriter()
-		}
+		// The map last: its release may tear the environment down (a
+		// write transaction left open across Close).
+		err := e.lock.UnlockWriter()
 		e.writerMu.Unlock()
+		t.releaseMap()
 		return err
 	}
 	return nil

@@ -136,12 +136,17 @@ func (e *Env) BeginRead(t *Txn) error {
 	t.w = nil
 	t.slot = -1
 	t.state = txnDone
-	if e.closed.Load() {
-		return syscall.EINVAL
+	// The map first: while t holds a reference on it, the environment is
+	// not torn down (Close), so the lock region stays usable.
+	m, err := e.pin()
+	if err != nil {
+		return err
 	}
+	t.dmap = m
 	s, cell, err := e.acquireSlot(t.poolCell)
 	t.poolCell = cell
 	if err != nil {
+		t.releaseMap()
 		return err
 	}
 	t.slot = s
@@ -153,16 +158,14 @@ func (e *Env) BeginRead(t *Txn) error {
 	return nil
 }
 
-// takeSnapshot is the read-only branch of mdb_txn_renew0.
+// takeSnapshot is the read-only branch of mdb_txn_renew0, through the
+// transaction's map.
 func (t *Txn) takeSnapshot() error {
 	e := t.env
-	m, err := e.acquireMap()
-	if err != nil {
-		return err
-	}
-	t.dmap = m
+	m := t.dmap
 	var txnid uint64
 	var meta format.Meta
+	var err error
 	if !e.lockFile {
 		if meta, err = e.noLockSnapshot(m, t.slot); err != nil {
 			return err
@@ -284,10 +287,11 @@ func (t *Txn) Reset() {
 	if t.w != nil || t.state != txnActive {
 		return
 	}
-	if t.slot >= 0 && !t.env.closed.Load() {
+	// The map stays: it keeps the environment, and so the slot, usable
+	// after a Close until the transaction ends (Renew replaces it).
+	if t.slot >= 0 {
 		t.env.lock.ResetSlot(t.slot)
 	}
-	t.releaseMap()
 	t.txnid = 0
 	t.state = txnReset
 }
@@ -306,6 +310,14 @@ func (t *Txn) Renew() error {
 		t.state = txnDone
 		return format.BadRSlot
 	}
+	// The current map (SetMapSize may have replaced the one t kept),
+	// taken before the old one is released.
+	m, err := t.env.pin()
+	if err != nil {
+		return err
+	}
+	t.releaseMap()
+	t.dmap = m
 	if err := t.takeSnapshot(); err != nil {
 		t.Abort()
 		return err
@@ -331,7 +343,8 @@ func (t *Txn) Abort() {
 	if t.state == txnDone && t.slot < 0 && t.dmap == nil {
 		return
 	}
-	if t.slot >= 0 && !t.env.closed.Load() {
+	if t.slot >= 0 {
+		// Before the map: its release may tear the environment down.
 		t.poolCell = t.env.releaseSlot(t.slot, t.poolCell)
 	}
 	t.slot = -1
