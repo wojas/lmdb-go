@@ -128,6 +128,11 @@ type writerState struct {
 	// and the next write transaction begins from it without reading it.
 	lastMeta    format.Meta
 	hasLastMeta bool
+	// dbs and gen are the DB table of the last write transaction, which
+	// the next one reuses (C reuses me_txn0): the table is me_maxdbs long,
+	// and its generation makes reuse O(1).
+	dbs []txnDB
+	gen uint32
 }
 
 // The process-wide registry of open environments: POSIX record locks

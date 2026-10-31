@@ -56,6 +56,10 @@ type Txn struct {
 	dbs []txnDB
 	// gen is the generation of dbs (see Txn.dbe).
 	gen uint32
+	// ndbs is mt_numdbs: dbs[ndbs:] has not been looked at in this
+	// generation, so loops over the table stop there (dbs is me_maxdbs
+	// long).
+	ndbs int
 
 	// Read transactions: the reader slot (-1: none) and the state.
 	slot  int

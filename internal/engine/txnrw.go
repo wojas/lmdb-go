@@ -146,7 +146,9 @@ func (e *Env) beginWrite() (*Txn, error) {
 		unlock()
 		return nil, err
 	}
-	t := &Txn{env: e, pageSize: e.pageSize, l: e.layout, dmap: m, slot: -1}
+	t := &Txn{env: e, pageSize: e.pageSize, l: e.layout, dmap: m, slot: -1,
+		dbs: e.writer.dbs, gen: e.writer.gen}
+	e.writer.dbs = nil
 	if err := t.setSnapshot(last+1, &meta); err != nil {
 		t.releaseMap()
 		unlock()
@@ -192,7 +194,7 @@ func (t *Txn) end(keep bool) error {
 		return nil
 	}
 	r := &t.env.dbis
-	for i := format.CoreDBs; i < len(t.dbs); i++ {
+	for i := format.CoreDBs; i < t.ndbs; i++ {
 		if e := t.dbe(i); e.state&dbNew != 0 {
 			r.finishNew(i, keep, e.db.Flags)
 		}
@@ -213,6 +215,10 @@ func (t *Txn) end(keep bool) error {
 		e := t.env
 		e.writer.pgOldest = w.pgOldest
 		e.writer.pbufPad = w.pbufPad
+		// The next write transaction reuses the table; this one can no
+		// longer reach it (its handles fail with EINVAL).
+		e.writer.dbs, e.writer.gen = t.dbs, t.gen
+		t.dbs, t.ndbs = nil, 0
 		t.releaseMap()
 		var err error
 		if !e.closed.Load() {
@@ -242,7 +248,7 @@ func (t *Txn) wroteMeta(meta format.Meta) {
 func (t *Txn) closeVanishedHandles(main format.DB) {
 	r := &t.env.dbis
 	var candidates []int
-	for i := format.CoreDBs; i < len(t.dbs); i++ {
+	for i := format.CoreDBs; i < t.ndbs; i++ {
 		e := t.dbe(i)
 		if e.state&dbValid != 0 && e.state&dbNew == 0 && e.seq == r.seqOf(i) {
 			candidates = append(candidates, i)

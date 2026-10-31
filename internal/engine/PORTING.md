@@ -90,6 +90,11 @@ Status of the stage-1 engine port (PLAN.md, agent E). rlmdb sources:
   `RLMDB_DEFAULT_FORMAT` (experimental; read at every open of a new
   environment).
 
+* The transaction's DB table is `me_maxdbs` long; `Txn.ndbs` (C's
+  `mt_numdbs`) bounds every loop over it, and the top-level write
+  transaction reuses its predecessor's table (C reuses `me_txn0`), so a
+  write transaction costs O(DBs in use), not O(`MaxDBs`) (stage 2:
+  lmdb-go's tests set `MaxDBs` to 65536).
 * `Env.Close` with transactions still alive (stage 2, for lmdb-go's
   finalizers): they keep their data map, may still `Reset` and `Abort`
   (without touching the closed lock region, whose slots `Close` cleared),

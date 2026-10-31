@@ -136,7 +136,7 @@ func (t *Txn) pagesToKeep(m0 cref) []uint64 {
 		}
 	}
 	// Mark dirty root pages (this transaction's own dirty pages only).
-	for i := range t.dbs {
+	for i := 0; i < t.ndbs; i++ {
 		if e := t.dbe(i); e.state&dbDirty != 0 && e.db.Root != format.PInvalid {
 			mark(e.db.Root)
 		}

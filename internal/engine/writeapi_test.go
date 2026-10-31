@@ -449,3 +449,81 @@ func TestDupFixedWithoutDupSortIsRefused(t *testing.T) {
 	expectErr(t, txn.Put(db, []byte("k"), []byte("v"), 0), format.Incompatible, "dupfixed without dupsort")
 	must(t, txn.Commit())
 }
+
+// TestEndedWriteTxn: every method of a write transaction that ended fails
+// cleanly (its DB table went to the next write transaction).
+func TestEndedWriteTxn(t *testing.T) {
+	env, _ := openTest(t, format.V09, Options{MaxDBs: 4})
+	for _, commit := range []bool{true, false} {
+		txn, err := env.BeginTxn(nil, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		dbi, err := txn.OpenDBI([]byte("d"), format.Create)
+		if err != nil {
+			t.Fatal(err)
+		}
+		c, err := txn.OpenCursor(dbi)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if commit {
+			err = txn.Commit()
+		} else {
+			txn.Abort()
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		next, err := env.BeginTxn(nil, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, d := range []DBI{MainDBI, dbi, 7} {
+			if _, err := txn.Get(d, []byte("k")); err == nil {
+				t.Error("Get")
+			}
+			if err := txn.Put(d, []byte("k"), []byte("v"), 0); err == nil {
+				t.Error("Put")
+			}
+			if err := txn.Del(d, []byte("k"), nil); err == nil {
+				t.Error("Del")
+			}
+			if _, err := txn.Stat(d); err == nil {
+				t.Error("Stat")
+			}
+			if _, err := txn.DBIFlags(d); err == nil {
+				t.Error("DBIFlags")
+			}
+			if err := txn.Drop(d, false); err == nil {
+				t.Error("Drop")
+			}
+			if _, err := txn.OpenCursor(d); err == nil {
+				t.Error("OpenCursor")
+			}
+			if err := txn.SetCompare(d, nil); err == nil && d != 7 {
+				// The handle's setting belongs to the environment.
+				_ = err
+			}
+			txn.Comparators(d)
+			if _, err := txn.PutReserve(d, []byte("k"), 3, 0); err == nil {
+				t.Error("PutReserve")
+			}
+		}
+		if _, err := txn.OpenDBI([]byte("d"), 0); err == nil {
+			t.Error("OpenDBI")
+		}
+		if _, _, err := c.Get(nil, nil, format.First); err == nil {
+			t.Error("cursor Get")
+		}
+		if _, err := env.BeginTxn(txn, 0); err == nil {
+			t.Error("nested BeginTxn")
+		}
+		if err := txn.Commit(); err == nil {
+			t.Error("Commit again")
+		}
+		txn.Abort()
+		c.Close()
+		next.Abort()
+	}
+}

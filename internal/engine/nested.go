@@ -65,10 +65,11 @@ func (t *Txn) beginNested() (*Txn, error) {
 	}
 	// Copy parent's mt_dbflags, but clear DB_NEW.
 	c.dbs = make([]txnDB, len(t.dbs))
-	for i := range t.dbs {
+	for i := 0; i < t.ndbs; i++ {
 		c.dbs[i] = *t.dbe(i)
 		c.dbs[i].state &^= dbNew
 	}
+	c.ndbs = t.ndbs
 	cd := newDirtyPages(t.pageSize)
 	// The child allocates from the parent's spare buffers.
 	cd.pool.merge(&pw.dirty.pool)
@@ -137,7 +138,7 @@ func (t *Txn) endNested(how int) {
 		p.nextPgno = t.nextPgno
 		pw.flags = w.flags
 		// Update parent's DB table, preserving parent's DB_NEW status.
-		for i := range p.dbs {
+		for i, n := 0, max(p.ndbs, t.ndbs); i < n; i++ {
 			pe, ce := p.dbe(i), t.dbe(i)
 			var keepNew uint8
 			if i >= format.CoreDBs {
@@ -173,7 +174,7 @@ func (t *Txn) endNested(how int) {
 		pw.dropped = append(pw.dropped, w.dropped...)
 	} else {
 		// Close the handles of databases created in this child.
-		for i := format.CoreDBs; i < len(t.dbs); i++ {
+		for i := format.CoreDBs; i < t.ndbs; i++ {
 			if e := t.dbe(i); e.state&dbNew != 0 {
 				r.finishNew(i, false, e.db.Flags)
 			}
@@ -193,7 +194,7 @@ func (t *Txn) endNested(how int) {
 				pe.seq = seq
 			}
 		}
-		for i := range p.dbs {
+		for i, n := 0, max(p.ndbs, t.ndbs); i < n; i++ {
 			pe, ce := p.dbe(i), t.dbe(i)
 			if pe.state == 0 {
 				continue

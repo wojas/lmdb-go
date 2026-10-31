@@ -250,6 +250,7 @@ func (t *Txn) dbe(i int) *txnDB {
 	e := &t.dbs[i]
 	if e.gen != t.gen {
 		*e = txnDB{db: format.EmptyDB(0), gen: t.gen}
+		t.ndbs = max(t.ndbs, i+1)
 	}
 	return e
 }
@@ -263,6 +264,7 @@ func (t *Txn) initDBs(coreDBs *[2]format.DB) {
 		t.dbs = make([]txnDB, r.capacity())
 	}
 	t.dbs = t.dbs[:r.capacity()]
+	t.ndbs = 0
 	t.gen++
 	if t.gen == 0 {
 		// The generation wrapped: forget every view for real.
@@ -499,7 +501,7 @@ func (r *dbiRegistry) register(unused int, slot dbiSlot) int {
 func (t *Txn) reopenLiveView(name []byte) (DBI, bool) {
 	r := &t.env.dbis
 	id := nameID(name)
-	for i := format.CoreDBs; i < len(t.dbs); i++ {
+	for i := format.CoreDBs; i < t.ndbs; i++ {
 		e := t.dbe(i)
 		if e.state&dbValid == 0 || e.nameID != id || (i < len(r.slots) && r.slots[i].name != nil) {
 			continue
