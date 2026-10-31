@@ -131,6 +131,17 @@ uses a test fake of the interface (in-process only).
   in `tests/lockfile` (macOS, glibc arm64 and x86-64, musl).
 * Stage 1 E: `internal/format`, `internal/sys`, `internal/engine`
   (see `internal/engine/PORTING.md`), byte-identical to C writers.
+* Stage 2: package `lmdb` with lmdb-go v1's API (declarations kept in
+  place, bodies on the engine; glue in `lmdb/engine.go`, the lock file
+  wired in `lmdb/lock.go` only) and lmdb-go v2's format API;
+  `lmdb/DEVIATIONS.md` is the ledger (three v1 bugs not kept, every
+  changed test). lmdb-go v1's and v2's test suites, `lmdbscan`,
+  `exp/lmdbsync`, the commands: pass with cgo and with `CGO_ENABLED=0`
+  (`NoLock`; lock-file tests skip). The port twins of `tests/gopeer` and
+  `tests/bench` build without a tag. rlmdb's interop matrix with
+  `INTEROP_GOPEER_IMPL=port` (rlmdb branch `t3/interop-gopeer`:
+  `go_pairs`, `go_pairs10`, `go_peer`) passes in full on macOS and on
+  Linux arm64 with glibc and with musl (`tests/gopeer/README.md`).
 
 ## Deferred decisions (owner, revisit before a release)
 

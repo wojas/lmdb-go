@@ -87,6 +87,9 @@ differently from C is in `internal/engine/PORTING.md` and in rlmdb's
   a cursor that was not renewed with `Cursor.Renew` starts over
   unpositioned in the new snapshot (rlmdb's C API). In C it keeps pointers
   into the old snapshot's pages.
+* **`Txn.ID`** is 0 while a read transaction is reset and after it ended
+  (the engine's `mdb_txn_id`, as rlmdb). C keeps the old snapshot's id in
+  a reset transaction, and v1 returned that (or its cached copy).
 * **`Cursor.Renew`** is `EINVAL` for a cursor of a write transaction, onto
   a write transaction, and onto a transaction of another environment (C
   does not check the last one and writes past its cursor).
