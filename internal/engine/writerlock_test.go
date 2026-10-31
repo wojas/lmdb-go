@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"runtime"
 	"sync"
 	"syscall"
 	"testing"
@@ -76,8 +77,13 @@ func TestWriterEndLeavesNextWriterAlone(t *testing.T) {
 				r.Abort()
 				mustAudit(t, env)
 				// Every map reference is gone with the transactions: Close
-				// tears the environment down, and the path opens again.
+				// tears the environment down (a NoLock open would succeed
+				// anyway, sharing the handle's region), and the path opens
+				// again.
 				env.Close()
+				if n := env.liveMaps.Load(); n != 0 {
+					t.Fatalf("%d maps left after Close", n)
+				}
 				env2, err := Open(dir, Options{Flags: flags | format.NoSync, OpenLock: OpenMemLock})
 				if err != nil {
 					t.Fatalf("reopen: %v", err)
@@ -173,5 +179,57 @@ func TestOwnerDeathRepairAfterClose(t *testing.T) {
 				env2.Close()
 			})
 		}
+	}
+}
+
+// NoLock handles of one file share one writer lock (registry.go): a
+// writer of one handle waits for another handle's writer, and its handle
+// is closed meanwhile. Once it has the lock it fails with EINVAL and
+// leaves the lock free, its handle is torn down, and the other handle's
+// writers go on.
+func TestSharedWriterLockAcrossClose(t *testing.T) {
+	for _, f := range []format.Format{format.V09, format.V10} {
+		t.Run(fmt.Sprint(f), func(t *testing.T) {
+			a, dir := openTest(t, f, Options{Flags: format.NoLock})
+			b, err := Open(dir, Options{Flags: format.NoLock | format.NoSync, MapSize: 64 << 20})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer b.Close()
+			putKV(t, a, "k", "1")
+			wb := beginW(t, b)
+			done := make(chan error, 1)
+			go func() {
+				w, err := a.BeginTxn(nil, 0)
+				if err == nil {
+					w.Abort()
+				}
+				done <- err
+			}()
+			// a's writer holds a's writerMu: it waits for the shared lock.
+			for a.writerMu.TryLock() {
+				a.writerMu.Unlock()
+				runtime.Gosched()
+			}
+			a.Close()
+			if err := wb.Put(MainDBI, []byte("k"), []byte("2"), 0); err != nil {
+				t.Fatal(err)
+			}
+			if err := wb.Commit(); err != nil {
+				t.Fatal(err)
+			}
+			if err := <-done; err != syscall.EINVAL {
+				t.Fatalf("writer of the closed handle: %v, want EINVAL", err)
+			}
+			if n := a.liveMaps.Load(); n != 0 {
+				t.Fatalf("%d maps of the closed handle left", n)
+			}
+			putKV(t, b, "k", "3")
+			r := beginR(t, b)
+			defer r.Abort()
+			if v, err := r.Get(MainDBI, []byte("k")); err != nil || string(v) != "3" {
+				t.Fatalf("Get: %q, %v", v, err)
+			}
+		})
 	}
 }
