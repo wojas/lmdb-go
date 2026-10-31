@@ -121,8 +121,11 @@ counts of the API's hot paths are pinned by `lmdb/alloc_test.go`.
   here the whole `Txn` stays, unbounded except for the pool, as the
   owner's allocation rules ask. A `Txn` must not be used after its
   `Commit` or `Abort` once another write transaction began (package
-  `lmdb` drops its reference at the end, as lmdb-go did with C's);
-  cursors of an ended transaction still fail cleanly (arena generations).
+  `lmdb` drops its reference at the end, as lmdb-go did with C's, also
+  for nested transactions that end with their parent; `Txn.Owner`
+  changes at every begin, so a handle can tell its transaction is
+  over); cursors of an ended transaction still fail cleanly (arena
+  generations).
   The arena hands slots out in the order a new one would, so cursor
   fixups run in the same order as before.
 * A parent keeps its last nested transaction's memory (`spareChild`) for

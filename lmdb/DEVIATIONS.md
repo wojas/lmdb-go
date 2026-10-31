@@ -82,7 +82,11 @@ differently from C is in `internal/engine/PORTING.md` and in rlmdb's
   `Abort`, and a `Cursor` used after `Close` or after its transaction
   ended, return `EINVAL` (as rlmdb's C API; v1 passed freed or NULL
   pointers to C). `Commit` of an ended `Txn` is `EINVAL`, `Abort` and
-  `Close` are no-ops.
+  `Close` are no-ops. A nested `Txn` that is still active when its
+  parent commits or aborts ends with it (C commits or aborts it first and
+  frees it; v1's handle then pointed to freed memory, and its finalizer
+  aborted whatever transaction reused it): it fails the same way, and
+  its finalizer does nothing.
 * **Cursors of a renewed transaction.** After `Txn.Reset` and `Txn.Renew`,
   a cursor that was not renewed with `Cursor.Renew` starts over
   unpositioned in the new snapshot (rlmdb's C API). In C it keeps pointers
@@ -117,7 +121,10 @@ differently from C is in `internal/engine/PORTING.md` and in rlmdb's
   without a lock file).
 * **Finalizers.** `Env` and unmanaged `Txn`s have v1's finalizers. Cursors
   have none: v1's freed the C cursor of a read transaction, and here
-  there is nothing to free.
+  there is nothing to free. The finalizer of an unreachable nested `Txn`
+  does not run while its parent lives (v1's aborted the child on the
+  finalizer's goroutine, under the parent's user); the child ends with
+  the parent.
 * **Errors.** `Errno.Error` has LMDB 1.0's messages for 1.0's codes (C
   0.9: "Invalid error code"). The `*OpError` values returned for
   `MDB_NOTFOUND` by `Txn.Get` and `Cursor.Get` are shared; do not modify

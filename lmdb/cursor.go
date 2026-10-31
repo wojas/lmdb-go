@@ -65,7 +65,7 @@ type Cursor struct {
 }
 
 func openCursor(txn *Txn, db DBI) (*Cursor, error) {
-	if txn._txn == nil {
+	if txn.ended() {
 		return nil, errInvalid("mdb_cursor_open")
 	}
 	c := &Cursor{txn: txn, gen: txn.gen}
@@ -96,7 +96,7 @@ func openCursor(txn *Txn, db DBI) (*Cursor, error) {
 //
 // See mdb_cursor_renew.
 func (c *Cursor) Renew(txn *Txn) error {
-	if c._c == nil || txn == nil || txn._txn == nil || !c.pooled || !txn.readonly || txn.env != c.txn.env {
+	if c._c == nil || txn == nil || txn.ended() || !c.pooled || !txn.readonly || txn.env != c.txn.env {
 		// Closed cursors and transactions, cursors of write transactions,
 		// write transactions, and another environment's transactions (C
 		// does not check that one and corrupts memory).
@@ -118,7 +118,7 @@ func (c *Cursor) close() bool {
 		if c.pooled {
 			// A read cursor holds nothing but its memory.
 			c.txn.env.cursors.Put(c._c)
-		} else if c.txn._txn == nil && !c.txn.readonly {
+		} else if c.txn.ended() && !c.txn.readonly {
 			// the cursor has already been released by LMDB.
 		} else {
 			c._c.Close()
