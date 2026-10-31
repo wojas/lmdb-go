@@ -12,8 +12,10 @@ import (
 // goDump lists the items of database db (nil: the main DB) of the
 // environment at dir as mdb_dump's data lines (" <hex key>", " <hex
 // value>"), read with the Go engine, forwards; it also checks that a
-// backward scan and point lookups agree.
-func goDump(t testing.TB, dir string, db []byte) []string {
+// backward scan agrees, and with lookups that point lookups do (not for
+// the differential scripts' databases: their MDB_CURRENT puts with another
+// key leave keys out of order, in C as in Go).
+func goDump(t testing.TB, dir string, db []byte, lookups bool) []string {
 	t.Helper()
 	env, err := eng.Open(dir, eng.Options{Flags: format.NoLock | format.ReadOnly, MaxDBs: 8})
 	if err != nil {
@@ -60,15 +62,18 @@ func goDump(t testing.TB, dir string, db []byte) []string {
 	if _, _, err := c2.Get(nil, nil, format.Prev); err != format.NotFound {
 		t.Fatalf("backward scan past the start: %v", err)
 	}
-	// Point lookups (the first value of each key) and MDB_SET_RANGE.
+	// Point lookups (the first value of each key).
 	flags, _ := txn.DBIFlags(dbi)
 	for i, it := range items {
+		if !lookups {
+			break
+		}
 		if i > 0 && items[i-1][0] == it[0] {
 			continue
 		}
 		v, err := txn.Get(dbi, []byte(it[0]))
 		if err != nil || string(v) != it[1] {
-			t.Fatalf("get %x: %v", it[0], err)
+			t.Fatalf("get %x (item %d of %d): %v len %d want %d", it[0], i, len(items), err, len(v), len(it[1]))
 		}
 		if flags&format.DupSort != 0 {
 			if _, v, err := c.Get([]byte(it[0]), []byte(it[1]), format.GetBoth); err != nil || string(v) != it[1] {
@@ -142,7 +147,7 @@ func TestGoReadsC(t *testing.T) {
 					t.Fatal(errs)
 				}
 				want := cDump(t, p.dump, dir, "data")
-				got := goDump(t, dir, []byte("data"))
+				got := goDump(t, dir, []byte("data"), true)
 				if strings.Join(want, "\n") != strings.Join(got, "\n") {
 					t.Fatalf("Go read %d lines, mdb_dump %d", len(got), len(want))
 				}
