@@ -132,10 +132,27 @@ uses a test fake of the interface (in-process only).
 * Stage 1 E: `internal/format`, `internal/sys`, `internal/engine`
   (see `internal/engine/PORTING.md`), byte-identical to C writers.
 
+## Following rlmdb
+
+New features and improvements, Windows support included, land in rlmdb
+first and are then ported here. To keep that cheap:
+
+* The Go packages stay structurally parallel to rlmdb's modules (same
+  split into files, same function boundaries and names in Go style), so
+  an rlmdb diff maps onto Go files one to one. Do not restructure the Go
+  engine away from rlmdb without a measured reason, and note any such
+  divergence in `internal/engine/PORTING.md`.
+* `internal/engine/PORTING.md` records the rlmdb commit the port is synced
+  to (currently `9ea2373`) and, per later sync, the rlmdb commits ported,
+  skipped (with the reason) or replaced by a Go-specific solution.
+* Go-side fixes that also apply to rlmdb (bugs found here, like the
+  `NoLock` reader tracking) are reported to the rlmdb side, so the two
+  stay in step.
+
 ## Windows (planned)
 
-The owner will add Windows support once a test machine is available
-(rlmdb has no Windows support yet either). Until then: keep every OS
+The owner will add Windows support once a test machine is available,
+first to rlmdb and then ported here (see "Following rlmdb"). Until then: keep every OS
 specific behind build constraints (`internal/sys`, `internal/lockfile`)
 so a `_windows.go` file pair can be added without touching the engine,
 keep lmdb-go's Windows files (e.g. `lmdb/error_windows.go`) and their
