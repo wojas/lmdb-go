@@ -1,13 +1,15 @@
 # Plan: an LMDB implementation in Go behind the lmdb-go API
 
 Read `AGENTS.md` first. rlmdb (Rust) is the starting point: port its
-structure, its decisions and its tests, not `mdb.c` directly. Where the
-two differ, rlmdb wins unless it documents a reason specific to Rust.
+behaviour, its decisions and its tests, not `mdb.c` directly. Where the
+two differ in behaviour, rlmdb wins unless it documents a reason specific
+to Rust. Its structure is a starting point only: write idiomatic Go and
+diverge where Go is better served (see "Following rlmdb").
 
 ## Package layout
 
-Go packages mirror rlmdb's modules, so a reader can go from one to the
-other:
+The initial port maps rlmdb's modules onto Go packages roughly like this
+(a starting point, not a constraint):
 
 | Go package | rlmdb source | contents |
 |---|---|---|
@@ -142,6 +144,37 @@ uses a test fake of the interface (in-process only).
   `INTEROP_GOPEER_IMPL=port` (rlmdb branch `t3/interop-gopeer`:
   `go_pairs`, `go_pairs10`, `go_peer`) passes in full on macOS and on
   Linux arm64 with glibc and with musl (`tests/gopeer/README.md`).
+
+## Following rlmdb
+
+New features and improvements, Windows support included, land in rlmdb
+first and are then ported here. To keep that cheap:
+
+* rlmdb is the reference for behaviour, not a template for structure.
+  Write idiomatic Go: Go has different costs (GC, escape analysis,
+  interfaces, bounds checks, no lifetimes) and abstractions that pay off in
+  Rust may not in Go, and the reverse. Staying close to rlmdb's structure is
+  a convenience for porting where it costs nothing; diverge whenever Go is
+  better served, and note larger divergences in `PORTING.md` so later
+  ports know where to look.
+* `internal/engine/PORTING.md` records the rlmdb commit the port is synced
+  to (currently `9ea2373`) and, per later sync, the rlmdb commits ported,
+  skipped (with the reason) or replaced by a Go-specific solution.
+* Go-side fixes that also apply to rlmdb (bugs found here, like the
+  `NoLock` reader tracking) are reported to the rlmdb side, so the two
+  stay in step.
+
+## Windows (planned)
+
+The owner will add Windows support once a test machine is available,
+first to rlmdb and then ported here (see "Following rlmdb"). Until then: keep every OS
+specific behind build constraints (`internal/sys`, `internal/lockfile`)
+so a `_windows.go` file pair can be added without touching the engine,
+keep lmdb-go's Windows files (e.g. `lmdb/error_windows.go`) and their
+declarations, and do not design anything that cannot work there. C LMDB on
+Windows uses named mutexes (`CreateMutex`, `Global\MDBr…`/`MDBw…`, names
+in the lock file) and `LockFileEx` on the lock file, all reachable from
+`golang.org/x/sys/windows` without cgo.
 
 ## Deferred decisions (owner, revisit before a release)
 
