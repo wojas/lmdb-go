@@ -1,0 +1,452 @@
+// create, stat, readers, reader-check, copy, nested-test and gen (rlmdb
+// rust/interop/c/cpeer_misc.c).
+
+package peer
+
+import (
+	"bytes"
+	"encoding/binary"
+	"encoding/hex"
+	"errors"
+	"fmt"
+	"io/fs"
+	"os"
+
+	lmdb "github.com/PowerDNS/lmdb-go/tests/cgolmdb"
+)
+
+// ---- create ----
+
+func cmdCreate(o *opts) int {
+	o.mapsize = parseU64(o.posArg(1), "mapsize")
+	o.maxdbs = parseU32(o.posArg(2), "maxdbs")
+	env := openEnv(o, 0)
+	st, err := env.Stat()
+	check(err, "mdb_env_stat")
+	info, err := env.Info()
+	check(err, "mdb_env_info")
+	printf("created psize=%d mapsize=%d maxkeysize=%d last_txnid=%d\n", st.PSize,
+		info.MapSize, env.MaxKeySize(), info.LastTxnID)
+	env.Close()
+	return 0
+}
+
+// ---- stat ----
+
+// printStatLine prints "db=<label> [flags=0x..] depth=.. branch_pages=..
+// leaf_pages=.. overflow_pages=.. entries=..". mdb_dbi_flags() rejects
+// DBI 0 (the free DB), so its line has no flags.
+func printStatLine(txn *lmdb.Txn, dbi lmdb.DBI, label string) {
+	st, err := txn.Stat(dbi)
+	check(err, "mdb_stat")
+	flags := ""
+	if dbi != 0 {
+		f, err := txn.Flags(dbi)
+		check(err, "mdb_dbi_flags")
+		flags = fmt.Sprintf("flags=0x%x ", f)
+	}
+	printf("db=%s %sdepth=%d branch_pages=%d leaf_pages=%d overflow_pages=%d entries=%d\n",
+		label, flags, st.Depth, st.BranchPages, st.LeafPages, st.OverflowPages, st.Entries)
+}
+
+func cmdStat(o *opts) int {
+	env := openEnv(o, lmdb.Readonly)
+	v10 := envIs10(env)
+	st, err := env.Stat()
+	check(err, "mdb_env_stat")
+	txn := beginRead(env)
+	info, err := env.Info()
+	check(err, "mdb_env_info")
+	printf("psize=%d\nmapsize=%d\nlast_pgno=%d\nlast_txnid=%d\nmaxreaders=%d\n"+
+		"numreaders=%d\nmaxkeysize=%d\n", st.PSize, info.MapSize,
+		info.LastPNO, info.LastTxnID, info.MaxReaders,
+		info.NumReaders, env.MaxKeySize())
+
+	// The free DB (DBI 0): records are txnid -> [count, pgno...] (a
+	// native size_t count; C copies it out, the data is 2-byte aligned).
+	freePages := uint64(0)
+	cur, err := txn.OpenCursor(0)
+	check(err, "mdb_cursor_open(free DB)")
+	_, data, err := cur.Get(nil, nil, lmdb.Next)
+	for ; err == nil; _, data, err = cur.Get(nil, nil, lmdb.Next) {
+		if len(data) < 8 {
+			die(exitMismatch, "stat: free DB record of %d bytes", len(data))
+		}
+		freePages += binary.NativeEndian.Uint64(data)
+	}
+	if !lmdb.IsNotFound(err) {
+		check(err, "mdb_cursor_get(free DB)")
+	}
+	cur.Close()
+	printf("free_pages=%d\n", freePages)
+	printStatLine(txn, 0, "@free")
+
+	// Main DB, then every named DB it records (as mdb_stat -a).
+	main, err := txn.OpenRoot(0)
+	check(err, "mdb_dbi_open")
+	printStatLine(txn, main, "-")
+	cur, err = txn.OpenCursor(main)
+	check(err, "mdb_cursor_open")
+	key, _, err := cur.Get(nil, nil, lmdb.NextNoDup)
+	for ; err == nil; key, _, err = cur.Get(nil, nil, lmdb.NextNoDup) {
+		name, ok := subDBName(v10, key)
+		if !ok {
+			continue
+		}
+		if dbi, err := txn.OpenDBI(name, 0); err == nil {
+			printStatLine(txn, dbi, name)
+		}
+	}
+	if !lmdb.IsNotFound(err) {
+		check(err, "mdb_cursor_get(main)")
+	}
+	cur.Close()
+	txn.Abort()
+	env.Close()
+	return 0
+}
+
+// ---- readers ----
+
+// cmdReaders prints the reader table via mdb_reader_list. Its lines are
+// "%10d %zx %zu" (pid, thread, txnid) or "%10d %zx -" for a slot that is
+// not in a transaction, after a header line; "(no active readers)" if
+// there are none.
+func cmdReaders(o *opts) int {
+	// No transaction of our own, so our pid is not in the table.
+	env := openEnv(o, lmdb.Readonly)
+	info, err := env.Info()
+	check(err, "mdb_env_info")
+	n := 0
+	err = env.ReaderList(func(msg string) error {
+		var pid int
+		var tid, txnid string
+		if k, _ := fmt.Sscanf(msg, "%d %s %s", &pid, &tid, &txnid); k == 3 {
+			printf("reader pid=%d tid=0x%s txnid=%s\n", pid, tid, txnid)
+			n++
+		}
+		return nil
+	})
+	if err != nil {
+		die(exitLMDB, "mdb_reader_list failed: %s", errText(err))
+	}
+	printf("readers=%d numreaders=%d maxreaders=%d\n", n, info.NumReaders, info.MaxReaders)
+	env.Close()
+	return 0
+}
+
+// ---- reader-check ----
+
+// cmdReaderCheck is mdb_reader_check(): clear the reader slots of dead
+// processes.
+func cmdReaderCheck(o *opts) int {
+	env := openEnv(o, lmdb.Readonly)
+	dead, err := env.ReaderCheck()
+	check(err, "mdb_reader_check")
+	printf("reader-check cleared=%d\n", dead)
+	env.Close()
+	return 0
+}
+
+// ---- copy ----
+
+func cmdCopy(o *opts) int {
+	dest := o.pos[1]
+	// The destination directory must exist (as for mdb_copy); with
+	// --nosubdir dest is the new data file. The data file itself must not
+	// exist: mdb_env_copy2 opens it with O_EXCL.
+	if !o.nosubdir {
+		if err := os.Mkdir(dest, 0o775); err != nil && !errors.Is(err, fs.ErrExist) {
+			die(exitLMDB, "mkdir %s: %v", dest, err)
+		}
+	}
+	env := openEnv(o, lmdb.Readonly)
+	flags, compact := uint(0), 0
+	if o.compact {
+		flags, compact = lmdb.CopyCompact, 1
+	}
+	check(env.CopyFlag(dest, flags), "mdb_env_copy2")
+	printf("copied compact=%d\n", compact)
+	env.Close()
+	return 0
+}
+
+// ---- gen ----
+
+// cmdGen prints the generated key and values of item i: test vectors of
+// the data set for the other peers.
+func cmdGen(o *opts) int {
+	ds := &o.ds
+	ds.seed = parseU32(o.posArg(0), "seed")
+	i := parseU32(o.posArg(1), "i")
+	if i == ^uint32(0) {
+		die(exitUsage, "i must be < 2^32 - 1")
+	}
+	ds.count = i + 1
+	if err := ds.finish(); err != "" {
+		die(exitUsage, "%s", err)
+	}
+	vbuf := make([]byte, ds.maxValueSize())
+	printf("key=%s\nndups=%d\n", hex.EncodeToString(ds.key(i, nil)), ds.ndups(i))
+	for d := uint32(0); d < ds.ndups(i); d++ {
+		v := vbuf[:ds.vlen(i, d)]
+		ds.value(i, d, v)
+		printf("value%d=%s\n", d, hex.EncodeToString(v))
+	}
+	return 0
+}
+
+// ---- nested-test ----
+
+// Nested write transactions: child commits fold into the parent, child
+// aborts leave the parent untouched, at any depth, including overflow
+// pages, page splits, DB creation and mdb_drop. The final content of the
+// DB "nested" (checked by --check, in any peer) is:
+//
+//	k1="v1" k2="v2" k3="v3" k5=<40000-byte pattern, seed 5>
+//	n%05u="val%05u" for odd u < 2000
+//
+// and the DBs "nested2" and "nested3" do not exist. Running the write mode
+// again reaches the same state.
+
+const (
+	nestedN = 2000
+	bigLen  = 40000
+)
+
+// makeBig is the 40000-byte value: SplitMix64 words from state 5,
+// little-endian.
+func makeBig() []byte {
+	big := make([]byte, bigLen)
+	state := uint64(5)
+	var x uint64
+	for off := range big {
+		if off%8 == 0 {
+			x = splitmix64(&state)
+		}
+		big[off] = byte(x >> (8 * (off % 8)))
+	}
+	return big
+}
+
+func putS(txn *lmdb.Txn, dbi lmdb.DBI, k string, v []byte) {
+	check(txn.Put(dbi, []byte(k), v, 0), "mdb_put")
+}
+
+func putStr(txn *lmdb.Txn, dbi lmdb.DBI, k, v string) { putS(txn, dbi, k, []byte(v)) }
+
+func delS(txn *lmdb.Txn, dbi lmdb.DBI, k string) {
+	check(txn.Del(dbi, []byte(k), nil), "mdb_del")
+}
+
+// expect checks that k holds v, or is absent if v is nil.
+func expect(where string, txn *lmdb.Txn, dbi lmdb.DBI, k string, v []byte) {
+	data, err := txn.Get(dbi, []byte(k))
+	if v == nil {
+		if !lmdb.IsNotFound(err) {
+			die(exitMismatch, "nested-test %s: %s should be absent (rc=%s)", where, k, rcText(err))
+		}
+		return
+	}
+	if lmdb.IsNotFound(err) {
+		die(exitMismatch, "nested-test %s: %s not found", where, k)
+	}
+	check(err, "mdb_get")
+	if !bytes.Equal(data, v) {
+		die(exitMismatch, "nested-test %s: %s has the wrong value (%d bytes)", where, k, len(data))
+	}
+}
+
+// expectStr is expect with a string value; "" means absent.
+func expectStr(where string, txn *lmdb.Txn, dbi lmdb.DBI, k, v string) {
+	if v == "" {
+		expect(where, txn, dbi, k, nil)
+	} else {
+		expect(where, txn, dbi, k, []byte(v))
+	}
+}
+
+func expectEntries(where string, txn *lmdb.Txn, dbi lmdb.DBI, n uint64) {
+	st, err := txn.Stat(dbi)
+	check(err, "mdb_stat")
+	if st.Entries != n {
+		die(exitMismatch, "nested-test %s: %d entries, expected %d", where, st.Entries, n)
+	}
+}
+
+func expectNoDB(env *lmdb.Env, name string) {
+	txn := beginRead(env)
+	_, err := txn.OpenDBI(name, 0)
+	txn.Abort()
+	if !lmdb.IsNotFound(err) {
+		die(exitMismatch, "nested-test: DB %s should not exist (rc=%s)", name, rcText(err))
+	}
+}
+
+// nestedCheck checks the final state, as listed above; walks the whole DB.
+func nestedCheck(env *lmdb.Env, big []byte) {
+	small := [][2]string{{"k1", "v1"}, {"k2", "v2"}, {"k3", "v3"}}
+	txn := beginRead(env)
+	dbi, err := txn.OpenDBI("nested", 0)
+	if lmdb.IsNotFound(err) {
+		die(exitMismatch, "nested-test: DB nested not found")
+	}
+	check(err, "mdb_dbi_open(nested)")
+	for _, kv := range small {
+		expectStr("check", txn, dbi, kv[0], kv[1])
+	}
+	expect("check", txn, dbi, "k5", big)
+	expectEntries("check", txn, dbi, 4+nestedN/2)
+
+	// Cursor order: k1 k2 k3 k5 n00001 n00003 ...
+	cur, err := txn.OpenCursor(dbi)
+	check(err, "mdb_cursor_open")
+	n, u := 0, 1
+	key, data, err := cur.Get(nil, nil, lmdb.Next)
+	for ; err == nil; key, data, err = cur.Get(nil, nil, lmdb.Next) {
+		var want string
+		if n < 4 {
+			want = "k5"
+			if n < 3 {
+				want = small[n][0]
+			}
+		} else {
+			want = fmt.Sprintf("n%05d", u)
+			if string(data) != fmt.Sprintf("val%05d", u) {
+				die(exitMismatch, "nested-test check: %s has the wrong value", want)
+			}
+			u += 2
+		}
+		if string(key) != want {
+			die(exitMismatch, "nested-test check: entry %d is %s, expected %s", n, key, want)
+		}
+		n++
+	}
+	if !lmdb.IsNotFound(err) {
+		check(err, "mdb_cursor_get")
+	}
+	cur.Close()
+	txn.Abort()
+	expectNoDB(env, "nested2")
+	expectNoDB(env, "nested3")
+}
+
+func nestedWrite(env *lmdb.Env, big []byte) {
+	// 1. A committed child is visible to the parent and is persisted.
+	t := beginWrite(env)
+	dbi, err := t.OpenDBI("nested", lmdb.Create)
+	check(err, "mdb_dbi_open(nested)")
+	putStr(t, dbi, "k1", "v1")
+	c := beginChild(env, t)
+	expectStr("1/child", c, dbi, "k1", "v1")
+	putStr(c, dbi, "k2", "v2")
+	check(c.Commit(), "mdb_txn_commit(child)")
+	expectStr("1/parent", t, dbi, "k2", "v2")
+	commitWrite(t)
+
+	// 2. An aborted child changes nothing, including overwrites.
+	t = beginWrite(env)
+	putStr(t, dbi, "k3", "v3")
+	c = beginChild(env, t)
+	putStr(c, dbi, "k4", "v4")
+	putStr(c, dbi, "k1", "v1b")
+	expectStr("2/child", c, dbi, "k3", "v3")
+	c.Abort()
+	expectStr("2/parent", t, dbi, "k4", "")
+	expectStr("2/parent", t, dbi, "k1", "v1")
+	commitWrite(t)
+
+	// 3. Overflow pages, and a committed grandchild inside an aborted child.
+	t = beginWrite(env)
+	c = beginChild(env, t)
+	putS(c, dbi, "k5", big)
+	check(c.Commit(), "mdb_txn_commit(child)")
+	expect("3/parent", t, dbi, "k5", big)
+	c = beginChild(env, t)
+	delS(c, dbi, "k5")
+	putStr(c, dbi, "k6", "v6")
+	g := beginChild(env, c)
+	putStr(g, dbi, "k7", "v7")
+	delS(g, dbi, "k2")
+	expectStr("3/grandchild", g, dbi, "k5", "")
+	check(g.Commit(), "mdb_txn_commit(grandchild)")
+	expectStr("3/child", c, dbi, "k7", "v7")
+	expectStr("3/child", c, dbi, "k2", "")
+	c.Abort()
+	expect("3/parent", t, dbi, "k5", big)
+	expectStr("3/parent", t, dbi, "k6", "")
+	expectStr("3/parent", t, dbi, "k7", "")
+	expectStr("3/parent", t, dbi, "k2", "v2")
+	commitWrite(t)
+
+	// 4. A DB created in a committed child of an aborted parent is gone.
+	t = beginWrite(env)
+	c = beginChild(env, t)
+	d2, err := c.OpenDBI("nested2", lmdb.Create)
+	check(err, "mdb_dbi_open(nested2)")
+	putStr(c, d2, "x", "1")
+	check(c.Commit(), "mdb_txn_commit(child)")
+	expectStr("4/parent", t, d2, "x", "1")
+	abortWrite(t)
+	expectNoDB(env, "nested2")
+
+	// 5. Page splits: an aborted child with many keys leaves no trace; a
+	//    committed child whose committed grandchild deletes half of them
+	//    leaves the other half.
+	t = beginWrite(env)
+	c = beginChild(env, t)
+	for u := 0; u < nestedN; u++ {
+		putStr(c, dbi, fmt.Sprintf("n%05d", u), fmt.Sprintf("val%05d", u))
+	}
+	c.Abort()
+	expectStr("5/parent", t, dbi, "n00000", "")
+	c = beginChild(env, t)
+	for u := 0; u < nestedN; u++ {
+		putStr(c, dbi, fmt.Sprintf("n%05d", u), fmt.Sprintf("val%05d", u))
+	}
+	g = beginChild(env, c)
+	for u := 0; u < nestedN; u += 2 {
+		delS(g, dbi, fmt.Sprintf("n%05d", u))
+	}
+	check(g.Commit(), "mdb_txn_commit(grandchild)")
+	check(c.Commit(), "mdb_txn_commit(child)")
+	expectEntries("5/parent", t, dbi, 4+nestedN/2)
+	commitWrite(t)
+
+	// 6. mdb_drop in children: emptying in an aborted child, deleting in
+	//    a committed one.
+	t = beginWrite(env)
+	d3, err := t.OpenDBI("nested3", lmdb.Create)
+	check(err, "mdb_dbi_open(nested3)")
+	for u := 0; u < 10; u++ {
+		putStr(t, d3, fmt.Sprintf("z%d", u), "z")
+	}
+	commitWrite(t)
+	t = beginWrite(env)
+	c = beginChild(env, t)
+	check(c.Drop(d3, false), "mdb_drop(0)")
+	expectEntries("6/child", c, d3, 0)
+	c.Abort()
+	expectEntries("6/parent", t, d3, 10)
+	c = beginChild(env, t)
+	check(c.Drop(d3, true), "mdb_drop(1)")
+	check(c.Commit(), "mdb_txn_commit(child)")
+	commitWrite(t)
+	expectNoDB(env, "nested3")
+}
+
+func cmdNestedTest(o *opts) int {
+	big := makeBig()
+	flags, mode := uint(0), "write"
+	if o.checkMode {
+		flags, mode = lmdb.Readonly, "check"
+	}
+	env := openEnv(o, flags)
+	if !o.checkMode {
+		nestedWrite(env, big)
+	}
+	nestedCheck(env, big)
+	printf("nested ok mode=%s\n", mode)
+	env.Close()
+	return 0
+}

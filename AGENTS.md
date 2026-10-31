@@ -93,6 +93,17 @@ messages) until that is established.
    lock-file versions as rlmdb implements them. A write transaction holds
    the writer mutex on one OS thread (`runtime.LockOSThread`), as lmdb-go
    requires today.
+2a. **`NoLock` only removes the external (cross-process) locking.**
+   Within the process everything stays safe: write transactions are
+   serialised by the in-process writer mutex, and readers are tracked in
+   an in-memory reader table per `Env`, which the writer consults exactly
+   as it consults the lock file's table otherwise, so pages a live reader
+   can still see are never reused. Opening one path twice in one process
+   is refused (`EBUSY`, as rlmdb), so that table covers the whole process.
+   Nothing on disk changes (no lock file is created, as in C). This is a
+   deliberate deviation from C, where `MDB_NOLOCK` leaves both to the
+   caller; it is recorded in the ledger. Cross-process concurrency under
+   `NoLock` remains the caller's job.
 3. Binary compatibility invariants of rlmdb `AGENTS.md` §1 hold: data
    files, lock files, free list, reader slots, meta protocol, sort order.
    Layout exactness against C is the default test oracle (a Go writer

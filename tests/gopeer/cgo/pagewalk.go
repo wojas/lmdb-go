@@ -1,0 +1,710 @@
+// check-freelist: audit the page usage of a snapshot (rlmdb
+// rust/interop/c/cpeer_pagewalk.c, and rpeer's pagewalk.rs for choosing
+// the format).
+//
+// Every page 0..last_pg of a committed snapshot is used exactly once (see
+// the comment above MDB_page in mdb.c, and mdb_audit()):
+//   - pages 0 and 1 are the meta pages;
+//   - a page of a B-tree: branch, leaf or overflow page of the free DB, the
+//     main DB, a named DB, or a DUPSORT sub-DB;
+//   - or it is listed in a free DB record (txnid -> [count, pgno...]).
+//
+// Anything else is a leak (page used by nothing) or a double use.
+//
+// The walk reads the data file with ReadAt and decodes the on-disk format
+// at the offsets documented in rlmdb's DESIGN.md (LMDB 0.9) and
+// DUAL_FORMAT.md (LMDB 1.0), independently of LMDB. The snapshot is pinned
+// with an LMDB read transaction, which keeps writers from reusing its
+// pages while we read them. It also checks every B-tree descriptor
+// (MDB_db) against what the walk found. The format is the one of meta page
+// 0 (as rpeer and cpeer_capi decide); a 1.0 snapshot is also checked for
+// what only 1.0 records: the mp_txnid of every reachable page and the
+// MDB_ovpage of every F_BIGDATA node.
+
+package peer
+
+import (
+	"encoding/binary"
+	"fmt"
+	"os"
+	"path/filepath"
+
+	lmdb "github.com/PowerDNS/lmdb-go/tests/cgolmdb"
+)
+
+// layout is what differs between the two data-file formats (rlmdb
+// DUAL_FORMAT.md §1). The node header, MDB_db and MDB_meta are the same in
+// both; so are the last 8 bytes of the page header (mp_pad, mp_flags,
+// mp_lower/mp_upper or mp_pages), which 1.0 moves up by the 8 bytes of
+// mp_txnid.
+type layout struct {
+	name      string // the release that writes it
+	version   uint32 // mm_version: MDB_DATA_VERSION
+	hdr       int    // PAGEHDRSZ; the MDB_meta of pages 0 and 1 follows it
+	base      int    // PAGEBASE: what mp_lower, mp_upper, mp_ptrs[] count from
+	hasTxnid  bool   // mp_txnid (u64) at offset 8
+	evenKeys  bool   // NODEDATA pads the key to an even length
+	ovpage    int    // F_BIGDATA node data: pgno_t, or MDB_ovpage
+	subpDirty uint16 // P_DIRTY, which 0.9 leaves in sub-page flags
+}
+
+var layouts = [2]layout{
+	// LMDB 0.9, MDB_DATA_VERSION 1
+	{"LMDB 0.9", 1, 16, 0, false, false, 8, 0x10},
+	// LMDB 1.0, MDB_DATA_VERSION 3: mp_txnid after mp_pgno, offsets in the
+	// page relative to the end of the header (ITS#7713), MDB_ovpage
+	// {pgno, txnid, pages}, no P_DIRTY
+	{"LMDB 1.0", 3, 24, 24, true, true, 24, 0},
+}
+
+const (
+	maxPageHdr = 24
+	nodeSize   = 8
+	pBranch    = 0x01
+	pLeaf      = 0x02
+	pOverflow  = 0x04
+	pMeta      = 0x08
+	pLeaf2     = 0x20
+	pSubp      = 0x40
+	fBigdata   = 0x01
+	fSubdata   = 0x02
+	fDupdata   = 0x04
+	pInvalid   = ^uint64(0)
+	dbSize     = 48  // MDB_db
+	metaSize   = 136 // MDB_meta
+	metaMagic  = 0xBEEFC0DE
+	maxDBs     = 1024
+	maxErrors  = 20
+	// maxPages bounds last_pgno before the per-page table is allocated
+	// (rpeer's MAX_PAGES).
+	maxPages = 1 << 36
+	// maxLevel stops the descent into a crafted tree that loops (C has no
+	// limit; its cursor stack holds 32 levels).
+	maxLevel = 64
+)
+
+var le = binary.NativeEndian
+
+// rd16, rd32, rd64 read host-order integers at off, 0 past the end of p
+// (only crafted files get there; the checks report them).
+func rd16(p []byte, off int) uint16 {
+	if off < 0 || off+2 > len(p) {
+		return 0
+	}
+	return le.Uint16(p[off:])
+}
+
+func rd32(p []byte, off int) uint32 {
+	if off < 0 || off+4 > len(p) {
+		return 0
+	}
+	return le.Uint32(p[off:])
+}
+
+func rd64(p []byte, off int) uint64 {
+	if off < 0 || off+8 > len(p) {
+		return 0
+	}
+	return le.Uint64(p[off:])
+}
+
+// Page header accessors (mp_lower, mp_upper and mp_ptrs[] as stored, that
+// is relative to PAGEBASE).
+func (l *layout) pgno(p []byte) uint64    { return rd64(p, 0) }
+func (l *layout) txnid(p []byte) uint64   { return rd64(p, 8) }
+func (l *layout) pad(p []byte) uint16     { return rd16(p, l.hdr-8) }
+func (l *layout) flags(p []byte) uint16   { return rd16(p, l.hdr-6) }
+func (l *layout) lower(p []byte) int      { return int(rd16(p, l.hdr-4)) }
+func (l *layout) upper(p []byte) int      { return int(rd16(p, l.hdr-2)) }
+func (l *layout) pages(p []byte) uint32   { return rd32(p, l.hdr-4) }
+func (l *layout) emptyLower() int         { return l.hdr - l.base }
+func (l *layout) numKeys(p []byte) int    { return (l.lower(p) - l.emptyLower()) >> 1 }
+func (l *layout) ptr(p []byte, i int) int { return int(rd16(p, l.hdr+2*i)) + l.base }
+func (l *layout) nodeDataOff(ksize int) int { // NODEDATA(node) - node
+	if l.evenKeys {
+		return nodeSize + (ksize+1)&^1
+	}
+	return nodeSize + ksize
+}
+
+// dbRec is an MDB_db, decoded.
+type dbRec struct {
+	pad                                   uint32
+	flags, depth                          uint16
+	branch, leaf, overflow, entries, root uint64
+}
+
+func readDB(p []byte, off int) dbRec {
+	return dbRec{
+		pad:      rd32(p, off),
+		flags:    rd16(p, off+4),
+		depth:    rd16(p, off+6),
+		branch:   rd64(p, off+8),
+		leaf:     rd64(p, off+16),
+		overflow: rd64(p, off+24),
+		entries:  rd64(p, off+32),
+		root:     rd64(p, off+40),
+	}
+}
+
+// meta is an MDB_meta, at PAGEHDRSZ in pages 0 and 1.
+type meta struct {
+	magic, version uint32
+	mapsize        uint64
+	free, main     dbRec
+	lastPg, txnid  uint64
+}
+
+// readMeta reads the MDB_meta of meta page page in the format l.
+func readMeta(page []byte, l *layout) meta {
+	p := l.hdr
+	return meta{
+		magic:   rd32(page, p),
+		version: rd32(page, p+4),
+		mapsize: rd64(page, p+16),
+		free:    readDB(page, p+24),
+		main:    readDB(page, p+24+dbSize),
+		lastPg:  rd64(page, p+120),
+		txnid:   rd64(page, p+128),
+	}
+}
+
+func isMetaOf(page []byte, l *layout) bool {
+	m := readMeta(page, l)
+	return m.magic == metaMagic && m.version == l.version
+}
+
+// Page uses. Values >= useDB + k mean "tree of DB k".
+const (
+	useNone = iota
+	useMeta
+	useFreeListed
+	useFreeDB
+	useDB
+)
+
+type walker struct {
+	f          *os.File
+	l          *layout
+	psize      int
+	txnid      uint64 // the snapshot
+	lastPg     uint64
+	use        []uint32 // per page: use*
+	names      []string // DB k's label, for messages
+	errors     uint64
+	freeListed uint64
+}
+
+// counts are the totals found by walking one tree.
+type counts struct {
+	branch, leaf, overflow, entries uint64
+	subBranch, subLeaf              uint64 // pages of DUPSORT sub-DBs
+	subDBs, subPages                uint64
+}
+
+func (w *walker) fail(format string, a ...any) {
+	if w.errors++; w.errors > maxErrors {
+		return
+	}
+	stdout.Flush()
+	fmt.Fprintf(os.Stderr, "gopeer: check-freelist: %s\n", fmt.Sprintf(format, a...))
+}
+
+func (w *walker) useName(use uint32) string {
+	switch use {
+	case useMeta:
+		return "meta"
+	case useFreeListed:
+		return "free list"
+	case useFreeDB:
+		return "free DB tree"
+	}
+	return "tree of DB " + w.names[use-useDB]
+}
+
+// mark records that pages pgno..pgno+n-1 are used by use.
+func (w *walker) mark(pgno, n uint64, use uint32) {
+	for p := pgno; p < pgno+n; p++ {
+		if p > w.lastPg {
+			w.fail("page %d (%s) is beyond last_pgno %d", p, w.useName(use), w.lastPg)
+			return
+		}
+		if w.use[p] != useNone {
+			w.fail("page %d used twice: %s and %s", p, w.useName(w.use[p]), w.useName(use))
+			continue
+		}
+		w.use[p] = use
+	}
+}
+
+// load reads n pages starting at pgno; nil (after reporting) on error.
+func (w *walker) load(pgno, n uint64) []byte {
+	if pgno < 2 || pgno+n-1 > w.lastPg {
+		w.fail("page reference %d (+%d) outside 2..%d", pgno, n, w.lastPg)
+		return nil
+	}
+	buf := make([]byte, n*uint64(w.psize))
+	got, err := w.f.ReadAt(buf, int64(pgno)*int64(w.psize))
+	if got != len(buf) {
+		w.fail("short read of page %d: %d of %d bytes (%v)", pgno, got, len(buf), err)
+		return nil
+	}
+	return buf
+}
+
+// checkTxnid (1.0): a page reachable from the snapshot was written by a
+// transaction of it, so 1 <= mp_txnid <= snapshot txnid.
+func (w *walker) checkTxnid(pgno uint64, page []byte) {
+	if !w.l.hasTxnid {
+		return
+	}
+	if t := w.l.txnid(page); t == 0 || t > w.txnid {
+		w.fail("page %d: mp_txnid %d is not in 1..%d (the snapshot)", pgno, t, w.txnid)
+	}
+}
+
+// node is a node of a branch/leaf page, with offsets into its page.
+type node struct {
+	flags, ksize    int
+	dsize           uint32 // leaf nodes
+	child           uint64 // branch nodes
+	keyOff, dataOff int
+}
+
+// readNode reads node i; false if it does not fit in the page.
+func (w *walker) readNode(page []byte, i int) (node, bool) {
+	off := w.l.ptr(page, i)
+	if off < w.l.hdr || off+nodeSize > len(page) {
+		return node{}, false
+	}
+	lo, hi := uint64(rd16(page, off)), uint64(rd16(page, off+2))
+	n := node{
+		flags:  int(rd16(page, off+4)),
+		ksize:  int(rd16(page, off+6)),
+		keyOff: off + nodeSize,
+	}
+	n.dsize = uint32(lo | hi<<16)
+	n.child = lo | hi<<16 | uint64(n.flags)<<32
+	n.dataOff = off + w.l.nodeDataOff(n.ksize)
+	return n, off+nodeSize+n.ksize <= len(page)
+}
+
+// dataLen is the bytes the data part of leaf node n takes in its page.
+func (w *walker) dataLen(n node) int {
+	if n.flags&fBigdata != 0 {
+		return w.l.ovpage
+	}
+	return int(n.dsize)
+}
+
+type treeKind int
+
+const (
+	treeFree treeKind = iota
+	treeMain
+	treeNamed
+	treeDupSub
+)
+
+type tree struct {
+	kind     treeKind
+	use      uint32
+	depth    int  // expected leaf level (MDB_db.md_depth)
+	dupfixed bool // the DB has MDB_DUPFIXED
+	c        counts
+	// named DBs found in the main DB, walked afterwards
+	subNames []string
+	subDBs   []dbRec
+}
+
+// checkOvpage (1.0): the MDB_ovpage {op_pgno, op_txnid, op_pages} of an
+// F_BIGDATA node against the first page ov of its run.
+func (w *walker) checkOvpage(page []byte, n node, ov []byte) {
+	if !w.l.hasTxnid {
+		return
+	}
+	pg := rd64(page, n.dataOff)
+	opTxnid, opPages := rd64(page, n.dataOff+8), rd64(page, n.dataOff+16)
+	if opPages != uint64(w.l.pages(ov)) {
+		w.fail("overflow page %d: op_pages %d in the node, mp_pages %d in the page", pg, opPages, w.l.pages(ov))
+	}
+	if opTxnid == 0 || opTxnid > w.l.txnid(ov) {
+		w.fail("overflow page %d: op_txnid %d is not in 1..%d (its mp_txnid)", pg, opTxnid, w.l.txnid(ov))
+	}
+}
+
+// nodeData is the data of leaf node n, following F_BIGDATA to its
+// overflow pages (nil on error), and the number of overflow pages.
+func (w *walker) nodeData(t *tree, page []byte, n node) ([]byte, uint64) {
+	if n.flags&fBigdata == 0 {
+		return append([]byte(nil), page[n.dataOff:n.dataOff+int(n.dsize)]...), 0
+	}
+	pg := rd64(page, n.dataOff)
+	ov := w.load(pg, 1)
+	if ov == nil {
+		return nil, 0
+	}
+	npages := uint64(w.l.pages(ov))
+	if w.l.pgno(ov) != pg || w.l.flags(ov)&pOverflow == 0 {
+		w.fail("page %d should be an overflow page (flags 0x%x)", pg, w.l.flags(ov))
+		return nil, 0
+	}
+	w.checkTxnid(pg, ov)
+	w.checkOvpage(page, n, ov)
+	if npages == 0 || uint64(n.dsize)+uint64(w.l.hdr) > npages*uint64(w.psize) {
+		w.fail("overflow page %d: %d pages for %d bytes", pg, npages, n.dsize)
+		return nil, 0
+	}
+	w.mark(pg, npages, t.use)
+	if ov = w.load(pg, npages); ov == nil {
+		return nil, npages
+	}
+	return ov[w.l.hdr : w.l.hdr+int(n.dsize)], npages
+}
+
+// freeRecord checks a free DB record: key = txnid, data = [count,
+// pgno...] descending.
+func (w *walker) freeRecord(page []byte, n node, data []byte) {
+	if n.ksize != 8 {
+		w.fail("free DB key of %d bytes", n.ksize)
+		return
+	}
+	txnid := rd64(page, n.keyOff)
+	count := rd64(data, 0)
+	if n.dsize < 8 || (count+1)*8 > uint64(n.dsize) {
+		w.fail("free DB record %d: %d bytes do not hold its page list", txnid, n.dsize)
+		return
+	}
+	prev := pInvalid
+	for k := uint64(0); k < count; k++ {
+		pg := rd64(data, int(8*(k+1)))
+		if pg >= prev {
+			w.fail("free DB record %d is not sorted descending at %d", txnid, pg)
+		}
+		prev = pg
+		w.mark(pg, 1, useFreeListed)
+	}
+	w.freeListed += count
+}
+
+// cName is a DB name as C prints it: its bytes up to the first NUL (C 1.0
+// stores the name with its terminating NUL as the key, 0.9 without).
+func cName(b []byte) string {
+	for k, c := range b {
+		if c == 0 {
+			return string(b[:k])
+		}
+	}
+	return string(b)
+}
+
+// leafNode checks a leaf node of a main, named or sub-DB.
+func (w *walker) leafNode(t *tree, page []byte, n node) {
+	switch f := n.flags & (fBigdata | fSubdata | fDupdata); f {
+	case fBigdata:
+		_, ovpages := w.nodeData(t, page, n)
+		t.c.overflow += ovpages
+		t.c.entries++
+	case fSubdata | fDupdata:
+		// DUPSORT values in a sub-DB of their own
+		if n.dsize != dbSize {
+			w.fail("sub-DB record of %d bytes", n.dsize)
+			return
+		}
+		sc := w.walkDB(w.names[t.use-useDB], readDB(page, n.dataOff), treeDupSub, t.use)
+		t.c.subBranch += sc.branch
+		t.c.subLeaf += sc.leaf
+		t.c.entries += sc.entries
+		t.c.subDBs++
+	case fDupdata:
+		// DUPSORT values in a sub-page inside the node: P_LEAF|P_SUBP
+		// (|P_LEAF2), and in 0.9 maybe P_DIRTY, which C 0.9 sets
+		sp := page[n.dataOff : n.dataOff+int(n.dsize)]
+		want := uint16(pLeaf | pSubp)
+		if t.dupfixed {
+			want |= pLeaf2
+		}
+		l := w.l
+		if int(n.dsize) < l.hdr || l.flags(sp)&^l.subpDirty != want ||
+			l.lower(sp) < l.emptyLower() || l.lower(sp)+l.base > int(n.dsize) {
+			w.fail("bad sub-page in DB %s (flags 0x%x, %d bytes)", w.names[t.use-useDB],
+				l.flags(page[n.dataOff:]), n.dsize)
+			return
+		}
+		t.c.entries += uint64(l.numKeys(sp))
+		t.c.subPages++
+	case fSubdata:
+		// a named DB, only valid in the main DB
+		if t.kind != treeMain || n.dsize != dbSize {
+			w.fail("unexpected named-DB record in DB %s", w.names[t.use-useDB])
+			return
+		}
+		t.subNames = append(t.subNames, cName(page[n.keyOff:n.keyOff+n.ksize]))
+		t.subDBs = append(t.subDBs, readDB(page, n.dataOff))
+		t.c.entries++
+	case 0:
+		if t.kind == treeDupSub && n.dsize != 0 {
+			w.fail("sub-DB node with %d data bytes", n.dsize)
+		}
+		t.c.entries++
+	default:
+		w.fail("bad node flags 0x%x in DB %s", n.flags, w.names[t.use-useDB])
+	}
+}
+
+func (w *walker) walkPage(t *tree, pgno uint64, level int) {
+	page := w.load(pgno, 1)
+	if page == nil {
+		return
+	}
+	l := w.l
+	flags := l.flags(page)
+	if l.pgno(page) != pgno {
+		w.fail("page %d says it is page %d", pgno, l.pgno(page))
+		return
+	}
+	w.checkTxnid(pgno, page)
+	if l.lower(page) < l.emptyLower() || l.lower(page) > l.upper(page) || l.upper(page)+l.base > w.psize {
+		w.fail("page %d: bad lower/upper %d/%d", pgno, l.lower(page), l.upper(page))
+		return
+	}
+	w.mark(pgno, 1, t.use)
+	nkeys := l.numKeys(page)
+
+	switch {
+	case flags&pBranch != 0:
+		t.c.branch++
+		if level >= t.depth {
+			w.fail("branch page %d at level %d of a tree of depth %d", pgno, level, t.depth)
+		}
+		if level >= maxLevel {
+			return
+		}
+		for i := 0; i < nkeys; i++ {
+			n, ok := w.readNode(page, i)
+			if !ok {
+				w.fail("branch page %d: node %d out of bounds", pgno, i)
+				break
+			}
+			w.walkPage(t, n.child, level+1)
+		}
+	case flags&pLeaf != 0:
+		t.c.leaf++
+		if level != t.depth {
+			w.fail("leaf page %d at level %d of a tree of depth %d", pgno, level, t.depth)
+		}
+		if flags&pLeaf2 != 0 {
+			// DUPFIXED sub-DB: packed values, size in mp_pad
+			if t.kind != treeDupSub || l.pad(page) == 0 {
+				w.fail("unexpected LEAF2 page %d", pgno)
+			}
+			t.c.entries += uint64(nkeys)
+			return
+		}
+		for i := 0; i < nkeys; i++ {
+			n, ok := w.readNode(page, i)
+			if !ok || n.dataOff+w.dataLen(n) > w.psize {
+				w.fail("leaf page %d: node %d out of bounds", pgno, i)
+				break
+			}
+			if t.kind == treeFree {
+				data, ovpages := w.nodeData(t, page, n)
+				t.c.overflow += ovpages
+				t.c.entries++
+				if data != nil {
+					w.freeRecord(page, n, data)
+				}
+			} else {
+				w.leafNode(t, page, n)
+			}
+		}
+	default:
+		w.fail("page %d has unexpected flags 0x%x", pgno, flags)
+	}
+}
+
+// walkDB walks a whole tree, compares the totals with its MDB_db, prints
+// its line (except for sub-DBs), then walks the named DBs it records.
+func (w *walker) walkDB(label string, db dbRec, kind treeKind, use uint32) counts {
+	t := &tree{kind: kind, use: use, depth: int(db.depth), dupfixed: db.flags&lmdb.DupFixed != 0}
+	if db.root == pInvalid {
+		if db.depth != 0 || db.branch != 0 || db.leaf != 0 || db.overflow != 0 || db.entries != 0 {
+			w.fail("DB %s is empty but its descriptor has depth %d, entries %d", label, db.depth, db.entries)
+		}
+	} else {
+		w.walkPage(t, db.root, 1)
+	}
+
+	// Since ITS#9388 a DUPSORT DB's branch/leaf counts include the pages
+	// of its sub-DBs; overflow pages never occur in sub-DBs.
+	wantBranch, wantLeaf := t.c.branch+t.c.subBranch, t.c.leaf+t.c.subLeaf
+	if db.branch != wantBranch || db.leaf != wantLeaf || db.overflow != t.c.overflow || db.entries != t.c.entries {
+		sub := ""
+		if kind == treeDupSub {
+			sub = " (a sub-DB)"
+		}
+		w.fail("DB %s%s: descriptor says branch=%d leaf=%d overflow=%d entries=%d,"+
+			" walk found branch=%d leaf=%d overflow=%d entries=%d",
+			label, sub, db.branch, db.leaf, db.overflow, db.entries,
+			wantBranch, wantLeaf, t.c.overflow, t.c.entries)
+	}
+	if kind != treeDupSub {
+		printf("db=%s flags=0x%x depth=%d branch_pages=%d leaf_pages=%d"+
+			" overflow_pages=%d entries=%d subdbs=%d subpages=%d\n",
+			label, db.flags, db.depth, wantBranch, wantLeaf, t.c.overflow,
+			t.c.entries, t.c.subDBs, t.c.subPages)
+	}
+
+	// Named DBs recorded in the main DB are trees of their own.
+	for k, name := range t.subNames {
+		if len(w.names) == maxDBs {
+			w.fail("too many named DBs")
+			break
+		}
+		w.names = append(w.names, name)
+		w.walkDB(name, t.subDBs[k], treeNamed, useDB+uint32(len(w.names)-1))
+	}
+	return t.c
+}
+
+// wrongFormat stops with a clear message: meta page k (its first bytes in
+// buf) is not a meta page of the format l of meta page 0.
+func wrongFormat(k int, buf []byte, l *layout) {
+	other := &layouts[0]
+	if l == other {
+		other = &layouts[1]
+	}
+	if o := readMeta(buf, other); o.magic == metaMagic && o.version == other.version {
+		die(exitMismatch, "check-freelist: meta page %d is in the %s format (data version %d),"+
+			" but this program decodes %s files (data version %d)", k, other.name, o.version, l.name, l.version)
+	}
+	m := readMeta(buf, l)
+	die(exitMismatch, "check-freelist: meta page %d: magic 0x%x version %d at offset %d,"+
+		" not an %s meta page (magic 0x%x version %d)", k, m.magic, m.version, l.hdr, l.name, metaMagic, l.version)
+}
+
+// pickMeta reads both meta pages and returns the one of snapshot txnid and
+// the format of the file, which meta page 0 tells; meta page 1 must be in
+// the same format. *psize becomes the page size recorded in meta page 0,
+// which also locates meta page 1.
+func pickMeta(f *os.File, txnid uint64, psize *int) (meta, *layout, bool) {
+	var l *layout
+	for k := 0; k < 2; k++ {
+		buf := make([]byte, maxPageHdr+metaSize)
+		off := int64(0)
+		if k == 1 {
+			off = int64(*psize)
+		}
+		if n, _ := f.ReadAt(buf, off); n != len(buf) {
+			die(exitLMDB, "check-freelist: cannot read meta page %d", k)
+		}
+		if l == nil {
+			for j := range layouts {
+				if isMetaOf(buf, &layouts[j]) {
+					l = &layouts[j]
+					break
+				}
+			}
+			if l == nil {
+				a, b := readMeta(buf, &layouts[0]), readMeta(buf, &layouts[1])
+				die(exitMismatch, "check-freelist: meta page %d is neither an LMDB 0.9 nor an LMDB 1.0"+
+					" meta page (magic 0x%x version %d at offset %d, magic 0x%x version %d at offset %d)",
+					k, a.magic, a.version, layouts[0].hdr, b.magic, b.version, layouts[1].hdr)
+			}
+		}
+		if !isMetaOf(buf, l) {
+			wrongFormat(k, buf, l)
+		}
+		m := readMeta(buf, l)
+		if l.pgno(buf) != uint64(k) || l.flags(buf)&pMeta == 0 {
+			die(exitMismatch, "check-freelist: page %d is not a meta page", k)
+		}
+		if k == 0 {
+			*psize = int(m.free.pad) // mm_psize
+		}
+		if m.txnid == txnid {
+			return m, l, true
+		}
+	}
+	return meta{}, nil, false
+}
+
+func cmdCheckFreelist(o *opts) int {
+	env := openEnv(o, lmdb.Readonly)
+	path, err := env.Path()
+	check(err, "mdb_env_get_path")
+	fname := path
+	if !o.nosubdir {
+		fname = filepath.Join(path, "data.mdb")
+	}
+	f, err := os.Open(fname)
+	if err != nil {
+		die(exitLMDB, "open %s: %v", fname, err)
+	}
+	defer f.Close()
+	st, err := env.Stat()
+	check(err, "mdb_env_stat")
+	w := &walker{f: f, psize: int(st.PSize)}
+
+	// Pin a snapshot, then find its meta page. A concurrent writer may
+	// already have overwritten it (two commits later); then try again.
+	var m meta
+	var txn *lmdb.Txn
+	for tries := 0; ; tries++ {
+		txn = beginRead(env)
+		w.txnid = uint64(txn.ID())
+		var ok bool
+		if m, w.l, ok = pickMeta(f, w.txnid, &w.psize); ok {
+			break
+		}
+		txn.Abort()
+		if tries == 100 {
+			die(exitMismatch, "check-freelist: no meta page has txnid %d", w.txnid)
+		}
+	}
+	if m.lastPg >= maxPages {
+		die(exitMismatch, "check-freelist: implausible last_pgno %d", m.lastPg)
+	}
+	if w.psize != int(st.PSize) {
+		w.fail("meta psize %d, mdb_env_stat says %d", w.psize, st.PSize)
+	}
+	if w.psize < w.l.hdr+metaSize {
+		die(exitMismatch, "check-freelist: implausible page size %d", w.psize)
+	}
+
+	w.lastPg = m.lastPg
+	w.use = make([]uint32, m.lastPg+1)
+	w.use[0] = useMeta
+	if m.lastPg >= 1 {
+		w.use[1] = useMeta
+	}
+	printf("psize=%d\ntxnid=%d\nlast_pgno=%d\n", w.psize, w.txnid, m.lastPg)
+
+	w.names = []string{"-"}
+	fc := w.walkDB("@free", m.free, treeFree, useFreeDB)
+	w.walkDB("-", m.main, treeMain, useDB+0)
+	txn.Abort()
+
+	var leaks, inTrees uint64
+	for p := uint64(0); p <= m.lastPg; p++ {
+		switch {
+		case w.use[p] == useNone:
+			if leaks < maxErrors {
+				w.fail("page %d is leaked (neither used nor free)", p)
+			}
+			leaks++
+		case w.use[p] >= useDB:
+			inTrees++
+		}
+	}
+	printf("pages_meta=2\npages_freedb=%d\npages_free=%d\npages_tree=%d\n"+
+		"pages_leaked=%d\npages_total=%d\n",
+		fc.branch+fc.leaf+fc.overflow, w.freeListed, inTrees, leaks, m.lastPg+1)
+	env.Close()
+	if w.errors > 0 {
+		printf("errors=%d\n", w.errors)
+		return exitMismatch
+	}
+	printf("ok\n")
+	return 0
+}
