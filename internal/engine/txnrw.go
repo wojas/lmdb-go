@@ -116,7 +116,7 @@ func (e *Env) beginWrite() (*Txn, error) {
 		return nil, err
 	}
 	unlock := func() {
-		e.lock.UnlockWriter()
+		_ = e.lock.UnlockWriter() // same goroutine as LockWriter: cannot fail
 		e.writerMu.Unlock()
 	}
 	var last uint64
@@ -167,10 +167,18 @@ func (e *Env) beginWrite() (*Txn, error) {
 // end is mdb_txn_end for a top-level write transaction: export (keep) or
 // close the handles of databases this transaction created
 // (mdb_dbis_update), drop the dirty pages and cursors, unlock.
-func (t *Txn) end(keep bool) {
+//
+// The error is the writer mutex's unlock failing: the transaction ended on
+// another OS thread than the one that began it (Linux: EPERM). The mutex
+// stays held by the beginning thread; C ignores this (UNLOCK_MUTEX). The
+// in-process lock is released all the same, so that once that thread ends
+// (its goroutine exits while still pinned) the next writer recovers the
+// mutex from its dead owner instead of every writer of the process
+// waiting forever.
+func (t *Txn) end(keep bool) error {
 	w := t.w
 	if w.flags&txnFinished != 0 {
-		return
+		return nil
 	}
 	if w.parent != nil {
 		if keep {
@@ -178,7 +186,7 @@ func (t *Txn) end(keep bool) {
 		} else {
 			t.endNested(endAbort)
 		}
-		return
+		return nil
 	}
 	r := &t.env.dbis
 	for i := format.CoreDBs; i < len(t.dbs); i++ {
@@ -203,9 +211,11 @@ func (t *Txn) end(keep bool) {
 		e.writer.pgOldest = w.pgOldest
 		e.writer.pbufPad = w.pbufPad
 		t.releaseMap()
-		e.lock.UnlockWriter()
+		err := e.lock.UnlockWriter()
 		e.writerMu.Unlock()
+		return err
 	}
+	return nil
 }
 
 // wroteMeta: after mdb_env_write_meta wrote meta and published its txnid,
@@ -251,7 +261,7 @@ func (t *Txn) abortWrite() {
 	if t.w.child != nil {
 		t.w.child.abortWrite()
 	}
-	t.end(false)
+	_ = t.end(false) // mdb_txn_abort reports nothing; see end
 }
 
 // commitWrite is mdb_txn_commit of a write transaction. On failure the
@@ -280,12 +290,15 @@ func (t *Txn) commitWrite() error {
 	}
 	if w.flags&txnHasChild != 0 {
 		if err := w.child.commitWrite(); err != nil {
-			t.end(false)
+			_ = t.end(false)
 			return err
 		}
 	}
 	err := t.commit0()
-	t.end(err == nil)
+	if uerr := t.end(err == nil); err == nil {
+		// Committed, but the writer mutex is still held (see end).
+		err = uerr
+	}
 	return err
 }
 

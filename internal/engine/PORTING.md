@@ -84,8 +84,11 @@ Status of the stage-1 engine port (PLAN.md, agent E). rlmdb sources:
   `Env.Info`). `ReaderInfo` lives in `internal/format` so that lockfile can
   implement the interface without importing engine. `OpenLockFunc` must
   return a nil interface (not a typed nil pointer) for "no lock file".
-* The environment variable for the default format is rlmdb's
-  `RLMDB_DEFAULT_FORMAT` (`engine.DefaultFormatEnv`); stage 2 may rename.
+* The environment variable for the default format is lmdb-go v2's
+  `LMDBGO_DEFAULT_FORMAT` (`engine.DefaultFormatEnv`, v2's values `0.9`,
+  `09`, `9`, `1.0`, `10`) with the semantics of rlmdb's
+  `RLMDB_DEFAULT_FORMAT` (experimental; read at every open of a new
+  environment).
 
 ## Ledger: deviations from C and rlmdb
 

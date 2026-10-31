@@ -23,13 +23,16 @@ type LockRegion interface {
 	Downgrade(txnid uint64) error
 	// MaxReaders is the number of slots in the table (me_maxreaders).
 	MaxReaders() uint32
-	// LockWriter blocks until this process owns the writer mutex. On Linux
-	// the calling goroutine must be locked to its OS thread until
-	// UnlockWriter. newestTxnid repairs the state after a dead owner
-	// (mdb_mutex_failed): it returns the txnid of the newest meta page.
+	// LockWriter blocks until this process owns the writer mutex. It pins
+	// the calling goroutine to its OS thread (the Linux mutex is owned by
+	// a thread) until UnlockWriter, which the same goroutine must call.
+	// newestTxnid repairs the state after a dead owner (mdb_mutex_failed):
+	// it returns the txnid of the newest meta page.
 	LockWriter(newestTxnid func() (uint64, error)) error
-	// UnlockWriter unlocks the writer mutex, on the thread that locked it.
-	UnlockWriter()
+	// UnlockWriter unlocks the writer mutex and unpins the goroutine. It
+	// fails (Linux: EPERM) when called on another thread than LockWriter;
+	// the mutex then stays held by that thread.
+	UnlockWriter() error
 	// TxnID is mti_txnid, the last committed transaction.
 	TxnID() uint64
 	// SetTxnID sets mti_txnid (after a commit).

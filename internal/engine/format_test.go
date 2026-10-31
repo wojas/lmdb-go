@@ -75,9 +75,17 @@ func TestFormatSelection(t *testing.T) {
 	}
 	env.Close()
 	SetDefaultFormat(0)
-	t.Setenv(DefaultFormatEnv, "1.0")
-	if DefaultFormat() != format.V10 {
-		t.Fatal(DefaultFormat())
+	for _, v := range []string{"1.0", "10"} {
+		t.Setenv(DefaultFormatEnv, v)
+		if DefaultFormat() != format.V10 {
+			t.Fatal(v, DefaultFormat())
+		}
+	}
+	for _, v := range []string{"0.9", "09", "9"} {
+		t.Setenv(DefaultFormatEnv, v)
+		if DefaultFormat() != format.V09 {
+			t.Fatal(v, DefaultFormat())
+		}
 	}
 	t.Setenv(DefaultFormatEnv, "bogus")
 	if DefaultFormat() != format.V09 {

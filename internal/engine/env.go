@@ -712,11 +712,24 @@ func chooseFormat(found format.Format, hasFound bool, requested format.Format) (
 }
 
 // DefaultFormatEnv is the environment variable that sets the format of new
-// environments that do not ask for one: "0.9" or "1.0". Experimental, as
-// rlmdb's RLMDB_DEFAULT_FORMAT: a stray variable silently creates 1.0
-// files that C LMDB 0.9 cannot open; prefer SetDefaultFormat. Read at
-// every open of a new environment; other values are ignored.
-const DefaultFormatEnv = "RLMDB_DEFAULT_FORMAT"
+// environments that do not ask for one: lmdb-go v2's LMDBGO_DEFAULT_FORMAT,
+// with v2's values ("0.9", "09" or "9"; "1.0" or "10"). Experimental, as
+// v2's and rlmdb's RLMDB_DEFAULT_FORMAT, whose semantics it has: a stray
+// variable silently creates 1.0 files that C LMDB 0.9 cannot open; prefer
+// SetDefaultFormat. Read at every open of a new environment; other values
+// are ignored.
+const DefaultFormatEnv = "LMDBGO_DEFAULT_FORMAT"
+
+// formatFromEnv parses a value of DefaultFormatEnv as lmdb-go v2 does.
+func formatFromEnv(v string) (format.Format, bool) {
+	switch v {
+	case "0.9", "09", "9":
+		return format.V09, true
+	case "1.0", "10":
+		return format.V10, true
+	}
+	return 0, false
+}
 
 var processDefaultFormat atomic.Uint32
 
@@ -735,7 +748,7 @@ func DefaultFormat() format.Format {
 	if f := ProcessDefaultFormat(); f != 0 {
 		return f
 	}
-	if f, ok := format.FormatFromName(os.Getenv(DefaultFormatEnv)); ok {
+	if f, ok := formatFromEnv(os.Getenv(DefaultFormatEnv)); ok {
 		return f
 	}
 	return format.V09

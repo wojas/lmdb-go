@@ -14,7 +14,7 @@ const (
 )
 
 // String returns the name of the format as users write it: "0.9" or
-// "1.0" (the values of RLMDB_DEFAULT_FORMAT).
+// "1.0".
 func (f Format) String() string {
 	switch f {
 	case V09:
