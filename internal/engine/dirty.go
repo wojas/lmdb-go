@@ -51,21 +51,43 @@ const hints = 16
 // poolMaxBytes is the most memory a pagePool keeps between transactions.
 const poolMaxBytes = 256 << 20
 
-// pagePool keeps spare single-page buffers (C's me_dpages). Between write
-// transactions it keeps as many as the last transaction used, up to
-// poolMaxBytes. Overflow runs are not pooled.
+// pagePool keeps spare page buffers (C's me_dpages): single pages and
+// overflow runs (by length; C frees those). Between write transactions it
+// keeps as many single pages, and as many bytes of runs, as the last
+// transaction used, each up to poolMaxBytes.
 type pagePool struct {
 	pageSize int
 	max      int
 	free     [][]byte
 	used     int
+	// runs are the spare overflow runs by length in pages, runBytes their
+	// size; runUsed is the size of the runs taken since the last trim.
+	runs              map[int][][]byte
+	runBytes, runUsed int
 }
 
 func newPagePool(pageSize int) pagePool {
 	return pagePool{pageSize: pageSize, max: poolMaxBytes / max(pageSize, 1)}
 }
 
+// isRun reports a buffer size of an overflow run of more than one page.
+func (p *pagePool) isRun(n int) bool {
+	return p.pageSize != 0 && n > p.pageSize && n%p.pageSize == 0
+}
+
 func (p *pagePool) take(n int) []byte {
+	if p.isRun(n) {
+		p.runUsed += n
+		k := n / p.pageSize
+		if l := p.runs[k]; len(l) > 0 {
+			b := l[len(l)-1]
+			l[len(l)-1] = nil
+			p.runs[k] = l[:len(l)-1]
+			p.runBytes -= n
+			return b
+		}
+		return nil
+	}
 	if n != p.pageSize || p.pageSize == 0 {
 		return nil
 	}
@@ -80,6 +102,17 @@ func (p *pagePool) take(n int) []byte {
 }
 
 func (p *pagePool) put(b []byte) {
+	if p.isRun(len(b)) {
+		if p.runBytes+len(b) <= poolMaxBytes {
+			if p.runs == nil {
+				p.runs = make(map[int][][]byte)
+			}
+			k := len(b) / p.pageSize
+			p.runs[k] = append(p.runs[k], b)
+			p.runBytes += len(b)
+		}
+		return
+	}
 	if len(b) == p.pageSize && p.pageSize != 0 && len(p.free) < p.max {
 		p.free = append(p.free, b)
 	}
@@ -91,13 +124,22 @@ func (p *pagePool) merge(o *pagePool) {
 		p.pageSize, p.max = o.pageSize, o.max
 	}
 	p.used += o.used
+	p.runUsed += o.runUsed
 	if len(p.free) == 0 {
 		// A nested transaction borrowing its parent's spares, or giving
-		// them back: take the list itself.
+		// them back: take the lists themselves.
 		p.free, o.free = o.free, nil
+	}
+	if p.runBytes == 0 {
+		p.runs, p.runBytes, o.runs = o.runs, o.runBytes, nil
 	}
 	for _, b := range o.free {
 		p.put(b)
+	}
+	for _, l := range o.runs {
+		for _, b := range l {
+			p.put(b)
+		}
 	}
 	*o = pagePool{}
 }
@@ -109,6 +151,18 @@ func (p *pagePool) trim() {
 		p.free = p.free[:p.used]
 	}
 	p.used = 0
+	for k, l := range p.runs {
+		if p.runBytes <= p.runUsed {
+			break
+		}
+		for len(l) > 0 && p.runBytes > p.runUsed {
+			l[len(l)-1] = nil
+			l = l[:len(l)-1]
+			p.runBytes -= k * p.pageSize
+		}
+		p.runs[k] = l
+	}
+	p.runUsed = 0
 }
 
 // scratchStack is the page-sized scratch space of the write path's
@@ -273,8 +327,16 @@ func (d *dirtyPages) allocData(n, off int, data []byte) []byte {
 	if off < 0 || len(data) > n-off {
 		return nil
 	}
-	b := d.allocZeroed(n)
-	copy(b[off:], data)
+	b := d.pool.take(n)
+	if b == nil {
+		b = make([]byte, n)
+		copy(b[off:], data)
+		return b
+	}
+	// Zero only what data does not cover.
+	end := off + copy(b[off:], data)
+	clear(b[:off])
+	clear(b[end:])
 	return b
 }
 

@@ -50,7 +50,7 @@ const (
 	allocsPutReserve   = 0
 	allocsPutDup       = 2
 	allocsSub          = 14
-	allocsUpdateBigPut = 2
+	allocsUpdateBigPut = 1
 )
 
 // allocKeys is how many keys the cases' databases hold.
