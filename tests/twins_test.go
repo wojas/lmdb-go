@@ -10,7 +10,7 @@ import (
 
 // twins are the packages written against the cgo reference (<dir>/cgo)
 // whose port twin (<dir>/port) gen-port.sh writes.
-var twins = []string{"gopeer"}
+var twins = []string{"bench", "gopeer"}
 
 // TestPortTwinsUpToDate checks that every generated port twin is what
 // gen-port.sh makes of its cgo source now (run go generate ./... after
