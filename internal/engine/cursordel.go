@@ -29,8 +29,9 @@ func pageFill(ps int, p format.Page) int {
 	return 1000 * max(space-p.SizeLeft(), 0) / space
 }
 
-// firstKey is the key of the first item of a page, copied.
-func firstKey(p format.Page, ksize int) ([]byte, error) {
+// firstKey is the key of the first item of a page, copied into *buf (a
+// scratch buffer of the write transaction, grown if needed).
+func firstKey(buf *[]byte, p format.Page, ksize int) ([]byte, error) {
 	var k []byte
 	var ok bool
 	if p.IsLeaf2() {
@@ -44,7 +45,13 @@ func firstKey(p format.Page, ksize int) ([]byte, error) {
 	if !ok {
 		return nil, format.Corrupted
 	}
-	return append([]byte(nil), k...), nil
+	return copyInto(buf, k), nil
+}
+
+// copyInto copies b into the scratch buffer *buf and returns the copy.
+func copyInto(buf *[]byte, b []byte) []byte {
+	*buf = append((*buf)[:0], b...)
+	return *buf
 }
 
 // delAt is _mdb_cursor_del: delete the item at mc; with MDB_NODUPDATA all
@@ -612,7 +619,7 @@ func (t *Txn) lowestKeyBelow(mc cref) ([]byte, cref, error) {
 		t.closeSlot(mn.slot)
 		return nil, mn, err
 	}
-	k, err := firstKey(p, int(t.dbOf(mn).Pad))
+	k, err := firstKey(&t.w.lowKey, p, int(t.dbOf(mn).Pad))
 	if err != nil {
 		t.closeSlot(mn.slot)
 		return nil, mn, err
@@ -623,6 +630,13 @@ func (t *Txn) lowestKeyBelow(mc cref) ([]byte, cref, error) {
 // pageMerge is mdb_page_merge: move all nodes of csrc's page to cdst's
 // page, unlink and free the source page, then rebalance the parent.
 func (t *Txn) pageMerge(csrc, cdst cref) error {
+	mark := t.w.scratch.mark()
+	err := t.pageMerge0(csrc, cdst)
+	t.w.scratch.release(mark)
+	return err
+}
+
+func (t *Txn) pageMerge0(csrc, cdst cref) error {
 	if t.cur(csrc).snum < 2 || t.cur(cdst).snum < 2 {
 		return format.Corrupted // can't merge root page
 	}
@@ -635,7 +649,9 @@ func (t *Txn) pageMerge(csrc, cdst cref) error {
 	if err != nil {
 		return err
 	}
-	src := append([]byte(nil), sp.B...)
+	// A copy, as rlmdb takes (C reads the source page itself).
+	src := t.w.scratch.take(len(sp.B))
+	copy(src, sp.B)
 	srcp, ok := format.NewPage(src, t.l)
 	if !ok {
 		return format.Corrupted
@@ -773,7 +789,7 @@ func (t *Txn) nodeMove(csrc, cdst cref, fromleft bool) error {
 		if !ok {
 			return format.Corrupted
 		}
-		key = append([]byte(nil), k...)
+		key = copyInto(&t.w.moveKey, k)
 	} else {
 		ki := t.cur(csrc).kiTop()
 		srcIsBranch := sp.IsBranch()
@@ -785,13 +801,13 @@ func (t *Txn) nodeMove(csrc, cdst cref, fromleft bool) error {
 		if !ok {
 			return format.Corrupted
 		}
-		nkey := append([]byte(nil), nk...)
+		nkey := nk
 		if sp.IsLeaf() {
 			body, err := nodeBodyOf(n)
 			if err != nil {
 				return err
 			}
-			data = &nodeVal{size: n.DataSize(), bytes: append([]byte(nil), body...)}
+			data = &nodeVal{size: n.DataSize(), bytes: copyInto(&t.w.moveData, body)}
 		} else {
 			data = &nodeVal{bytes: []byte{}}
 		}
@@ -808,7 +824,7 @@ func (t *Txn) nodeMove(csrc, cdst cref, fromleft bool) error {
 			if err != nil {
 				return err
 			}
-			k, err := firstKey(lp, ksizePad)
+			k, err := firstKey(&t.w.moveKey, lp, ksizePad)
 			if err != nil {
 				return err
 			}
@@ -816,7 +832,7 @@ func (t *Txn) nodeMove(csrc, cdst cref, fromleft bool) error {
 			w.snum, w.top = snum, top
 			key = k
 		} else {
-			key = nkey
+			key = copyInto(&t.w.moveKey, nkey)
 		}
 	}
 	dp, err := t.topPage(cdst)
@@ -857,7 +873,7 @@ func (t *Txn) nodeMove(csrc, cdst cref, fromleft bool) error {
 			if err != nil {
 				return err
 			}
-			k, err := firstKey(p, ksizePad)
+			k, err := firstKey(&t.w.sepKey, p, ksizePad)
 			if err != nil {
 				return err
 			}
@@ -890,7 +906,7 @@ func (t *Txn) nodeMove(csrc, cdst cref, fromleft bool) error {
 			if err != nil {
 				return err
 			}
-			k, err := firstKey(p, ks)
+			k, err := firstKey(&t.w.sepKey, p, ks)
 			if err != nil {
 				return err
 			}

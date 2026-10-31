@@ -27,7 +27,12 @@
 
 package engine
 
-import "sort"
+import (
+	"slices"
+	"sort"
+
+	"github.com/PowerDNS/lmdb-go/internal/format"
+)
 
 // spillSet is mt_spill_pgs: page numbers this transaction wrote to the
 // data file before commit.
@@ -51,21 +56,43 @@ const hints = 16
 // poolMaxBytes is the most memory a pagePool keeps between transactions.
 const poolMaxBytes = 256 << 20
 
-// pagePool keeps spare single-page buffers (C's me_dpages). Between write
-// transactions it keeps as many as the last transaction used, up to
-// poolMaxBytes. Overflow runs are not pooled.
+// pagePool keeps spare page buffers (C's me_dpages): single pages and
+// overflow runs (by length; C frees those). Between write transactions it
+// keeps as many single pages, and as many bytes of runs, as the last
+// transaction used, each up to poolMaxBytes.
 type pagePool struct {
 	pageSize int
 	max      int
 	free     [][]byte
 	used     int
+	// runs are the spare overflow runs by length in pages, runBytes their
+	// size; runUsed is the size of the runs taken since the last trim.
+	runs              map[int][][]byte
+	runBytes, runUsed int
 }
 
 func newPagePool(pageSize int) pagePool {
 	return pagePool{pageSize: pageSize, max: poolMaxBytes / max(pageSize, 1)}
 }
 
+// isRun reports a buffer size of an overflow run of more than one page.
+func (p *pagePool) isRun(n int) bool {
+	return p.pageSize != 0 && n > p.pageSize && n%p.pageSize == 0
+}
+
 func (p *pagePool) take(n int) []byte {
+	if p.isRun(n) {
+		p.runUsed += n
+		k := n / p.pageSize
+		if l := p.runs[k]; len(l) > 0 {
+			b := l[len(l)-1]
+			l[len(l)-1] = nil
+			p.runs[k] = l[:len(l)-1]
+			p.runBytes -= n
+			return b
+		}
+		return nil
+	}
 	if n != p.pageSize || p.pageSize == 0 {
 		return nil
 	}
@@ -80,6 +107,17 @@ func (p *pagePool) take(n int) []byte {
 }
 
 func (p *pagePool) put(b []byte) {
+	if p.isRun(len(b)) {
+		if p.runBytes+len(b) <= poolMaxBytes {
+			if p.runs == nil {
+				p.runs = make(map[int][][]byte)
+			}
+			k := len(b) / p.pageSize
+			p.runs[k] = append(p.runs[k], b)
+			p.runBytes += len(b)
+		}
+		return
+	}
 	if len(b) == p.pageSize && p.pageSize != 0 && len(p.free) < p.max {
 		p.free = append(p.free, b)
 	}
@@ -91,8 +129,22 @@ func (p *pagePool) merge(o *pagePool) {
 		p.pageSize, p.max = o.pageSize, o.max
 	}
 	p.used += o.used
+	p.runUsed += o.runUsed
+	if len(p.free) == 0 {
+		// A nested transaction borrowing its parent's spares, or giving
+		// them back: take the lists themselves.
+		p.free, o.free = o.free, nil
+	}
+	if p.runBytes == 0 {
+		p.runs, p.runBytes, o.runs = o.runs, o.runBytes, nil
+	}
 	for _, b := range o.free {
 		p.put(b)
+	}
+	for _, l := range o.runs {
+		for _, b := range l {
+			p.put(b)
+		}
 	}
 	*o = pagePool{}
 }
@@ -104,6 +156,45 @@ func (p *pagePool) trim() {
 		p.free = p.free[:p.used]
 	}
 	p.used = 0
+	for k, l := range p.runs {
+		if p.runBytes <= p.runUsed {
+			break
+		}
+		for len(l) > 0 && p.runBytes > p.runUsed {
+			l[len(l)-1] = nil
+			l = l[:len(l)-1]
+			p.runBytes -= k * p.pageSize
+		}
+		p.runs[k] = l
+	}
+	p.runUsed = 0
+}
+
+// scratchStack is the page-sized scratch space of the write path's
+// temporary page copies (split, merge), which nest as the operations
+// recurse up the tree: take returns the next buffer, release gives back
+// everything taken since mark. The buffers stay for later transactions.
+type scratchStack struct {
+	bufs [][]byte
+	n    int
+}
+
+func (s *scratchStack) mark() int { return s.n }
+
+func (s *scratchStack) release(mark int) { s.n = mark }
+
+// take is a scratch buffer of size bytes (not zeroed).
+func (s *scratchStack) take(size int) []byte {
+	if s.n == len(s.bufs) {
+		s.bufs = append(s.bufs, nil)
+	}
+	b := s.bufs[s.n]
+	if cap(b) < size {
+		b = make([]byte, size)
+		s.bufs[s.n] = b
+	}
+	s.n++
+	return b[:size]
 }
 
 // pageSlot is where a dirty page's buffer is in its list's slab; only a
@@ -132,6 +223,8 @@ type dirtyPages struct {
 	// hint is where pages were last found, by pgno % hints.
 	hint [hints]pageSlot
 	pool pagePool
+	// spareIndex is the memory of an earlier index, for merge.
+	spareIndex []dirtyIdx
 }
 
 func (d *dirtyPages) len() int { return len(d.index) }
@@ -235,14 +328,33 @@ func (d *dirtyPages) allocCopy(src []byte) []byte {
 	return b
 }
 
+// allocPageCopy is allocCopy of one page, copied as mdb_page_copy does
+// (copyPage).
+func (d *dirtyPages) allocPageCopy(l *format.Layout, src []byte) []byte {
+	b := d.pool.take(len(src))
+	if b == nil {
+		b = make([]byte, len(src))
+	}
+	copyPage(l, b, src)
+	return b
+}
+
 // allocData is a buffer of n bytes holding data at offset off and zeros
 // elsewhere (a new overflow run); nil if data does not fit.
 func (d *dirtyPages) allocData(n, off int, data []byte) []byte {
 	if off < 0 || len(data) > n-off {
 		return nil
 	}
-	b := d.allocZeroed(n)
-	copy(b[off:], data)
+	b := d.pool.take(n)
+	if b == nil {
+		b = make([]byte, n)
+		copy(b[off:], data)
+		return b
+	}
+	// Zero only what data does not cover.
+	end := off + copy(b[off:], data)
+	clear(b[:off])
+	clear(b[end:])
 	return b
 }
 
@@ -354,7 +466,9 @@ func (d *dirtyPages) merge(o *dirtyPages) {
 		return
 	}
 	mine := d.index
-	merged := make([]dirtyIdx, 0, len(mine)+len(o.index))
+	// Merge into the spare index (the one replaced last time), so that a
+	// parent merging child after child allocates nothing.
+	merged := slices.Grow(d.spareIndex[:0], len(mine)+len(o.index))
 	j := 0
 	for _, e := range o.index {
 		for j < len(mine) && mine[j].pgno < e.pgno {
@@ -379,8 +493,21 @@ func (d *dirtyPages) merge(o *dirtyPages) {
 		merged = append(merged, dirtyIdx{e.pgno, s})
 	}
 	merged = append(merged, mine[j:]...)
-	d.index = merged
-	*o = dirtyPages{}
+	d.index, d.spareIndex = merged, mine[:0]
+	o.forget()
+}
+
+// forget empties the list without recycling its buffers (merge gave them
+// to another list), keeping its memory.
+func (d *dirtyPages) forget() {
+	d.index = d.index[:0]
+	clear(d.slots)
+	d.slots = d.slots[:0]
+	d.vacant = d.vacant[:0]
+	for i := range d.hint {
+		d.hint[i] = noSlot
+	}
+	d.pool = pagePool{}
 }
 
 // newDirtyPages is an empty list with a pool for pages of pageSize bytes.

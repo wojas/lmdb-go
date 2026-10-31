@@ -210,10 +210,9 @@ type backupSlot struct {
 	s aslot
 }
 
-// backup copies the live slots, to put back with restore if a nested
-// transaction aborts.
-func (a *arena) backup() []backupSlot {
-	var out []backupSlot
+// backupInto appends copies of the live slots to out, to put back with
+// restore if a nested transaction aborts.
+func (a *arena) backupInto(out []backupSlot) []backupSlot {
 	for i := range a.slots {
 		if a.slots[i].live {
 			out = append(out, backupSlot{i, a.slots[i]})
@@ -259,6 +258,19 @@ func (a *arena) clear() {
 	for i := range a.slots {
 		a.release(i)
 	}
+}
+
+// reset frees every slot for the next transaction, which then gets the
+// slots in the order a new arena would hand them out (0, 1, ...). The
+// generation numbers stay: a cursor handle of an ended transaction never
+// matches a slot again.
+func (a *arena) reset() {
+	a.clear()
+	a.free = a.free[:0]
+	for i := len(a.slots) - 1; i >= 0; i-- {
+		a.free = append(a.free, i)
+	}
+	a.depth = 0
 }
 
 // slot is slot i if it is live.

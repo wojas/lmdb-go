@@ -29,8 +29,6 @@
 package engine
 
 import (
-	"slices"
-
 	"github.com/PowerDNS/lmdb-go/internal/format"
 )
 
@@ -53,54 +51,60 @@ func (t *Txn) beginNested() (*Txn, error) {
 	}
 	pw := t.w
 	a := pw.cursors
-	c := &Txn{
-		env:      t.env,
-		pageSize: t.pageSize,
-		l:        t.l,
-		dmap:     t.dmap,
-		txnid:    t.txnid,
-		nextPgno: t.nextPgno,
-		gen:      t.gen,
-		slot:     -1,
+	// The child's memory is the one t's last child used, as the top-level
+	// write transaction reuses its own (writerState.txn): t keeps it in
+	// spareChild between children.
+	c := pw.spareChild
+	pw.spareChild = nil
+	if c == nil {
+		c = &Txn{w: &wstate{dirty: newDirtyPages(t.pageSize), spilled: spillSet{}}}
 	}
-	// Copy parent's mt_dbflags, but clear DB_NEW.
-	c.dbs = make([]txnDB, len(t.dbs))
+	cw := c.w
+	c.env, c.pageSize, c.l, c.dmap = t.env, t.pageSize, t.l, t.dmap
+	c.txnid, c.nextPgno, c.gen = t.txnid, t.nextPgno, t.gen
+	c.slot, c.state = -1, txnActive
+	// Copy parent's mt_dbflags, but clear DB_NEW. Entries the previous
+	// child looked at (below its ndbs) are cleared; the rest are zero.
+	if cap(c.dbs) < len(t.dbs) {
+		c.dbs = make([]txnDB, len(t.dbs))
+	} else {
+		clear(c.dbs[:min(c.ndbs, len(c.dbs))])
+		c.dbs = c.dbs[:len(t.dbs)]
+	}
 	for i := 0; i < t.ndbs; i++ {
 		c.dbs[i] = *t.dbe(i)
 		c.dbs[i].state &^= dbNew
 	}
 	c.ndbs = t.ndbs
-	cd := newDirtyPages(t.pageSize)
 	// The child allocates from the parent's spare buffers.
-	cd.pool.merge(&pw.dirty.pool)
-	parents := append([]layer{{dirty: pw.dirty, spilled: pw.spilled}}, pw.parents...)
+	cw.dirty.pool.merge(&pw.dirty.pool)
+	parents := append(cw.parents[:0], layer{dirty: pw.dirty, spilled: pw.spilled})
+	parents = append(parents, pw.parents...)
 	// mdb_cursor_shadow: the child tracks the parent's cursors.
-	backup := a.backup()
+	backup := a.backupInto(cw.cursorBackup[:0])
 	a.depth++
 	var pghead format.IDL
 	if pw.pghead != nil {
 		// The child works on a copy of the reclaimed pages; the parent's
 		// stay as they are in case the child aborts.
-		pghead = slices.Clone(pw.pghead)
-		if pghead == nil {
-			pghead = format.IDL{}
-		}
+		pghead = append(cw.emptyPghead(), pw.pghead...)
 	}
-	c.w = &wstate{
-		flags:        pw.flags,
-		dirtyRoom:    pw.dirtyRoom,
-		pghead:       pghead,
-		pglast:       pw.pglast,
-		pgOldest:     pw.pgOldest,
-		pbufPad:      pw.pbufPad,
-		cursors:      a,
-		baseMapsize:  pw.baseMapsize,
-		dirty:        cd,
-		spilled:      spillSet{},
-		parents:      parents,
-		parent:       t,
-		cursorBackup: backup,
-	}
+	cw.flags = pw.flags
+	cw.freePgs = cw.freePgs[:0]
+	cw.loose = cw.loose[:0]
+	cw.dirtyRoom = pw.dirtyRoom
+	cw.pghead, cw.pglast = pghead, pw.pglast
+	cw.pgOldest = pw.pgOldest
+	cw.pbufPad = pw.pbufPad
+	cw.cursors = a
+	cw.baseMain, cw.hasBaseMain = format.DB{}, false
+	cw.baseMapsize = pw.baseMapsize
+	clear(cw.dropped)
+	cw.dropped = cw.dropped[:0]
+	cw.parents = parents
+	cw.parent, cw.child = t, nil
+	cw.cursorBackup = backup
+	cw.locked = false
 	pw.flags |= txnHasChild
 	pw.child = c
 	return c, nil
@@ -168,8 +172,10 @@ func (t *Txn) endNested(how int) {
 		// Append our loose page list to parent's (the child's pages come
 		// after the parent's in C's order).
 		pw.loose = append(w.loose, pw.loose...)
-		// The child's reclaimed-page state replaces the parent's.
+		// The child's reclaimed-page state replaces the parent's. The list
+		// is the parent's now: the child must not keep it as its spare.
 		pw.pghead = w.pghead
+		w.pghead = nil
 		pw.pglast = w.pglast
 		pw.dropped = append(pw.dropped, w.dropped...)
 	} else {
@@ -222,11 +228,22 @@ func (t *Txn) endNested(how int) {
 	pw.flags &^= txnHasChild
 	pw.child = nil
 	a.depth = depth - 1
-	w.dirty = newDirtyPages(0)
-	w.spilled = spillSet{}
-	w.freePgs = nil
+	// The dirty list is empty now (merged into the parent's, or cleared).
+	clear(w.spilled)
+	w.freePgs = w.freePgs[:0]
+	// loose went to the parent on commit (pghead too, see above); an
+	// aborted child's own copy of pghead is kept for the next child.
 	w.loose = nil
-	w.pghead = nil
-	w.parents = nil
+	w.dropPghead()
+	clear(w.parents)
+	w.parents = w.parents[:0]
+	clear(w.cursorBackup)
+	w.cursorBackup = w.cursorBackup[:0]
+	w.parent = nil
 	w.flags = txnFinished
+	// The parent's next child reuses this one's memory (beginNested): the
+	// caller must not use t any more (package lmdb drops it).
+	if pw.spareChild == nil {
+		pw.spareChild = t
+	}
 }

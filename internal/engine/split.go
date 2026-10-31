@@ -18,6 +18,8 @@
 package engine
 
 import (
+	"slices"
+
 	"github.com/PowerDNS/lmdb-go/internal/format"
 )
 
@@ -25,17 +27,32 @@ import (
 // newpgno for a branch page) at mc's position in its full top page.
 func (t *Txn) pageSplit(mc cref, newkey []byte, newdata *nodeVal, newpgno uint64, nflags uint32) error {
 	mnSlot := -1
-	err := t.pageSplit0(mc, newkey, newdata, newpgno, nflags, &mnSlot)
+	// Splits recurse up the tree (at most once per level): each level has
+	// its own scratch space.
+	w := t.w
+	d := w.splitDepth
+	if d >= len(w.splitPtrs) {
+		w.flags |= txnError
+		return format.CursorFull
+	}
+	w.splitDepth++
+	mark := w.scratch.mark()
+	err := t.pageSplit0(mc, newkey, newdata, newpgno, nflags, &mnSlot, &w.splitPtrs[d])
+	w.scratch.release(mark)
+	w.splitDepth--
 	if mnSlot >= 0 {
 		t.closeSlot(mnSlot)
 	}
 	if err != nil {
-		t.w.flags |= txnError
+		w.flags |= txnError
 	}
 	return err
 }
 
-func (t *Txn) pageSplit0(mc cref, newkey []byte, newdata *nodeVal, newpgno uint64, nflags uint32, mnSlot *int) error {
+// pageSplit0 is pageSplit with the node offsets' scratch ptrs (kept for
+// the next split at this depth); its pages come from the scratch stack.
+func (t *Txn) pageSplit0(mc cref, newkey []byte, newdata *nodeVal, newpgno uint64, nflags uint32, mnSlot *int,
+	ptrs *[]int) error {
 	ps := t.pageSize
 	l := t.l
 	nodemax := t.env.nodeMax
@@ -124,7 +141,8 @@ func (t *Txn) pageSplit0(mc cref, newkey []byte, newdata *nodeVal, newpgno uint6
 		if err != nil {
 			return err
 		}
-		src = append([]byte(nil), tp.B...)
+		src = t.w.scratch.take(len(tp.B))
+		copy(src, tp.B)
 		si := (nkeys + 1) / 2
 		if isLeaf2 {
 			if sepkey, err = t.splitLeaf2(mc, mp, rp, src, newkey, newindx, si, nkeys); err != nil {
@@ -149,13 +167,14 @@ func (t *Txn) pageSplit0(mc cref, newkey []byte, newdata *nodeVal, newpgno uint6
 			// Grab a page to hold a temporary copy (zero-filled: node
 			// padding bytes are not written but end up in mp).
 			hdr := l.PageHdr
-			cp = make([]byte, ps)
+			cp = t.w.scratch.take(ps)
+			clear(cp)
 			copy(cp[:hdr], src[:hdr])
 			setLower(l, cp, hdr)
 			setUpper(l, cp, ps)
 			setPad(l, cp, 0)
 			// Prepare to insert.
-			copyPtrs = make([]int, 0, nkeys+1)
+			copyPtrs = slices.Grow((*ptrs)[:0], nkeys+1)
 			for i := 0; i < nkeys; i++ {
 				if i == newindx {
 					copyPtrs = append(copyPtrs, 0)
@@ -169,6 +188,7 @@ func (t *Txn) pageSplit0(mc cref, newkey []byte, newdata *nodeVal, newpgno uint6
 			if newindx >= nkeys {
 				copyPtrs = append(copyPtrs, 0)
 			}
+			*ptrs = copyPtrs
 			// When items are relatively large the split point needs to be
 			// checked, because being off-by-one makes the difference
 			// between success or failure in nodeAdd. As a final tweak, if

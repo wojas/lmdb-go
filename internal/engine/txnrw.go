@@ -86,9 +86,11 @@ type wstate struct {
 	// of its parent, grandparent, ... (nearest first).
 	parents []layer
 	// parent is the parent of a nested transaction, child the active
-	// nested transaction of this one.
-	parent *Txn
-	child  *Txn
+	// nested transaction of this one, spareChild the memory of its last
+	// child, for the next one (beginNested).
+	parent     *Txn
+	child      *Txn
+	spareChild *Txn
 	// cursorBackup is the parent's cursors as they were when this nested
 	// transaction began (mc_backup).
 	cursorBackup []backupSlot
@@ -96,13 +98,45 @@ type wstate struct {
 	// reclaimRun.
 	rc, rx     rcursor
 	reclaimCur rcursor
-	// flushBuf is the reused buffer of page writes.
+	// flushBuf is the reused buffer of page writes, runs that of the pages
+	// to write.
 	flushBuf []byte
+	runs     []flushEntry
+	// pgheadSpare is the memory of the last pghead (C frees me_pghead at
+	// the end of each transaction), mopBuf and idsBuf freelistSave's
+	// scratch buffers.
+	pgheadSpare format.IDL
+	mopBuf      []uint64
+	idsBuf      []byte
+	// reclaimKey and saveKey hold the free DB keys of reclaimRun and
+	// freelistSave (see txnidBytes).
+	reclaimKey, saveKey [8]byte
+	// splitPtrs are the node offsets of pageSplit, by recursion depth
+	// (splitDepth: one level per tree level).
+	splitPtrs  [format.CursorStack][]int
+	splitDepth int
+	// scratch holds the temporary page copies of splits and merges.
+	scratch scratchStack
+	// Key and data scratch of the rebalancing code: lowestKeyBelow's
+	// result, nodeMove's moved key and data and its new separators. Each
+	// holds one value at a time (nodeMove does not recurse, and a key is
+	// used before the next one is read).
+	lowKey, moveKey, moveData, sepKey []byte
+	// dupOld, dupSub and dupRec are the scratch of a DUPSORT put
+	// (dupPrepare; C's me_pbuf): the node's old data, the sub-page being
+	// built, the record of a new sub-DB. One put uses them at a time: the
+	// sub-tree it then writes to has no duplicates.
+	dupOld, dupSub []byte
+	dupRec         [format.DBSize]byte
 	// unlock releases the writer locks (top-level transactions).
 	locked bool
 }
 
-// beginWrite is mdb_txn_begin(env, NULL, 0).
+// beginWrite is mdb_txn_begin(env, NULL, 0). The transaction is the
+// environment's writerState.txn, reused by every top-level write
+// transaction as C reuses me_txn0: callers must not use a Txn after its
+// Commit or Abort (package lmdb drops its reference then, as lmdb-go did
+// with C's).
 func (e *Env) beginWrite() (*Txn, error) {
 	if e.isReadOnly() {
 		return nil, syscall.EACCES
@@ -111,10 +145,13 @@ func (e *Env) beginWrite() (*Txn, error) {
 		return nil, syscall.EINVAL
 	}
 	e.writerMu.Lock()
-	if err := e.lock.LockWriter(func() (uint64, error) {
-		m, err := e.pickMeta()
-		return m.TxnID, err
-	}); err != nil {
+	if e.writer.newestTxnID == nil {
+		e.writer.newestTxnID = func() (uint64, error) {
+			m, err := e.pickMeta()
+			return m.TxnID, err
+		}
+	}
+	if err := e.lock.LockWriter(e.writer.newestTxnID); err != nil {
 		e.writerMu.Unlock()
 		return nil, err
 	}
@@ -146,26 +183,37 @@ func (e *Env) beginWrite() (*Txn, error) {
 		unlock()
 		return nil, err
 	}
-	t := &Txn{env: e, pageSize: e.pageSize, l: e.layout, dmap: m, slot: -1,
-		dbs: e.writer.dbs, gen: e.writer.gen}
-	e.writer.dbs = nil
+	t := e.writer.txn
+	if t == nil {
+		t = &Txn{w: &wstate{cursors: &arena{}, dirty: newDirtyPages(e.pageSize), spilled: spillSet{}}}
+		e.writer.txn = t
+	}
+	// Field by field: dbs and gen are reused, the scratch cursors are
+	// initialised before each use.
+	t.env, t.pageSize, t.l, t.dmap = e, e.pageSize, e.layout, m
+	t.slot, t.state = -1, txnActive
 	if err := t.setSnapshot(last+1, &meta); err != nil {
 		t.releaseMap()
 		unlock()
 		return nil, err
 	}
-	t.w = &wstate{
-		dirtyRoom:   int(e.dirtyLimit.Load()),
-		pgOldest:    e.writer.pgOldest,
-		pbufPad:     e.writer.pbufPad,
-		cursors:     &arena{},
-		baseMain:    meta.DBs[format.MainDBI],
-		hasBaseMain: true,
-		baseMapsize: meta.MapSize,
-		dirty:       newDirtyPages(e.pageSize),
-		spilled:     spillSet{},
-		locked:      true,
-	}
+	// The arena, dirty list and spill set were emptied by the previous
+	// transaction's end.
+	w := t.w
+	w.flags = 0
+	w.freePgs = w.freePgs[:0]
+	w.loose = w.loose[:0]
+	w.dirtyRoom = int(e.dirtyLimit.Load())
+	w.pghead, w.pglast = nil, 0
+	w.pgOldest = e.writer.pgOldest
+	w.pbufPad = e.writer.pbufPad
+	w.baseMain = meta.DBs[format.MainDBI]
+	w.hasBaseMain = true
+	w.baseMapsize = meta.MapSize
+	clear(w.dropped)
+	w.dropped = w.dropped[:0]
+	w.parents, w.parent, w.child, w.cursorBackup = nil, nil, nil, nil
+	w.locked = true
 	return t, nil
 }
 
@@ -199,15 +247,16 @@ func (t *Txn) end(keep bool) error {
 			r.finishNew(i, keep, e.db.Flags)
 		}
 	}
-	w.cursors.clear()
-	w.dirty.clear()
+	w.cursors.reset()
+	// The pool keeps as many spare pages as this transaction used.
+	w.dirty.recycle()
 	clear(w.spilled)
 	if !keep && w.hasBaseMain {
 		t.closeVanishedHandles(w.baseMain)
 	}
-	w.freePgs = nil
-	w.loose = nil
-	w.pghead = nil
+	w.freePgs = w.freePgs[:0]
+	w.loose = w.loose[:0]
+	w.dropPghead()
 	w.pglast = 0
 	w.flags = txnFinished
 	if w.locked {
@@ -215,10 +264,9 @@ func (t *Txn) end(keep bool) error {
 		e := t.env
 		e.writer.pgOldest = w.pgOldest
 		e.writer.pbufPad = w.pbufPad
-		// The next write transaction reuses the table; this one can no
-		// longer reach it (its handles fail with EINVAL).
-		e.writer.dbs, e.writer.gen = t.dbs, t.gen
-		t.dbs, t.ndbs = nil, 0
+		// Handles fail with EINVAL until the next write transaction takes
+		// the table up again (initDBs).
+		t.dbs, t.ndbs = t.dbs[:0], 0
 		t.releaseMap()
 		var err error
 		if !e.closed.Load() {
@@ -230,6 +278,39 @@ func (t *Txn) end(keep bool) error {
 		return err
 	}
 	return nil
+}
+
+// dupScratch is *buf resliced to n zero bytes (grown to at least a page,
+// size ps, if needed).
+func (w *wstate) dupScratch(buf *[]byte, n, ps int) []byte {
+	b := *buf
+	if cap(b) < n {
+		b = make([]byte, n, max(n, ps))
+	} else {
+		b = b[:n]
+		clear(b)
+	}
+	*buf = b
+	return b
+}
+
+// dropPghead sets pghead back to nil (no free DB record read), keeping
+// its memory for the next transaction's.
+func (w *wstate) dropPghead() {
+	if cap(w.pghead) > cap(w.pgheadSpare) {
+		w.pgheadSpare = w.pghead[:0]
+	}
+	w.pghead = nil
+}
+
+// emptyPghead is an empty, non-nil pghead, in the memory dropPghead kept.
+func (w *wstate) emptyPghead() format.IDL {
+	b := w.pgheadSpare[:0]
+	w.pgheadSpare = nil
+	if b == nil {
+		b = format.IDL{}
+	}
+	return b
 }
 
 // wroteMeta: after mdb_env_write_meta wrote meta and published its txnid,

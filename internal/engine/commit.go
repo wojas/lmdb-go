@@ -50,7 +50,7 @@ func (t *Txn) commit0() error {
 	if err := t.freelistSave(); err != nil {
 		return err
 	}
-	w.pghead = nil
+	w.dropPghead()
 	if err := t.pageFlush(); err != nil {
 		return err
 	}
@@ -120,7 +120,7 @@ func prepareFlush(l *format.Layout, ps int, page []byte, flags uint16, txnid uin
 // the mark) stay dirty and in the list; written pages leave it.
 func (t *Txn) pageFlush() error {
 	l, ps, txnid := t.l, t.pageSize, t.txnid
-	var runs []flushEntry
+	runs := t.w.runs[:0]
 	t.w.dirty.forEach(func(pgno uint64, slot pageSlot, page []byte) {
 		flags := pFlags(l, page)
 		// Don't flush this page yet.
@@ -130,6 +130,7 @@ func (t *Txn) pageFlush() error {
 		}
 		runs = append(runs, flushEntry{pgno, slot, prepareFlush(l, ps, page, flags, txnid)})
 	})
+	t.w.runs = runs
 	return t.writeRuns(runs)
 }
 
@@ -137,7 +138,7 @@ func (t *Txn) pageFlush() error {
 // pgnos (ascending), used by mdb_page_spill.
 func (t *Txn) writePages(pgnos []uint64) error {
 	l, ps, txnid := t.l, t.pageSize, t.txnid
-	runs := make([]flushEntry, 0, len(pgnos))
+	runs := t.w.runs[:0]
 	for _, pgno := range pgnos {
 		slot, ok := t.w.dirty.find(pgno)
 		if !ok {
@@ -146,6 +147,7 @@ func (t *Txn) writePages(pgnos []uint64) error {
 		page := t.w.dirty.at(slot, pgno)
 		runs = append(runs, flushEntry{pgno, slot, prepareFlush(l, ps, page, pFlags(l, page), txnid)})
 	}
+	t.w.runs = runs
 	return t.writeRuns(runs)
 }
 

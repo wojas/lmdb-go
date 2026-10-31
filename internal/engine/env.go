@@ -128,11 +128,15 @@ type writerState struct {
 	// and the next write transaction begins from it without reading it.
 	lastMeta    format.Meta
 	hasLastMeta bool
-	// dbs and gen are the DB table of the last write transaction, which
-	// the next one reuses (C reuses me_txn0): the table is me_maxdbs long,
-	// and its generation makes reuse O(1).
-	dbs []txnDB
-	gen uint32
+	// txn is the top-level write transaction, reused by every one as C
+	// reuses me_txn0 (nil until the first): with it its DB table (me_maxdbs
+	// long; its generation makes reuse O(1)), dirty list and page pool,
+	// cursor arena, spill set and page lists, so that a small write
+	// transaction allocates nothing.
+	txn *Txn
+	// newestTxnID is the callback of LockWriter, made once (a closure
+	// passed through an interface escapes: one allocation per call).
+	newestTxnID func() (uint64, error)
 }
 
 // The process-wide registry of open environments: POSIX record locks

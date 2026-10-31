@@ -451,7 +451,9 @@ func TestDupFixedWithoutDupSortIsRefused(t *testing.T) {
 }
 
 // TestEndedWriteTxn: every method of a write transaction that ended fails
-// cleanly (its DB table went to the next write transaction).
+// cleanly. The Txn is reused by the next top-level write transaction (C's
+// me_txn0), so this holds until the next BeginTxn; a cursor of the ended
+// transaction fails after that too (its arena slot's generation moved).
 func TestEndedWriteTxn(t *testing.T) {
 	env, _ := openTest(t, format.V09, Options{MaxDBs: 4})
 	for _, commit := range []bool{true, false} {
@@ -472,10 +474,6 @@ func TestEndedWriteTxn(t *testing.T) {
 		} else {
 			txn.Abort()
 		}
-		if err != nil {
-			t.Fatal(err)
-		}
-		next, err := env.BeginTxn(nil, 0)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -523,6 +521,19 @@ func TestEndedWriteTxn(t *testing.T) {
 			t.Error("Commit again")
 		}
 		txn.Abort()
+		next, err := env.BeginTxn(nil, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if next != txn {
+			t.Error("the top-level write Txn is not reused")
+		}
+		if _, _, err := c.Get(nil, nil, format.First); err == nil {
+			t.Error("cursor Get in the next transaction")
+		}
+		if err := c.Put([]byte("k"), []byte("v"), 0); err == nil {
+			t.Error("cursor Put in the next transaction")
+		}
 		c.Close()
 		next.Abort()
 	}

@@ -7,6 +7,8 @@ data of rlmdb's benchmark (rlmdb's `rust/bench`: `src/workloads.rs`,
 `c/cbench.c`, `src/data.rs`), plus a group of lmdb-go-specific costs
 (`goapi`). Both implementations run in one process.
 
+Measured results, and what the port changed for them: `RESULTS.md`.
+
 ## Layout
 
 | path | what | rlmdb counterpart |
