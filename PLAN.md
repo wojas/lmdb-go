@@ -191,6 +191,8 @@ in the lock file) and `LockFileEx` on the lock file, all reachable from
 * **64-bit big-endian (s390x, ppc64, mips64).** Supported in principle
   (native byte order throughout, as C LMDB) but untested. Test later in
   an emulated Docker container (`LINUX_TEST_PLATFORM=linux/s390x`) with C
-  peers built there.
+  peers built there. rlmdb is adding support for more architectures first
+  (owner, 2026-10-31); when its thread reports, port that work here (the
+  same way as any rlmdb change, see "Following rlmdb").
 * Cross-compiling cgo builds: `zig cc` as `CC` (bundled glibc, musl and
   macOS headers) is the suggested toolchain; document and test it.
