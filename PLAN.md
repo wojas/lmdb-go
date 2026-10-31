@@ -17,9 +17,8 @@ other:
 | `internal/engine` | `rlmdb/src/core/*` minus `reader.rs` | env, read and write txns, cursors, put/del, split, rebalance, spill, free list, commit, nested txns, copy, audit |
 | `lmdb` | lmdb-go's `lmdb` (API), rlmdb-capi's behaviour | the public API on top of `engine` |
 | `lmdbscan`, `exp/lmdbsync`, `cmd/*` | lmdb-go | kept, ported to the new `lmdb` |
-| `tests/` (own `go.mod`, cgo allowed) | rlmdb tests, interop | oracles: the C binaries from rlmdb's interop build, lmdb-go v1 (cgo) as a separate build (`-modfile=go.cgo.mod`), cross-process tests |
-| `bench/` (own `go.mod` + `go.cgo.mod`, cgo allowed) | rlmdb `bench` | A/B against lmdb-go v1: one source importing `github.com/PowerDNS/lmdb-go/lmdb`, built once per mod file |
-| `cmd/gopeer` or `tests/gopeer` | `interop/src/bin/rpeer` | the interop peer protocol (`interop/README.md`), so rlmdb's harness can run Go as a fourth implementation |
+| `tests/` (nested module, cgo allowed) | rlmdb tests, interop, `bench` | everything that compares with C: `tests/cgolmdb` (pinned lmdb-go v1.9.4 copy, cgo, C 0.9.35) side by side with the port in one binary; the C binaries from rlmdb's interop build; cross-process tests; benchmarks (`tests/bench`); the Go interop peer (`tests/gopeer`) |
+| `tests/gopeer` | `interop/src/bin/rpeer` | the interop peer protocol (`interop/README.md`), so rlmdb's harness can run Go as a fourth implementation |
 
 Names inside packages follow rlmdb's concepts in Go style (`numKeys`,
 `childPgno`, `Lower()`), with the C name in the doc comment.
@@ -95,7 +94,7 @@ uses a test fake of the interface (in-process only).
    `exp/lmdbsync`, `cmd/*`; the `gopeer` and a branch of rlmdb's interop
    harness that runs the scenario matrix with Go as a peer (C 0.9, C 1.0,
    Rust, Go, concurrently); Linux and macOS.
-3. **Benchmarks and performance.** `bench/` with the workloads of rlmdb's
+3. **Benchmarks and performance.** `tests/bench` with the workloads of rlmdb's
    `bench` (reads, cursor scans, the Lightning Stream scan, random puts,
    overwrites, deletes, one-put commits, big values), interleaved A/B
    against lmdb-go v1 on cgo. Target: close to lmdb-go+C including its cgo
@@ -107,4 +106,5 @@ uses a test fake of the interface (in-process only).
 
 * Stage 0 (coordinator): fork created from lmdb-go `master` (v1.9.4), C
   sources removed; this plan; `scripts/linux-test.sh`. The module path
-  stays `github.com/PowerDNS/lmdb-go` (owner: drop-in `replace`).
+  stays `github.com/PowerDNS/lmdb-go` (owner: drop-in `replace`). The nested `tests/` module holds the
+  pinned cgo reference `tests/cgolmdb` (`scripts/update-cgolmdb.sh`).
