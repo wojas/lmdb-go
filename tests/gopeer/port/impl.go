@@ -1,5 +1,3 @@
-//go:build port
-
 // What differs between the implementations, the port side: the Go
 // implementation, which opens both data formats with lmdb-go v2's API
 // (Env.SetFormat, Env.Format, V09, V10) and sets the page size of new LMDB

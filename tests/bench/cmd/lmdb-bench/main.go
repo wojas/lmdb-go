@@ -11,9 +11,6 @@
 //	lmdb-bench -check-data [-n N] [-rlmdb-bench PATH]
 //	lmdb-bench -ab OLD [-impl port] ...   (A/B of two builds of this program)
 //	lmdb-bench -worker <impl> <group> <dir> <n> <reps> <sync_commits>
-//
-// The port is in the binary when it is built with -tags port (port.go)
-// until the port compiles (stage 2).
 package main
 
 import (
@@ -39,8 +36,8 @@ type impl struct {
 	run        func(group string, p run.Params) ([]run.Result, error)
 }
 
-// impls are the implementations in this binary: cgo, and the port with
-// -tags port (port.go).
+// impls are the implementations in this binary: cgo, and the port
+// (port.go).
 var impls = []impl{{cgowl.Impl, cgowl.Describe(), cgowl.Run}}
 
 func findImpl(name string) (impl, bool) {
@@ -153,7 +150,7 @@ func runInProcess(o *options) int {
 	case "both":
 		sides = impls
 		if len(impls) == 1 {
-			fmt.Fprintln(os.Stderr, "lmdb-bench: this binary has no port (built without -tags port): running cgo alone")
+			fmt.Fprintln(os.Stderr, "lmdb-bench: this binary has no port: running cgo alone")
 		}
 	default:
 		im, ok := findImpl(o.impl)

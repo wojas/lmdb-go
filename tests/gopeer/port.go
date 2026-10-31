@@ -1,9 +1,6 @@
-//go:build port
-
 package main
 
 import portpeer "github.com/PowerDNS/lmdb-go/tests/gopeer/port"
 
-// The port joins the binary once its lmdb package compiles (stage 2
-// removes this file's build constraint).
+// The port's side of the peer.
 func init() { impls[portpeer.Impl] = portpeer.Main }

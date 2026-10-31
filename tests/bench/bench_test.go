@@ -20,8 +20,8 @@ type side struct {
 	run  func(group string, p run.Params) ([]run.Result, error)
 }
 
-// sides are the implementations benchmarked: cgo, and the port when built
-// with -tags port (port_test.go).
+// sides are the implementations benchmarked: cgo, and the port
+// (port_test.go).
 var sides = []side{{cgowl.Impl, cgowl.Run}}
 
 // benchGroup runs workload group as sub-benchmarks impl=<side>. A b.N
