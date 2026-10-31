@@ -120,6 +120,12 @@ type wstate struct {
 	// holds one value at a time (nodeMove does not recurse, and a key is
 	// used before the next one is read).
 	lowKey, moveKey, moveData, sepKey []byte
+	// dupOld, dupSub and dupRec are the scratch of a DUPSORT put
+	// (dupPrepare; C's me_pbuf): the node's old data, the sub-page being
+	// built, the record of a new sub-DB. One put uses them at a time: the
+	// sub-tree it then writes to has no duplicates.
+	dupOld, dupSub []byte
+	dupRec         [format.DBSize]byte
 	// unlock releases the writer locks (top-level transactions).
 	locked bool
 }
@@ -270,6 +276,20 @@ func (t *Txn) end(keep bool) error {
 		return err
 	}
 	return nil
+}
+
+// dupScratch is *buf resliced to n zero bytes (grown to at least a page,
+// size ps, if needed).
+func (w *wstate) dupScratch(buf *[]byte, n, ps int) []byte {
+	b := *buf
+	if cap(b) < n {
+		b = make([]byte, n, max(n, ps))
+	} else {
+		b = b[:n]
+		clear(b)
+	}
+	*buf = b
+	return b
 }
 
 // dropPghead sets pghead back to nil (no free DB record read), keeping

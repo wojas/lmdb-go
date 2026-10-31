@@ -727,7 +727,7 @@ func (t *Txn) dupPrepare(mc cref, item nodeVal, flags *uint32, insertKey, bigNew
 		// page). C writes the size into its scratch page (me_pbuf), where
 		// it stays for later sub-pages.
 		t.w.pbufPad = uint16(item.size)
-		fp = make([]byte, l.PageHdr)
+		fp = t.w.dupScratch(&t.w.dupSub, l.PageHdr, ps)
 		setFlags(l, fp, format.PLeaf|format.PDirty)
 		setPad(l, fp, t.w.pbufPad)
 		setLower(l, fp, l.PageHdr)
@@ -745,7 +745,7 @@ func (t *Txn) dupPrepare(mc cref, item nodeVal, flags *uint32, insertKey, bigNew
 		if !ok {
 			return st, format.Corrupted
 		}
-		olddata := append([]byte(nil), od...)
+		olddata := copyInto(&t.w.dupOld, od)
 		nflags, ksize := n.Flags(), n.KeySize()
 		switch {
 		case nflags&format.FDupData == 0:
@@ -779,7 +779,7 @@ func (t *Txn) dupPrepare(mc cref, item nodeVal, flags *uint32, insertKey, bigNew
 			} else {
 				size += 2*(2+format.NodeSize) + (len(olddata) & 1) + (item.size & 1)
 			}
-			h := make([]byte, size)
+			h := t.w.dupScratch(&t.w.dupSub, size, ps)
 			setPgno(h, leafPgno)
 			// 1.0 also stamps the sub-page with the current txnid.
 			l.SetTxnID(h, t.txnid)
@@ -893,8 +893,8 @@ func (t *Txn) dupPrepare(mc cref, item nodeVal, flags *uint32, insertKey, bigNew
 		if !buildSubpage(l, page[:ps], fp, olddataSize, fpFlags, fpPad, subOffset, format.PDirty) {
 			return st, format.Corrupted
 		}
-		b := dummy.Bytes()
-		st.xdata = b[:]
+		t.w.dupRec = dummy.Bytes()
+		st.xdata = t.w.dupRec[:]
 		st.subRoot, st.hasSubRoot = mp, true
 	case st.hasDkey:
 		// Converting a single item: the fake sub-page is the data.
@@ -903,7 +903,7 @@ func (t *Txn) dupPrepare(mc cref, item nodeVal, flags *uint32, insertKey, bigNew
 		// Grow the sub-page into a new buffer (C builds it in its scratch
 		// page, which keeps the pad).
 		t.w.pbufPad = fpPad
-		mp := make([]byte, xsize)
+		mp := t.w.dupScratch(&t.w.dupSub, xsize, ps)
 		setPgno(mp, leafPgno)
 		l.SetTxnID(mp, t.txnid)
 		if !buildSubpage(l, mp, fp, olddataSize, fpFlags, fpPad, offset, l.SubpageDirty()) {
