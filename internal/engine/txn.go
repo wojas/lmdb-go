@@ -229,8 +229,9 @@ func (t *Txn) takeSnapshot() error {
 // keeping processes apart to the caller, as in C), but a reader must see
 // the ones made while this process had no transaction, as C's does. So a
 // reader that finds a newer meta page on the file adopts its txnid if no
-// writer of this process holds the writer lock (TryLock: readers never
-// wait) and starts over. With a writer, the snapshot it has is kept: the
+// writer of this process holds the writer lock (TryLockWriter: readers
+// never wait; the lock of the in-memory region, which the writers of every
+// NoLock handle of the file take) and starts over. With a writer, the snapshot it has is kept: the
 // copy is consistent, and the writer publishes its commit, which builds
 // on the newest one, when it is done. A plain copy holds the writer lock
 // while its transaction renews, so it adopts the newest txnid first
@@ -247,11 +248,11 @@ func (e *Env) noLockSnapshot(m *sys.DataMap, slot int) (format.Meta, error) {
 		if err != nil {
 			return meta, err
 		}
-		if !e.newerCommitOnFile(m, txnid, &meta) || !e.writerMu.TryLock() {
+		if !e.newerCommitOnFile(m, txnid, &meta) || !e.mem.TryLockWriter() {
 			return meta, nil
 		}
 		adopted, err := e.adoptNewestTxnID(m)
-		e.writerMu.Unlock()
+		_ = e.mem.UnlockWriter()
 		if err != nil {
 			return meta, err
 		}
@@ -287,8 +288,9 @@ func (e *Env) adoptNewestTxnIDPinned() error {
 
 // adoptNewestTxnID makes the newest meta page's txnid the in-process
 // committed txnid if it is newer (commits of other processes, without a
-// lock file). The caller holds writerMu, so no writer of this process
-// rewrites a meta page meanwhile.
+// lock file). The caller holds the in-memory region's writer lock, so no
+// writer of this process (of any handle of the file) rewrites a meta page
+// meanwhile.
 func (e *Env) adoptNewestTxnID(m *sys.DataMap) (bool, error) {
 	newest, err := e.pickMetaIn(m)
 	if err != nil {

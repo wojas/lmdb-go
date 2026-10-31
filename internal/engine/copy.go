@@ -119,9 +119,10 @@ func (e *Env) copyPlain(w io.Writer) error {
 	// read transaction must start after that. C takes no lock without a
 	// lock file (MDB_NOLOCK); here the writers of this process are kept
 	// out all the same (AGENTS.md rule 2a: writerMu and the in-memory
-	// region's writer lock), or a commit could write pages past the
-	// snapshot's end, which the copy leaves out, and a meta page naming
-	// them (rlmdb locks its NO_LOCK writers out the same way).
+	// region's writer lock, which every NoLock handle of the file shares),
+	// or a commit could write pages past the snapshot's end, which the
+	// copy leaves out, and a meta page naming them (rlmdb locks its
+	// NO_LOCK writers out the same way).
 	runtime.LockOSThread()
 	e.writerMu.Lock()
 	err := e.lock.LockWriter(func() (uint64, error) {

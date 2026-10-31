@@ -116,11 +116,14 @@ messages) until that is established.
    requires today.
 2a. **`NoLock` only removes the external (cross-process) locking.**
    Within the process everything stays safe: write transactions are
-   serialised by the in-process writer mutex, and readers are tracked in
-   an in-memory reader table per `Env`, which the writer consults exactly
-   as it consults the lock file's table otherwise, so pages a live reader
-   can still see are never reused. Opening one path twice in one process
-   is refused (`EBUSY`, as rlmdb), so that table covers the whole process.
+   serialised by an in-process writer lock, and readers are tracked in
+   an in-memory reader table, which the writer consults exactly as it
+   consults the lock file's table otherwise, so pages a live reader can
+   still see are never reused. Several `NoLock` handles (`Env`s) of one
+   data file in a process share that table and writer lock (as rlmdb, keyed
+   by device and inode), so it covers the whole process; a second open of
+   a data file that a handle with a lock file has open, or a lock-file
+   open next to `NoLock` handles, is refused (`EBUSY`, as rlmdb).
    Nothing on disk changes (no lock file is created, as in C). This is a
    deliberate deviation from C, where `MDB_NOLOCK` leaves both to the
    caller; it is recorded in the ledger. Cross-process concurrency under

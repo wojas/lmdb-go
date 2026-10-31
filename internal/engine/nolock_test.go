@@ -198,11 +198,21 @@ func TestNoLockObservables(t *testing.T) {
 	if fileExists(dir + "/lock.mdb") {
 		t.Fatal("NoLock created a lock file")
 	}
-	// A second open of the same path in this process is refused.
-	if _, err := Open(dir, Options{Flags: format.NoLock}); err == nil {
-		t.Fatal("second open succeeded")
-	} else if err != syscall.EBUSY {
-		t.Fatalf("second open: %v", err)
+	// A second NoLock handle of the file shares the in-memory table and
+	// reports what C reports too; one with a lock file is refused.
+	env2, err := Open(dir, Options{Flags: format.NoLock})
+	if err != nil {
+		t.Fatalf("second NoLock open: %v", err)
+	}
+	if env2.mem != env.mem {
+		t.Fatal("the NoLock handles of one file do not share the in-memory table")
+	}
+	if in, err := env2.Info(); err != nil || in.NumReaders != 0 || env2.ReaderList() != nil {
+		t.Fatalf("second handle: info %+v %v", in, err)
+	}
+	env2.Close()
+	if _, err := Open(dir, Options{OpenLock: OpenMemLock}); err != syscall.EBUSY {
+		t.Fatalf("open with a lock file next to a NoLock handle: %v, want EBUSY", err)
 	}
 	// Many readers: no limit without a lock file, as in C.
 	var txns []*Txn

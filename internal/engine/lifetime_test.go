@@ -230,6 +230,9 @@ func TestCloseTearsDownAtOnce(t *testing.T) {
 // NoLock: a snapshot that outlives Close keeps its pages (review finding
 // P1-4: Close left the registry, so the path could be opened again with a
 // reader table of its own, whose writers reused the snapshot's pages).
+// The closed handle keeps its claim of the file until the snapshot ends,
+// so a new NoLock handle of the file shares its reader table, and the new
+// handle's writers keep the snapshot's pages.
 func TestNoLockCloseKeepsSnapshot(t *testing.T) {
 	env, dir := openTest(t, format.V09, Options{Flags: format.NoLock})
 	big := bytes.Repeat([]byte("A"), 5000)
@@ -246,18 +249,24 @@ func TestNoLockCloseKeepsSnapshot(t *testing.T) {
 		t.Fatal(err)
 	}
 	env.Close()
-	if _, err := Open(dir, Options{Flags: format.NoLock | format.NoSync, MapSize: 64 << 20}); err != syscall.EBUSY {
-		t.Fatalf("reopen under a live snapshot: %v, want EBUSY", err)
+	if _, err := Open(dir, Options{OpenLock: OpenMemLock}); err != syscall.EBUSY {
+		t.Fatalf("reopen with a lock file under a live snapshot: %v, want EBUSY", err)
+	}
+	env2, err := Open(dir, Options{Flags: format.NoLock | format.NoSync, MapSize: 64 << 20})
+	if err != nil {
+		t.Fatalf("NoLock reopen under a live snapshot: %v", err)
+	}
+	defer env2.Close()
+	if env2.mem != env.mem {
+		t.Fatal("the new handle does not share the closed one's reader table")
+	}
+	for i := 0; i < 5; i++ {
+		putKV(t, env2, "k", fmt.Sprint(i))
 	}
 	if !bytes.Equal(v, big) {
 		t.Fatal("snapshot changed")
 	}
 	r.Abort()
-	env2, err := Open(dir, Options{Flags: format.NoLock | format.NoSync, MapSize: 64 << 20})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer env2.Close()
 	for i := 0; i < 5; i++ {
 		putKV(t, env2, "k", fmt.Sprint(i))
 	}

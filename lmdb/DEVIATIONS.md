@@ -64,13 +64,25 @@ differently from C is in `internal/engine/PORTING.md` and in rlmdb's
 * **`NoLock`.** Only the cross-process locking is removed: within the
   process, write transactions are serialised and readers are tracked in an
   in-memory table, so pages a live reader can see are never reused. C
-  leaves both to the caller. Opening one environment twice in a process
-  fails with `EBUSY` (rlmdb; C allows it, unsafely: closing one handle
-  drops the other's locks).
-* **One open per data file.** The `EBUSY` of a second `Open` in the
-  process, with or without `NoLock`, holds for every name of the data
-  file: the directory, the file itself with `NoSubdir`, symlinks and hard
-  links (rlmdb compares the paths given). Across processes C's file names
+  leaves both to the caller. Any number of `NoLock` handles (`Env`s) may
+  open one data file in a process, as in C; they share that table and the
+  writer lock (rlmdb's rule), so a writer of any handle keeps the pages of
+  readers of every handle, and the writers of all handles exclude each
+  other. The shared state lives while one of the handles is open. So a
+  goroutine with a write transaction of one handle must not begin one in
+  another handle of the file, nor start a plain `Copy` of it: it would
+  wait for itself, as with two write transactions of one handle (C does
+  not serialise the handles' writers at all).
+* **One open per data file with a lock file.** A second `Open` of a data
+  file that a handle with a lock file has open fails with `EBUSY` (rlmdb;
+  C allows it, unsafely: closing one handle drops the other's record
+  locks), with or without `NoLock`, and so does an `Open` with a lock file
+  next to `NoLock` handles of the file (their readers would be invisible
+  to each other's writers), before it touches the lock file. This holds
+  for every name of the data file: the directory, the file itself with
+  `NoSubdir`, symlinks and hard links (the data file's device and inode;
+  rlmdb claims the path given and then the device and inode, which comes
+  to the same). Across processes C's file names
   apply: the lock file of a directory is `lock.mdb` in it, that of a
   `NoSubdir` file its name plus `-lock`, so processes that open one data
   file in different modes use two lock files and neither exclude each
@@ -118,7 +130,8 @@ differently from C is in `internal/engine/PORTING.md` and in rlmdb's
   checks leave the slot alone), the files and the registry entry, until
   the last such transaction (active or reset) has ended, and is torn down
   then. Until that moment, opening the same path again in this process
-  fails with `EBUSY`. `Commit` of a write transaction after `Close` aborts
+  fails with `EBUSY` with a lock file; a `NoLock` handle opened meanwhile
+  shares the closed one's reader table. `Commit` of a write transaction after `Close` aborts
   it and returns `EINVAL`.
 * **`SetMapSize` on an open environment** may run while read transactions
   are active (they keep the map they began with); `EINVAL` while this

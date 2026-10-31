@@ -107,7 +107,8 @@ Status of the stage-1 engine port (PLAN.md, agent E). rlmdb sources:
   surviving transactions keep their reader slots and the process's
   liveness lock (their snapshots stay protected against writers here and
   in other processes) and never use a torn-down region, without a lock
-  around their operations; reopening the path meanwhile is `EBUSY`
+  around their operations; reopening the path meanwhile is `EBUSY` with a
+  lock file, and a `NoLock` handle opened meanwhile shares the region
   (stage 4, review findings P1-4 and P1-5: `Close` cleared their slots and
   closed the lock file under them).
 * `LockRegion.UnlockWriter` returns an error (the Linux mutex refuses an
