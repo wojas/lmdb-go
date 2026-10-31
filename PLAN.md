@@ -188,5 +188,9 @@ in the lock file) and `LockFileEx` on the lock file, all reachable from
   libSystem, even with `CGO_ENABLED=0`, so the semaphore calls could use
   libSystem trampolines (as `x/sys/unix` does) instead of cgo, making
   macOS builds without cgo fully functional. Today: cgo, as on Linux.
+* **64-bit big-endian (s390x, ppc64, mips64).** Supported in principle
+  (native byte order throughout, as C LMDB) but untested. Test later in
+  an emulated Docker container (`LINUX_TEST_PLATFORM=linux/s390x`) with C
+  peers built there.
 * Cross-compiling cgo builds: `zig cc` as `CC` (bundled glibc, musl and
   macOS headers) is the suggested toolchain; document and test it.
