@@ -85,6 +85,11 @@ type Env struct {
 	// slots are the idle reader slots this process keeps for its next
 	// read transactions (slotpool.go).
 	slots slotPool
+	// metaSeq counts this process's meta page writes and marks the one in
+	// progress (n<<2 between writes, n<<2|metaWriting|page during one):
+	// readers without a lock file use it to take only consistent copies
+	// of the meta pages (noLockSnapshot).
+	metaSeq atomic.Uint64
 
 	dbis dbiRegistry
 

@@ -502,3 +502,61 @@ func TestEnv_SetMapSize_concurrentViews(t *testing.T) {
 		})
 	}
 }
+
+// NoLock: every snapshot's data is the data of its txnid while a writer
+// commits (review finding P1-1, the reviewer's reproducer: a reader could
+// take a torn meta copy, publish the newer txnid and read older pages).
+func TestNoLock_snapshotMatchesID(t *testing.T) {
+	env := setupFlags(t, NoLock|NoSync)
+	defer clean(env, t)
+	if err := env.SetMapSize(1 << 30); err != nil {
+		t.Fatal(err)
+	}
+	var db DBI
+	put := func(txn *Txn) error { return txn.Put(db, []byte("key"), []byte(fmt.Sprint(txn.ID())), 0) }
+	err := env.Update(func(txn *Txn) (err error) {
+		if db, err = txn.OpenRoot(0); err != nil {
+			return err
+		}
+		return put(txn)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	commits := 20000
+	if testing.Short() || raceEnabled {
+		commits = 2000
+	}
+	var stop atomic.Bool
+	var wg sync.WaitGroup
+	for g := 0; g < 6; g++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for !stop.Load() {
+				err := env.View(func(txn *Txn) error {
+					txn.RawRead = true
+					v, err := txn.Get(db, []byte("key"))
+					if err != nil {
+						return err
+					}
+					if string(v) != fmt.Sprint(txn.ID()) {
+						return fmt.Errorf("snapshot %d holds the data of %s", txn.ID(), v)
+					}
+					return nil
+				})
+				if err != nil {
+					t.Error(err)
+					return
+				}
+			}
+		}()
+	}
+	for i := 0; i < commits && !t.Failed(); i++ {
+		if err := env.Update(put); err != nil {
+			t.Error(err)
+		}
+	}
+	stop.Store(true)
+	wg.Wait()
+}

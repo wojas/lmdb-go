@@ -164,26 +164,10 @@ func (t *Txn) takeSnapshot() error {
 	var txnid uint64
 	var meta format.Meta
 	if !e.lockFile {
-		// No lock file: C takes the newest meta page (another process may
-		// have committed under MDB_NOLOCK). The slot of the in-memory table
-		// is published first and the meta checked again, as with the lock
-		// file's mti_txnid, so a writer of this process never reuses pages
-		// of this snapshot.
-		for {
-			if meta, err = e.pickMetaIn(m); err != nil {
-				return err
-			}
-			e.lock.SetSlotTxnID(t.slot, meta.TxnID)
-			again, err := e.pickMetaIn(m)
-			if err != nil {
-				return err
-			}
-			if again.TxnID == meta.TxnID {
-				break
-			}
+		if meta, err = e.noLockSnapshot(m, t.slot); err != nil {
+			return err
 		}
-		txnid = meta.TxnID
-		return t.setSnapshot(txnid, &meta)
+		return t.setSnapshot(meta.TxnID, &meta)
 	}
 	for {
 		txnid = e.lock.PublishCurrentTxnID(t.slot)
@@ -205,6 +189,75 @@ func (t *Txn) takeSnapshot() error {
 		}
 	}
 	return t.setSnapshot(txnid, &meta)
+}
+
+// noLockSnapshot selects the snapshot of a read transaction without a
+// lock file (MDB_NOLOCK, or a read-only file system) and publishes its
+// txnid in slot of the in-memory reader table.
+//
+// C takes the newest meta page (mdb_env_pick_meta): another process may
+// have committed, under MDB_NOLOCK coordinated by the caller. But this
+// process's own writer rewrites meta pages concurrently, and a copy taken
+// during that write can be torn: the roots of txn N with the txnid of
+// N+2, which the reader would publish while reading N's pages, letting
+// the next writer reuse pages N still uses (a re-read cannot tell: it
+// may find the finished N+2). There is no mti_txnid to order against, so
+// the writer brackets its meta write with Env.metaSeq (beginMetaWrite,
+// endMetaWrite), and a copy counts only if metaSeq did not change around
+// it, a seqlock:
+//
+//   - With no meta write in progress, both pages are read and the newer
+//     taken. An unchanged metaSeq afterwards means no meta write of this
+//     process overlapped the copy, so it is not torn by this process.
+//   - With a write of page p in progress (txn W), page p^1 is read: it
+//     holds W-1, the meta W began from, which this process does not touch
+//     until W+1 commits. W itself only reuses pages freed before W-1, so
+//     W-1 is safe to read.
+//
+// The txnid is published in the slot before metaSeq is read again. If it
+// is unchanged, the next meta write of this process (W+1's, or the end of
+// W's) comes after the publication in the order of atomic operations, and
+// so does the FindOldest of any writer that could reuse this snapshot's
+// pages (a transaction that began from the published meta or a newer
+// one): it sees the slot. A writer already running when the slot was
+// published began from this meta at the latest and reuses only pages
+// freed before it. Concurrent writes by other processes remain the
+// caller's job under MDB_NOLOCK, as in C.
+func (e *Env) noLockSnapshot(m *sys.DataMap, slot int) (format.Meta, error) {
+	for {
+		s := e.metaSeq.Load()
+		var meta format.Meta
+		var err error
+		if s&metaWriting == 0 {
+			meta, err = e.pickMetaIn(m)
+		} else {
+			meta, err = e.readMetaIn(m, int(s&1)^1)
+		}
+		if err == nil {
+			e.lock.SetSlotTxnID(slot, meta.TxnID)
+		}
+		if e.metaSeq.Load() == s {
+			return meta, err
+		}
+		// A meta write began or ended meanwhile (a failed read may have
+		// been a torn page): again.
+	}
+}
+
+// metaWriting is set in Env.metaSeq while this process writes a meta
+// page; the low bit is then the page.
+const metaWriting = 2
+
+// beginMetaWrite marks the start of this process's write of meta page
+// page (see noLockSnapshot). The writer lock is held.
+func (e *Env) beginMetaWrite(page int) {
+	n := e.metaSeq.Load()>>2 + 1
+	e.metaSeq.Store(n<<2 | metaWriting | uint64(page))
+}
+
+// endMetaWrite marks its end, after the txnid was published.
+func (e *Env) endMetaWrite() {
+	e.metaSeq.Store(e.metaSeq.Load() &^ 3)
 }
 
 // setSnapshot installs the snapshot described by meta (the tail of
