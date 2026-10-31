@@ -39,12 +39,26 @@ type oracle struct {
 	dirtyLimit int
 }
 
+// oracle09 is C 0.9.36. It skips t where C's pages are not this process's
+// (requireSamePageSize): 0.9 takes the OS page size.
 func oracle09(t testing.TB) *oracle {
-	return &oracle{writeops: tool(t, "writeops"), dump: "mdb_dump", peer: "cpeer", f: format.V09}
+	o := &oracle{writeops: tool(t, "writeops"), dump: "mdb_dump", peer: "cpeer", f: format.V09}
+	requireSamePageSize(t)
+	return o
 }
 
 func oracle10(t testing.TB, ps int) *oracle {
 	return &oracle{writeops: tool(t, "writeops10"), dump: "mdb_dump10", peer: "cpeer10", f: format.V10, pageSize: ps}
+}
+
+// oracle10NDebug is oracle10 with writeops10_ndebug, writeops against a
+// C 1.0 library built with -DNDEBUG (as release builds are), for scripts
+// on which the upstream build trips an assertion although C's arithmetic
+// is right (rlmdb KNOWN_C_BUGS.md #37).
+func oracle10NDebug(t testing.TB, ps int) *oracle {
+	o := oracle10(t, ps)
+	o.writeops = tool(t, "writeops10_ndebug")
+	return o
 }
 
 func hexs(b []byte) string { return fmt.Sprintf("%x", b) }
@@ -829,18 +843,7 @@ func runRound(t testing.TB, o *oracle, p *profile, ncur int, g *gen, nops int, l
 		t.Fatalf("%s: dumps differ", tag)
 	}
 	if rc, out, errs := run(t, o.peer, "check-freelist", gdir); rc != 0 {
-		// cpeer's audit wants mp_lower within a sub-page, which a P_LEAF2
-		// sub-page of 1-byte items outgrows (mp_lower counts 2 bytes per
-		// item): C's file then fails it alike, and must be the same.
-		crc, cout, cerrs := run(t, o.peer, "check-freelist", cdir)
-		if p.dupfixedSize != 1 || crc != rc || subpageComplaints(cerrs) != subpageComplaints(errs) {
-			t.Fatalf("%s: check-freelist of Go:\n%s\n%s", tag, out, errs)
-		}
-		t.Logf("NOTE: %s: C's and Go's file fail cpeer's audit alike: %s", tag, strings.TrimSpace(errs))
-		if cout != out || cerrs != errs {
-			// And md_entries differ: KNOWN_C_BUGS.md #14, as below.
-			return true
-		}
+		t.Fatalf("%s: check-freelist of Go:\n%s\n%s", tag, out, errs)
 	} else if rc, _, errs := run(t, o.peer, "check-freelist", cdir); rc != 0 {
 		// KNOWN_C_BUGS.md #14: C's MDB_NODUPDATA cursor delete subtracts a
 		// stale count; only md_entries may be off, so files differ there.
@@ -858,17 +861,6 @@ func runRound(t testing.TB, o *oracle, p *profile, ncur int, g *gen, nops int, l
 }
 
 func (o *oracle) dumpTool() string { return o.dump }
-
-// subpageComplaints are the lines of cpeer's audit about sub-pages.
-func subpageComplaints(errs string) string {
-	var out []string
-	for _, l := range strings.Split(errs, "\n") {
-		if strings.Contains(l, "bad sub-page") {
-			out = append(out, l)
-		}
-	}
-	return strings.Join(out, "\n")
-}
 
 // normDump drops the mapaddr= header line that C 1.0's mdb_dump writes
 // with the process's own map address (rlmdb KNOWN_C_BUGS.md, LMDB 1.0

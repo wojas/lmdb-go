@@ -3,33 +3,43 @@
 # (the write-differential script runner) and cpeer (the interop peer, for
 # its check-freelist and fill), and the C tools mdb_dump, mdb_copy and
 # mdb_stat, each against C LMDB 0.9 and C LMDB 1.0 (names *10), as rlmdb's
-# interop/build.rs builds them.
+# interop/build.rs builds them, plus writeops10_ndebug (writeops against a
+# 1.0 library built with -DNDEBUG, for the one test on which C 1.0's
+# assertions abort: rlmdb KNOWN_C_BUGS.md #37). The C sources are the ones
+# rlmdb vendors: tests/lmdb-c/0.9 (LMDB 0.9.36) and tests/lmdb-c/1.0 (the
+# pinned mdb.RE/1.0 commit; see tests/lmdb-c/README.md there).
 #
-# Usage: scripts/build-c-writeops.sh <rlmdb-root> <lmdb10-liblmdb-dir> <out-dir>
-#   <rlmdb-root>          the rlmdb checkout (libraries/liblmdb is C 0.9,
-#                         rust/ holds writeops.c and the peer sources)
-#   <lmdb10-liblmdb-dir>  libraries/liblmdb of the pinned LMDB 1.0 commit
-#                         (git archive/show of 4865523, see rlmdb's
-#                         interop/build.rs)
-#   <out-dir>             where the binaries go (e.g. /tmp/coracles in the
-#                         container; never inside a checkout)
+# Usage: scripts/build-c-writeops.sh <rlmdb-root> <out-dir>
+#   <rlmdb-root>  the rlmdb checkout (its repository root: tests/lmdb-c,
+#                 rlmdb/tests/c/writeops.c, interop/c)
+#   <out-dir>     where the binaries go (e.g. /tmp/coracles in the
+#                 container; never inside a checkout)
+# Environment:
+#   LMDB10_DIR    another directory with the LMDB 1.0 sources, instead of
+#                 tests/lmdb-c/1.0 (as rlmdb's interop/build.rs takes it)
+#   CC            the C compiler (default cc; e.g. "cc -arch x86_64" on
+#                 macOS for oracles of a GOARCH=amd64 test binary)
 #
 # In the Linux container (scripts/linux-test.sh), for example:
-#   git -C <lmdb repo> archive 4865523ff0e1514d26a675d9cfd1d3a4b2b6c4c3 \
-#     libraries/liblmdb | RLMDB_DIR=<rlmdb root> scripts/linux-test.sh sh -c \
-#     'mkdir -p /tmp/l10 && tar -x -C /tmp/l10 &&
-#      scripts/build-c-writeops.sh /rlmdb /tmp/l10/libraries/liblmdb /tmp/coracles &&
+#   RLMDB_DIR=<rlmdb root> scripts/linux-test.sh sh -c \
+#     'scripts/build-c-writeops.sh /rlmdb /tmp/coracles &&
 #      cd tests && RLMDB_BIN=/tmp/coracles go test ./engine'
+# (in Alpine first: apk add -q build-base).
 set -eu
 r=$1
-l10=$2
-out=$3
-l09=$r/libraries/liblmdb
-peer=$r/rust/interop/c
-writeops=$r/rust/rlmdb/tests/c/writeops.c
+out=$2
+l09=$r/tests/lmdb-c/0.9
+l10=${LMDB10_DIR:-$r/tests/lmdb-c/1.0}
+peer=$r/interop/c
+writeops=$r/rlmdb/tests/c/writeops.c
 cc=${CC:-cc}
 cflags="-O2 -g -pthread -W -Wall -Wno-unused-parameter"
+for f in "$l09/mdb.c" "$l10/mdb.c" "$peer/cpeer.c" "$writeops"; do
+  [ -f "$f" ] || { echo "build-c-writeops: $f not found" >&2; exit 2; }
+done
 mkdir -p "$out"
+obj=$(mktemp -d)
+trap 'rm -rf "$obj"' EXIT
 peer_srcs="$peer/cpeer.c $peer/cpeer_data.c $peer/cpeer_loops.c $peer/cpeer_misc.c $peer/cpeer_pagewalk.c $peer/dataset.c"
 
 # LMDB 0.9
@@ -53,4 +63,7 @@ for t in mdb_dump mdb_copy mdb_stat; do
   # shellcheck disable=SC2086
   $cc $cflags -I"$l10" -o "$out/${t}10" "$l10/$t.c" $lib10 -ldl
 done
+# writeops10_ndebug: only mdb.c without assertions, as interop/build.rs.
+$cc $cflags -DNDEBUG -I"$l10" -c "$l10/mdb.c" -o "$obj/mdb.o"
+$cc $cflags -I"$l10" -o "$out/writeops10_ndebug" "$writeops" "$obj/mdb.o" "$l10/midl.c" "$l10/module.c" -ldl
 echo "built in $out"

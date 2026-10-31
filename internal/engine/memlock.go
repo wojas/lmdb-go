@@ -3,14 +3,16 @@
 // system), and an in-process stand-in for the lock file in tests.
 //
 // AGENTS.md rule 2a: NoLock removes only the cross-process locking. Within
-// the process, write transactions are still serialised (Env.writerMu) and
-// readers are tracked in this table, which the writer consults through
-// FindOldest exactly as it consults the lock file's table, so pages a live
-// reader can still see are never reused. C's MDB_NOLOCK leaves both to the
-// caller; rlmdb tracks no readers there (its find_oldest returns txnid-1
-// without a lock region), which the Go port does not follow. Nothing on
-// disk changes. It keeps the reader-table protocol of rlmdb core/reader.rs
-// in memory and does not interoperate with other processes.
+// the process, write transactions are still serialised (this region's
+// writer lock, which every write transaction takes) and readers are
+// tracked in this table, which the writer consults through FindOldest
+// exactly as it consults the lock file's table, so pages a live reader can
+// still see are never reused. Every NoLock handle of a data file in the
+// process shares one region (registry.go), so this holds across handles.
+// C's MDB_NOLOCK leaves all of it to the caller; rlmdb does the same with
+// its LocalShared (core/registry.rs, core/reader.rs LocalReaders). Nothing
+// on disk changes. It keeps the reader-table protocol of rlmdb
+// core/reader.rs in memory and does not interoperate with other processes.
 
 package engine
 
@@ -67,10 +69,19 @@ func (m *MemLock) slot(i int) *memSlot { return (*m.slots.Load())[i] }
 // IsExclusive implements LockRegion.
 func (m *MemLock) IsExclusive() bool { return m.exclusive.Load() }
 
-// Downgrade implements LockRegion.
+// Downgrade implements LockRegion. The NoLock handles of one data file
+// share their region (registry.go), and each calls this once it has read
+// the file's header, before it begins a transaction: the first one to get
+// here sets the committed txnid from the newest meta page, while no writer
+// can have committed (no handle has finished opening), and later ones
+// leave it (rlmdb LocalShared::init_txnid).
 func (m *MemLock) Downgrade(txnid uint64) error {
-	m.txnid.Store(txnid)
-	m.exclusive.Store(false)
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.exclusive.Load() {
+		m.txnid.Store(txnid)
+		m.exclusive.Store(false)
+	}
 	return nil
 }
 
@@ -81,6 +92,18 @@ func (m *MemLock) MaxReaders() uint32 { return uint32(m.max) }
 func (m *MemLock) LockWriter(func() (uint64, error)) error {
 	m.writer <- struct{}{}
 	return nil
+}
+
+// TryLockWriter takes the writer lock if nobody holds it (the calling
+// goroutine included); a reader uses it to adopt another process's commit
+// without waiting (noLockSnapshot).
+func (m *MemLock) TryLockWriter() bool {
+	select {
+	case m.writer <- struct{}{}:
+		return true
+	default:
+		return false
+	}
 }
 
 // UnlockWriter implements LockRegion. The in-process lock belongs to no

@@ -1,5 +1,5 @@
 // create, stat, readers, reader-check, copy, nested-test and gen (rlmdb
-// rust/interop/c/cpeer_misc.c).
+// interop/c/cpeer_misc.c).
 
 package peer
 

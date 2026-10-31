@@ -55,8 +55,9 @@ commands in `cmd/` and `exp/cmd/`. Read the API documentation with
   big-endian targets build but are untested.
 * **`NoLock`** only removes the locking between processes. Within the
   process, write transactions are still serialised and pages that a live
-  reader can see are never reused; opening one environment twice in a
-  process fails with `EBUSY`.
+  reader can see are never reused, also across several `NoLock` handles
+  of one environment, which share their reader table; with a lock file,
+  opening one environment twice in a process fails with `EBUSY`.
 * **Version.** `lmdb.Version()` reports 0.9.85, above every C 0.9 release, so
   programs can tell this implementation from C.
 

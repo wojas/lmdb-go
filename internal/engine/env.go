@@ -82,6 +82,9 @@ type Env struct {
 	// (MDB_NOLOCK, or a read-only file system), see AGENTS.md rule 2a.
 	lock     LockRegion
 	lockFile bool
+	// mem is lock without a lock file: the in-memory region, under NoLock
+	// shared by every handle of the data file in the process (registry.go).
+	mem *MemLock
 	// slots are the idle reader slots this process keeps for its next
 	// read transactions (slotpool.go).
 	slots slotPool
@@ -93,8 +96,11 @@ type Env struct {
 	// transaction fails with MDB_PANIC.
 	fatal atomic.Bool
 
-	// writerMu serialises write transactions within the process (the
-	// shared writer mutex does that across processes) and guards writer.
+	// writerMu serialises the write transactions of this handle and guards
+	// writer; the lock region's writer lock (taken after it) serialises
+	// them with other processes' (the lock file's mutex) or, under NoLock,
+	// with the other handles' of the file in this process (the shared
+	// in-memory region).
 	writerMu sync.Mutex
 	writer   writerState
 
@@ -146,84 +152,6 @@ type writerState struct {
 	// waitMap is the map the goroutine waiting in LockWriter pinned before
 	// it began to wait (see lockWriter).
 	waitMap *sys.DataMap
-}
-
-// The process-wide registry of open environments: POSIX record locks
-// belong to the process, so a second handle of the same environment would
-// release the first one's locks (rlmdb returns EBUSY, as here). An
-// environment is its data file, whatever path names it: directory or
-// MDB_NOSUBDIR mode, symlinks, hard links. It is registered by the data
-// file's resolved path (it may not exist yet) and by its device and inode
-// once it exists. rlmdb registers the path given, so it takes the two
-// modes, and hard links, for different environments.
-var (
-	registryMu sync.Mutex
-	regPaths   = map[string]bool{}
-	regFiles   = map[sys.FileID]bool{}
-)
-
-// envID is what an environment registered.
-type envID struct {
-	path    string
-	file    sys.FileID
-	hasFile bool
-}
-
-// register registers the data file of the environment at path, before
-// anything of the environment is opened: EBUSY if this process has it
-// open already.
-func register(path string, noSubdir bool) (envID, error) {
-	data, _ := fileNames(path, noSubdir)
-	p, err := canonicalPath(data)
-	if err != nil {
-		return envID{}, err
-	}
-	id := envID{path: p}
-	if f, err := sys.StatFileID(p); err == nil {
-		id.file, id.hasFile = f, true
-	}
-	registryMu.Lock()
-	defer registryMu.Unlock()
-	if regPaths[id.path] || id.hasFile && regFiles[id.file] {
-		return envID{}, syscall.EBUSY
-	}
-	regPaths[id.path] = true
-	if id.hasFile {
-		regFiles[id.file] = true
-	}
-	return id, nil
-}
-
-// registerFile registers the data file f once it is open, if register
-// could not: it did not exist yet, or another file took its name since.
-func registerFile(id *envID, f *os.File) error {
-	file, err := sys.FileIDOf(f)
-	if err != nil {
-		return err
-	}
-	if id.hasFile && id.file == file {
-		return nil
-	}
-	registryMu.Lock()
-	defer registryMu.Unlock()
-	if regFiles[file] {
-		return syscall.EBUSY
-	}
-	if id.hasFile {
-		delete(regFiles, id.file)
-	}
-	regFiles[file] = true
-	id.file, id.hasFile = file, true
-	return nil
-}
-
-func unregister(id envID) {
-	registryMu.Lock()
-	delete(regPaths, id.path)
-	if id.hasFile {
-		delete(regFiles, id.file)
-	}
-	registryMu.Unlock()
 }
 
 // canonicalPath is the absolute form of the data file's path with
@@ -279,7 +207,9 @@ func Open(path string, opts Options) (env *Env, err error) {
 	}
 	dataPath, lockPath := fileNames(path, noSubdir)
 
-	regKey, err := register(path, noSubdir)
+	// With a lock file this refuses a second open before the lock file is
+	// touched (closing it would drop the first handle's record locks).
+	regKey, err := register(path, noSubdir, noLock)
 	if err != nil {
 		return nil, err
 	}
@@ -321,7 +251,11 @@ func Open(path string, opts Options) (env *Env, err error) {
 	if err != nil {
 		return nil, sys.Errno(err)
 	}
-	if err := registerFile(&e.regKey, e.dataFile); err != nil {
+	// The NoLock handles of one data file in this process share the
+	// in-memory region; with a lock file the data file must not be open
+	// in the process under another name either.
+	shared, err := registerFile(&e.regKey, e.dataFile)
+	if err != nil {
 		return nil, err
 	}
 	if readOnly && !noLock {
@@ -332,14 +266,38 @@ func Open(path string, opts Options) (env *Env, err error) {
 	// Without a lock file (MDB_NOLOCK, or OpenLock returned nil for a
 	// read-only file system) readers are tracked in memory: NoLock removes
 	// only the cross-process locking (AGENTS.md rule 2a). The table has no
-	// reader limit, as C's MDB_NOLOCK has none.
+	// reader limit, as C's MDB_NOLOCK has none; under NoLock it is the one
+	// every handle of the file in this process shares (registry.go).
 	e.lockFile = e.lock != nil
 	if !e.lockFile {
-		e.lock = NewMemLock(0)
+		e.mem = shared
+		if e.mem == nil {
+			// A read-only file system: the only handle of the file.
+			e.mem = NewMemLock(0)
+		}
+		e.lock = e.mem
 	}
 
 	// mdb_env_open2
 	meta, meta0, haveHeader, err := readHeader(e.dataFile, layout)
+	// Another NoLock handle of the process may be setting up the same new
+	// file (its size grows while the meta pages are written). Without a
+	// complete header, wait for that under the file's writer lock and read
+	// again; an empty file is then set up under the lock, so one handle
+	// writes the meta pages and the others see them. (A goroutine with a
+	// write transaction of the file in another handle always finds a
+	// complete header, so it never waits here.)
+	var setup *MemLock // holds its writer lock until the header is there
+	if shared != nil && (err != nil || !haveHeader) {
+		setup = shared
+		_ = setup.LockWriter(nil)
+		defer func() {
+			if setup != nil {
+				_ = setup.UnlockWriter()
+			}
+		}()
+		meta, meta0, haveHeader, err = readHeader(e.dataFile, layout)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -384,6 +342,10 @@ func Open(path string, opts Options) (env *Env, err error) {
 		if err := sys.WriteAt(e.dataFile, buf, 0); err != nil {
 			return nil, err
 		}
+	}
+	if setup != nil {
+		_ = setup.UnlockWriter()
+		setup = nil
 	}
 	e.pageSize = pageSize
 	e.flags.Store(flags)

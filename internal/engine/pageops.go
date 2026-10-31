@@ -85,7 +85,17 @@ func pgnoOf(p []byte) uint64 {
 
 func numKeys(l *format.Layout, p []byte) int { return l.NumKeys(hdr16(p, l.LowerOffset())) }
 
-func sizeLeft(l *format.Layout, p []byte) int { return max(pUpper(l, p)-pLower(l, p), 0) }
+// sizeLeft is SIZELEFT. A P_LEAF2 page only counts with mp_lower and
+// mp_upper (leaf2Count): its free space is C's 16-bit difference, which
+// stays exact where the stored mp_upper wrapped past 2^16 (1-byte items on
+// 1.0's 64 KiB pages). On other pages mp_upper is an offset, and a corrupt
+// one below mp_lower leaves no room.
+func sizeLeft(l *format.Layout, p []byte) int {
+	if pFlags(l, p)&format.PLeaf2 != 0 {
+		return int(hdr16(p, l.UpperOffset()) - hdr16(p, l.LowerOffset()))
+	}
+	return max(pUpper(l, p)-pLower(l, p), 0)
+}
 
 // ptrAt is mp_ptrs[i] + PAGEBASE: the offset of node i.
 func ptrAt(l *format.Layout, p []byte, i int) (int, bool) {
@@ -290,8 +300,6 @@ func insertNode(l *format.Layout, p []byte, indx, nodeSize int, key []byte, flag
 // key at indx, shifting the following keys up.
 func insertLeaf2(l *format.Layout, p []byte, indx int, key []byte, ksize int) bool {
 	nkeys := numKeys(l, p)
-	// ksize may be 1: C's mp_upper -= ksize - sizeof(indx_t) then adds 1
-	// (indx_t arithmetic), and setUpper stores mod 2^16 as C does.
 	if indx > nkeys || len(key) != ksize || ksize < 1 {
 		return false
 	}
@@ -302,14 +310,32 @@ func insertLeaf2(l *format.Layout, p []byte, indx int, key []byte, ksize int) bo
 	}
 	copy(p[start+ksize:end+ksize], p[start:end])
 	copy(p[start:start+ksize], key)
-	// Just using these for counting.
-	setLower(l, p, pLower(l, p)+2)
-	up := pUpper(l, p) - (ksize - 2)
-	if up < 0 {
-		return false
-	}
-	setUpper(l, p, up)
+	leaf2Count(l, p, 1, ksize)
 	return true
+}
+
+// leaf2Count is the mp_lower/mp_upper bookkeeping of a P_LEAF2 page after
+// n items of ksize bytes were added to it (n < 0: removed), as
+// mdb_node_add, mdb_node_del and mdb_page_split do it (rlmdb
+// page_ops::leaf2_count).
+//
+// A P_LEAF2 page has no pointer array and no node area; C uses the two
+// fields "just for counting": mp_lower grows by sizeof(indx_t) per item, so
+// that NUMKEYS works, and mp_upper drops by ksize - sizeof(indx_t), so that
+// SIZELEFT drops by ksize. C computes that difference unsigned and stores
+// the result modulo 2^16: for 1-byte items (MDB_DUPFIXED values of one
+// byte) mp_upper grows by one per item, past the end of the page, and on
+// 1.0's 64 KiB pages it wraps to 0 at the 24th item. That is what C writes
+// and what C readers expect (they never use mp_upper of a P_LEAF2 page as
+// an offset), so the stored fields are updated with the same wrapping
+// 16-bit arithmetic, for every ksize; sizeLeft subtracts modulo 2^16 as
+// SIZELEFT does.
+func leaf2Count(l *format.Layout, p []byte, n, ksize int) {
+	lower := int(hdr16(p, l.LowerOffset())) + 2*n
+	upper := int(hdr16(p, l.UpperOffset())) - n*(ksize-2)
+	// The conversions keep the low 16 bits, as C's store into an indx_t.
+	format.Put16(p, l.LowerOffset(), uint16(lower))
+	format.Put16(p, l.UpperOffset(), uint16(upper))
 }
 
 // nodeSizeAt is the on-page size of the node at off (header, key and
@@ -343,8 +369,7 @@ func deleteNode(l *format.Layout, p []byte, indx, ksize int) bool {
 			return false
 		}
 		copy(p[base:], p[base+ksize:end])
-		setLower(l, p, pLower(l, p)-2)
-		setUpper(l, p, pUpper(l, p)+ksize-2)
+		leaf2Count(l, p, -1, ksize)
 		return true
 	}
 	nodeOfs, ok := ptrAt(l, p, indx)

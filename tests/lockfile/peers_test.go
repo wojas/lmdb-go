@@ -19,6 +19,7 @@ import (
 
 	"github.com/PowerDNS/lmdb-go/internal/format"
 	"github.com/PowerDNS/lmdb-go/internal/lockfile"
+	"github.com/PowerDNS/lmdb-go/tests/internal/coracle"
 )
 
 func TestMain(m *testing.M) {
@@ -34,13 +35,8 @@ func oracleDir(t *testing.T) string {
 	if d := os.Getenv("LMDB_ORACLE_BIN"); d != "" {
 		return d
 	}
-	if r := os.Getenv("RLMDB_DIR"); r != "" {
-		dirs, _ := filepath.Glob(filepath.Join(r, "rust/target/release/build/rlmdb-interop-*/out/bin"))
-		for _, d := range dirs {
-			if _, err := os.Stat(filepath.Join(d, "cpeer10")); err == nil {
-				return d
-			}
-		}
+	if d := coracle.InteropBin(os.Getenv("RLMDB_DIR"), "cpeer10"); d != "" {
+		return d
 	}
 	t.Skip("C oracles not found: set LMDB_ORACLE_BIN (scripts/build-c-oracles.sh) or RLMDB_DIR")
 	return ""

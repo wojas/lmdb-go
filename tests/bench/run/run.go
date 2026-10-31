@@ -2,7 +2,7 @@
 // packages ../cgo and ../port) and the programs that run them share: the
 // parameters of a run, the timed samples and results, their statistics
 // and the result table. It is the Go form of the driver half of rlmdb's
-// rust/bench/src/main.rs (its RESULT lines, stats and table); it imports
+// bench/src/main.rs (its RESULT lines, stats and table); it imports
 // no LMDB.
 package run
 
