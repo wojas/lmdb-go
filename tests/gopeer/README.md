@@ -148,12 +148,20 @@ counts as C 0.9.36 and later do), and `delete` needs no workaround.
 | macOS 15 (arm64) | 165 / 165 | 231 / 231 | 5 / 5 |
 | Linux arm64, glibc (Debian bookworm) | 165 / 165 | 231 / 231 | 5 / 5 |
 | Linux arm64, musl (Alpine) | 165 / 165 | 231 / 231 | 5 / 5 |
+| Linux x86-64, glibc (Debian bookworm, under Rosetta) | 165 / 165 | 231 / 231 | 5 / 5 |
 
-The macOS row is with rlmdb's main after its restructuring
-(`t3/interop-gopeer-v2`, whose scenarios now include 1- to 3-byte
-`MDB_DUPFIXED` data sets; the Go peer's data set and page audit follow
-them). The Linux rows are from the branch on the old pin (`9ea2373`) and
-have not been rerun since.
+Every row is from the final validation (2026-11-01), with rlmdb's main
+after its restructuring (`t3/interop-gopeer-v2`, whose scenarios include
+1- to 3-byte `MDB_DUPFIXED` data sets; the Go peer's data set and page
+audit follow them). The x86-64 row ran in an x86-64 container under
+Rosetta (`--platform linux/amd64`, `rust:1-bookworm`, the gopeer built
+in the same platform's golang container, a target volume of its own);
+there `go_pairs10` and `go_peer` ran with `-- --test-threads=1`: with
+parallel tests the harness process itself stopped twice after 93 and
+166 tests, in different scenarios, with every thread of the test binary
+waiting in the kernel on a priority-inheritance futex (which neither C
+LMDB, rlmdb nor the harness uses) and no peer process running, which
+points at the emulator rather than at a peer.
 
 ### Results with `--impl cgo` (lmdb-go v1.9.4, C LMDB 0.9.35)
 

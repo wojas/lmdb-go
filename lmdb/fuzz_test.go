@@ -15,9 +15,10 @@ package lmdb
 // operations on every named database), copied plainly and compacted, then
 // opened for writing, changed in one transaction with a nested one and
 // committed, and read again. Errors of any kind are fine; a panic, a
-// hang (an input running longer than fuzzHangLimit) or runaway memory is
-// a failure (AGENTS.md rule 4). The watchdog crashes the process with
-// every goroutine's stack, so that the fuzzer records the input.
+// hang (an input running longer than fuzzHangLimit while fuzzing) or
+// runaway memory is a failure (AGENTS.md rule 4). The watchdog
+// (internal/fuzzwatch) crashes the process with every goroutine's stack,
+// so that the fuzzer records the input.
 
 import (
 	"bytes"
@@ -27,21 +28,19 @@ import (
 	"math/rand"
 	"os"
 	"path/filepath"
-	"runtime/debug"
-	"runtime/metrics"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
 	"github.com/PowerDNS/lmdb-go/internal/format"
+	"github.com/PowerDNS/lmdb-go/internal/fuzzwatch"
 )
 
 const (
-	// fuzzHangLimit is how long one input may run; inputs take
-	// milliseconds.
+	// fuzzHangLimit is how long one input may run while fuzzing; inputs
+	// take milliseconds.
 	fuzzHangLimit = 10 * time.Second
-	// fuzzHeapLimit is the live heap one input may build up.
+	// fuzzHeapLimit is how much one input may grow the heap.
 	fuzzHeapLimit = 2 << 30
 	// fuzzMaxFile bounds the inputs (the seeds are a few KiB).
 	fuzzMaxFile = 1 << 20
@@ -192,43 +191,10 @@ func must(tb testing.TB, err error) {
 	}
 }
 
-// fuzzWatchdog crashes the process if fn runs longer than fuzzHangLimit or
-// the heap grows past fuzzHeapLimit while it runs, with the stacks of all
-// goroutines (a hung goroutine cannot be stopped, and a crash makes the
-// fuzzer keep the input).
-func fuzzWatchdog(fn func()) {
-	done := make(chan struct{})
-	var wg sync.WaitGroup
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		sample := []metrics.Sample{{Name: "/memory/classes/heap/objects:bytes"}}
-		deadline := time.NewTimer(fuzzHangLimit)
-		defer deadline.Stop()
-		tick := time.NewTicker(20 * time.Millisecond)
-		defer tick.Stop()
-		for {
-			select {
-			case <-done:
-				return
-			case <-deadline.C:
-				debug.SetTraceback("all")
-				panic(fmt.Sprintf("fuzz input still running after %v (hang)", fuzzHangLimit))
-			case <-tick.C:
-				metrics.Read(sample)
-				if v := sample[0].Value.Uint64(); v > fuzzHeapLimit {
-					debug.SetTraceback("all")
-					panic(fmt.Sprintf("fuzz input uses %d MiB of heap", v>>20))
-				}
-			}
-		}
-	}()
-	defer func() {
-		close(done)
-		wg.Wait()
-	}()
-	fn()
-}
+// fuzzWatchdog runs fn, one fuzz input, under the watchdog: a crash with
+// every goroutine's stack if it runs longer than fuzzHangLimit (while
+// fuzzing) or grows the heap by more than fuzzHeapLimit.
+func fuzzWatchdog(fn func()) { fuzzwatch.Run(fuzzHangLimit, fuzzHeapLimit, fn) }
 
 func FuzzEnvFile(f *testing.F) {
 	for _, s := range fuzzSeedShapes {

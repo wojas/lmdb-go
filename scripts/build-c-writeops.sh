@@ -24,7 +24,11 @@
 #   RLMDB_DIR=<rlmdb root> scripts/linux-test.sh sh -c \
 #     'scripts/build-c-writeops.sh /rlmdb /tmp/coracles &&
 #      cd tests && RLMDB_BIN=/tmp/coracles go test ./engine'
-# (in Alpine first: apk add -q build-base).
+# (in Alpine first: apk add -q build-base). On macOS, for a GOARCH=amd64
+# test binary under Rosetta:
+#   CC="cc -arch x86_64" scripts/build-c-writeops.sh <rlmdb root> /tmp/coracles-x86 &&
+#   (cd tests && GOARCH=amd64 RLMDB_BIN=/tmp/coracles-x86 go test -timeout 30m ./engine)
+# (emulated, the tests take 7 to 9 minutes: hence the timeout).
 set -eu
 r=$1
 out=$2
