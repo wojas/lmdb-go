@@ -49,12 +49,15 @@ only rpeer has (exit 4, as for `cpeer`). Where lmdb-go's API differs from
 C's, gopeer does this:
 
 * **`mdb_del(key, NULL)` on a DUPSORT DB** (`delete`, every other whole
-  key). lmdb-go's `Txn.Del(dbi, key, nil)` passes an empty value instead
-  of `NULL`, so C looks for that value and fails (`MDB_NOTFOUND`, or
-  `MDB_BAD_VALSIZE` for a key with a sub-page or sub-DB). gopeer deletes
-  such keys with `MDB_SET` + `mdb_cursor_del(MDB_NODUPDATA)`, which is
-  what `mdb_del` does internally (same tree changes), and prints one
-  `NOT-IMPLEMENTED` line, which the harness reports as `SKIPPED partly`.
+  key). lmdb-go v1's `Txn.Del(dbi, key, nil)` passes an empty value
+  instead of `NULL`, so C looks for that value and fails (`MDB_NOTFOUND`,
+  or `MDB_BAD_VALSIZE` for a key with a sub-page or sub-DB). With `--impl
+  cgo` gopeer deletes such keys with `MDB_SET` +
+  `mdb_cursor_del(MDB_NODUPDATA)`, which is what `mdb_del` does
+  internally (same tree changes), and prints one `NOT-IMPLEMENTED` line,
+  which the harness reports as `SKIPPED partly`. The port's
+  `Txn.Del(dbi, key, nil)` is `mdb_del` with `NULL` (`delNullData` in
+  `impl.go`).
 * **`MDB_NOTLS`**: lmdb-go opens every environment with it, so `--notls`
   changes nothing and read transactions always behave like `MDB_NOTLS`
   ones (as rpeer's do).

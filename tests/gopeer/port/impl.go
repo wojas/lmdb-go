@@ -35,6 +35,10 @@ func setFormat(env *lmdb.Env, v10 bool) error {
 // isFormat10 tells whether an open env is an LMDB 1.0 environment.
 func isFormat10(env *lmdb.Env) bool { return env.Format() == lmdb.V10 }
 
+// delNullData tells whether Txn.Del(dbi, key, nil) is mdb_del with NULL
+// data: the port's is (lmdb DEVIATIONS.md).
+const delNullData = true
+
 // setPageSize sets the page size of a new LMDB 1.0 environment before
 // Open.
 func setPageSize(env *lmdb.Env, size int) error { return env.SetPageSize(size) }

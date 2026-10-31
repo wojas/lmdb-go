@@ -343,14 +343,15 @@ func cmdVerify(o *opts) int {
 var delKeyNoted bool
 
 // delKey is mdb_del(txn, dbi, key, NULL): delete key with all its values.
-// lmdb-go's Txn.Del always passes a value (an empty one for nil), so on a
-// DUPSORT DB it cannot express mdb_del(key, NULL): C LMDB looks for the
+// lmdb-go v1's Txn.Del always passes a value (an empty one for nil), so on
+// a DUPSORT DB it cannot express mdb_del(key, NULL): C LMDB looks for the
 // empty value (MDB_GET_BOTH) and fails with MDB_NOTFOUND or, for a key
-// with a sub-page or sub-DB, MDB_BAD_VALSIZE. There the key is deleted as
-// mdb_del0 does internally, with MDB_SET and mdb_cursor_del(MDB_NODUPDATA),
-// and a note says so once on stderr. (The tree changes are the same.)
+// with a sub-page or sub-DB, MDB_BAD_VALSIZE. There (unless delNullData)
+// the key is deleted as mdb_del0 does internally, with MDB_SET and
+// mdb_cursor_del(MDB_NODUPDATA), and a note says so once on stderr. (The
+// tree changes are the same.)
 func delKey(txn *lmdb.Txn, dbi lmdb.DBI, cur *lmdb.Cursor, key []byte, dupsort bool) error {
-	if !dupsort {
+	if !dupsort || delNullData {
 		return txn.Del(dbi, key, nil)
 	}
 	if !delKeyNoted {
