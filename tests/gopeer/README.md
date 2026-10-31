@@ -149,6 +149,12 @@ counts as C 0.9.36 and later do), and `delete` needs no workaround.
 | Linux arm64, glibc (Debian bookworm) | 165 / 165 | 231 / 231 | 5 / 5 |
 | Linux arm64, musl (Alpine) | 165 / 165 | 231 / 231 | 5 / 5 |
 
+The macOS row is with rlmdb's main after its restructuring
+(`t3/interop-gopeer-v2`, whose scenarios now include 1- to 3-byte
+`MDB_DUPFIXED` data sets; the Go peer's data set and page audit follow
+them). The Linux rows are from the branch on the old pin (`9ea2373`) and
+have not been rerun since.
+
 ### Results with `--impl cgo` (lmdb-go v1.9.4, C LMDB 0.9.35)
 
 `go_peer` passes on macOS and Linux: gopeer knows the same commands as
