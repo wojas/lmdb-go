@@ -4,8 +4,11 @@
 //
 // Beginning a read transaction (mdb_txn_renew0, mdb.c line 2758):
 //
-//  1. Claim a reader slot (LockRegion.AcquireSlot). As with MDB_NOTLS,
-//     every transaction owns its slot; Reset keeps it for Renew.
+//  1. Take a reader slot: an idle one this process owns from the pool
+//     (slotpool.go), else claim one (LockRegion.AcquireSlot). As with
+//     MDB_NOTLS, every transaction has its own slot; Reset keeps it for
+//     Renew, the end makes it idle and pools it (C's MDB_NOTLS releases
+//     it).
 //  2. Publish the last committed txnid (mti_txnid) in the slot, re-reading
 //     until stable. From then on writers do not reuse pages this snapshot
 //     needs.
@@ -64,6 +67,9 @@ type Txn struct {
 	// Read transactions: the reader slot (-1: none) and the state.
 	slot  int
 	state int
+	// poolCell is the cell of Env.slots this transaction object used
+	// last (see slotPool.get); kept when the object is reused.
+	poolCell int
 
 	// nameCur is the scratch cursor of findNamedDB, getCur and getX those
 	// of Get.
@@ -141,11 +147,17 @@ func (e *Env) BeginRead(t *Txn) error {
 	t.w = nil
 	t.slot = -1
 	t.state = txnDone
-	if e.closed.Load() {
-		return syscall.EINVAL
-	}
-	s, err := e.lock.AcquireSlot()
+	// The map first: while t holds a reference on it, the environment is
+	// not torn down (Close), so the lock region stays usable.
+	m, err := e.pin()
 	if err != nil {
+		return err
+	}
+	t.dmap = m
+	s, cell, err := e.acquireSlot(t.poolCell)
+	t.poolCell = cell
+	if err != nil {
+		t.releaseMap()
 		return err
 	}
 	t.slot = s
@@ -157,49 +169,31 @@ func (e *Env) BeginRead(t *Txn) error {
 	return nil
 }
 
-// takeSnapshot is the read-only branch of mdb_txn_renew0.
+// takeSnapshot is the read-only branch of mdb_txn_renew0, through the
+// transaction's map.
 func (t *Txn) takeSnapshot() error {
 	e := t.env
-	m, err := e.acquireMap()
-	if err != nil {
-		return err
-	}
-	t.dmap = m
+	m := t.dmap
 	var txnid uint64
 	var meta format.Meta
+	var err error
 	if !e.lockFile {
-		// No lock file: C takes the newest meta page (another process may
-		// have committed under MDB_NOLOCK). The slot of the in-memory table
-		// is published first and the meta checked again, as with the lock
-		// file's mti_txnid, so a writer of this process never reuses pages
-		// of this snapshot.
-		for {
-			if meta, err = e.pickMeta(); err != nil {
-				return err
-			}
-			e.lock.SetSlotTxnID(t.slot, meta.TxnID)
-			again, err := e.pickMeta()
-			if err != nil {
-				return err
-			}
-			if again.TxnID == meta.TxnID {
-				break
-			}
+		if meta, err = e.noLockSnapshot(m, t.slot); err != nil {
+			return err
 		}
-		txnid = meta.TxnID
-		return t.setSnapshot(txnid, &meta)
+		return t.setSnapshot(meta.TxnID, &meta)
 	}
 	for {
 		txnid = e.lock.PublishCurrentTxnID(t.slot)
 		if txnid == 0 && e.isReadOnly() {
-			if meta, err = e.pickMeta(); err != nil {
+			if meta, err = e.pickMetaIn(m); err != nil {
 				return err
 			}
 			e.lock.SetSlotTxnID(t.slot, meta.TxnID)
 			txnid = meta.TxnID
 			break
 		}
-		if meta, err = e.readMeta(int(txnid & 1)); err != nil {
+		if meta, err = e.readMetaIn(m, int(txnid&1)); err != nil {
 			return err
 		}
 		// If no commit happened while we copied the meta page, no writer
@@ -209,6 +203,102 @@ func (t *Txn) takeSnapshot() error {
 		}
 	}
 	return t.setSnapshot(txnid, &meta)
+}
+
+// noLockSnapshot selects the snapshot of a read transaction without a
+// lock file (MDB_NOLOCK, or a read-only file system) through the
+// transaction's map m, and publishes its txnid in slot of the in-memory
+// reader table. rlmdb's RoTxn::take_snapshot (NO_LOCK), as of its
+// commit ade31f0.
+//
+// C takes the newest meta page (mdb_env_pick_meta), and may copy a page
+// a writer of the process is rewriting: the roots of txn N with the txnid
+// of N+2, which the reader would publish while reading N's pages, so that
+// later writers reuse them. Here the protocol of the lock file
+// (mdb_txn_renew0, see takeSnapshot) runs with an in-process stand-in for
+// mti_txnid, the in-memory region's TxnID: this process's writers set it
+// where they set mti_txnid (writeMeta), and before rewriting a meta page
+// they set it to the snapshot they began from, on the other page, so it
+// never names the page being rewritten. The reader publishes it in its
+// slot, copies its meta page and re-reads it: if it did not move, no
+// writer of this process touched the page during the copy, and every
+// writer that may reuse the snapshot's pages (from txnid+3 on, see
+// FindOldest) begins after the re-check and sees the slot.
+//
+// Commits of other processes are not published to us (MDB_NOLOCK leaves
+// keeping processes apart to the caller, as in C), but a reader must see
+// the ones made while this process had no transaction, as C's does. So a
+// reader that finds a newer meta page on the file adopts its txnid if no
+// writer of this process holds the writer lock (TryLock: readers never
+// wait) and starts over. With a writer, the snapshot it has is kept: the
+// copy is consistent, and the writer publishes its commit, which builds
+// on the newest one, when it is done. A plain copy holds the writer lock
+// while its transaction renews, so it adopts the newest txnid first
+// (copyPlain).
+func (e *Env) noLockSnapshot(m *sys.DataMap, slot int) (format.Meta, error) {
+	for {
+		txnid := e.lock.PublishCurrentTxnID(slot)
+		meta, err := e.readMetaIn(m, int(txnid&1))
+		if e.lock.TxnID() != txnid {
+			// A commit of ours meanwhile (a failed read may have been a
+			// torn page): again.
+			continue
+		}
+		if err != nil {
+			return meta, err
+		}
+		if !e.newerCommitOnFile(m, txnid, &meta) || !e.writerMu.TryLock() {
+			return meta, nil
+		}
+		adopted, err := e.adoptNewestTxnID(m)
+		e.writerMu.Unlock()
+		if err != nil {
+			return meta, err
+		}
+		if !adopted {
+			return meta, nil
+		}
+	}
+}
+
+// newerCommitOnFile reports whether the data file holds a commit newer
+// than snapshot txnid, whose meta page was copied into meta: that page
+// holds another one, or the other meta page a newer one. Only possible
+// without a lock file, where other processes do not publish their commits
+// to us. rlmdb's newer_commit_on_file.
+func (e *Env) newerCommitOnFile(m *sys.DataMap, txnid uint64, meta *format.Meta) bool {
+	if meta.TxnID != txnid {
+		return true
+	}
+	_, other, ok := e.metaIDsIn(m, int(txnid&1)^1)
+	return ok && other > txnid
+}
+
+// adoptNewestTxnIDPinned is adoptNewestTxnID through the current map.
+func (e *Env) adoptNewestTxnIDPinned() error {
+	m, err := e.pin()
+	if err != nil {
+		return err
+	}
+	defer m.Release()
+	_, err = e.adoptNewestTxnID(m)
+	return err
+}
+
+// adoptNewestTxnID makes the newest meta page's txnid the in-process
+// committed txnid if it is newer (commits of other processes, without a
+// lock file). The caller holds writerMu, so no writer of this process
+// rewrites a meta page meanwhile.
+func (e *Env) adoptNewestTxnID(m *sys.DataMap) (bool, error) {
+	newest, err := e.pickMetaIn(m)
+	if err != nil {
+		return false, err
+	}
+	if newest.TxnID <= e.lock.TxnID() {
+		return false, nil
+	}
+	e.lock.SetTxnID(newest.TxnID)
+	return true, nil
 }
 
 // setSnapshot installs the snapshot described by meta (the tail of
@@ -235,10 +325,11 @@ func (t *Txn) Reset() {
 	if t.w != nil || t.state != txnActive {
 		return
 	}
-	if t.slot >= 0 && !t.env.closed.Load() {
+	// The map stays: it keeps the environment, and so the slot, usable
+	// after a Close until the transaction ends (Renew replaces it).
+	if t.slot >= 0 {
 		t.env.lock.ResetSlot(t.slot)
 	}
-	t.releaseMap()
 	t.txnid = 0
 	t.state = txnReset
 }
@@ -257,6 +348,14 @@ func (t *Txn) Renew() error {
 		t.state = txnDone
 		return format.BadRSlot
 	}
+	// The current map (SetMapSize may have replaced the one t kept),
+	// taken before the old one is released.
+	m, err := t.env.pin()
+	if err != nil {
+		return err
+	}
+	t.releaseMap()
+	t.dmap = m
 	if err := t.takeSnapshot(); err != nil {
 		t.Abort()
 		return err
@@ -282,8 +381,9 @@ func (t *Txn) Abort() {
 	if t.state == txnDone && t.slot < 0 && t.dmap == nil {
 		return
 	}
-	if t.slot >= 0 && !t.env.closed.Load() {
-		t.env.lock.ReleaseSlot(t.slot)
+	if t.slot >= 0 {
+		// Before the map: its release may tear the environment down.
+		t.poolCell = t.env.releaseSlot(t.slot, t.poolCell)
 	}
 	t.slot = -1
 	t.releaseMap()

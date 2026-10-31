@@ -223,9 +223,9 @@ func fileExists(p string) bool {
 	return err == nil
 }
 
-// TestEndAfterClose: transactions that outlive Close may still end (Reset,
-// Abort) without touching the closed lock region (whose slots Close
-// cleared); beginning or renewing one fails.
+// TestEndAfterClose: transactions that outlive Close may still be used
+// and end (Reset, Abort); beginning or renewing one fails. (See
+// lifetime_test.go for what stays alive until they end.)
 func TestEndAfterClose(t *testing.T) {
 	env, _ := openTest(t, format.V09, Options{OpenLock: OpenMemLock})
 	r1, err := env.BeginTxn(nil, format.ReadOnly)
@@ -256,4 +256,65 @@ func TestEndAfterClose(t *testing.T) {
 	if _, err := env.BeginTxn(nil, 0); err != syscall.EINVAL {
 		t.Errorf("write BeginTxn after Close: %v", err)
 	}
+}
+
+// A NoLock reader that begins while this process's writer is writing a
+// meta page must not take a torn copy of it (review finding P1-1: a copy
+// with the txnid of the meta being written and the roots of the one it
+// replaces; the reader published the new txnid while reading old pages,
+// and the next writers reused them). The torn page is made on purpose:
+// during the write of W's meta page the test hook writes W-2's meta with
+// W's txnid there, then begins a reader. It must read W-1, the
+// in-process committed txnid, from the other page (and not adopt the
+// "newer" page while the writer holds the lock), and keep reading it
+// after W and later commits.
+func TestNoLockTornMeta(t *testing.T) {
+	forFormats(t, func(t *testing.T, fm format.Format) {
+		env, _ := openTest(t, fm, Options{Flags: format.NoLock})
+		for i := 1; i <= 3; i++ {
+			putKV(t, env, "k", fmt.Sprint(i))
+		}
+		var r *Txn
+		var hookErr error
+		testHookMetaWrite = func(e *Env, page int) {
+			testHookMetaWrite = nil
+			old, err := e.readMeta(page) // W-2
+			if err != nil {
+				hookErr = err
+				return
+			}
+			torn := old
+			torn.TxnID += 2 // W
+			var buf [format.MetaSize]byte
+			torn.Write(buf[:])
+			off := int64(page*e.pageSize + e.layout.MetaOffset() + format.MetaMapSize)
+			if _, err := e.dataFile.WriteAt(buf[format.MetaMapSize:], off); err != nil {
+				hookErr = err
+				return
+			}
+			r, hookErr = e.BeginTxn(nil, format.ReadOnly)
+		}
+		defer func() { testHookMetaWrite = nil }()
+		putKV(t, env, "k", "4") // W = 4
+		if hookErr != nil || r == nil {
+			t.Fatalf("hook: %v", hookErr)
+		}
+		defer r.Abort()
+		check := func(when string) {
+			t.Helper()
+			v, err := r.Get(MainDBI, []byte("k"))
+			if err != nil || r.ID() != 3 || string(v) != "3" {
+				t.Fatalf("%s: reader at txnid %d reads %q (%v), want 3 and \"3\"", when, r.ID(), v, err)
+			}
+		}
+		check("begun during the meta write")
+		v, _ := r.Get(MainDBI, []byte("k"))
+		for i := 5; i < 20; i++ {
+			putKV(t, env, "k", fmt.Sprint(i))
+		}
+		check("after 15 more commits")
+		if string(v) != "3" {
+			t.Fatalf("the reader's value changed under it: %q", v)
+		}
+	})
 }

@@ -20,6 +20,10 @@
 //     read transaction, through Env.View (a managed transaction and a
 //     closure), BeginTxn+Abort, a transaction reused with Reset+Renew, and
 //     that plus a cursor reused with Cursor.Renew.
+//   - view_empty / view8_get: an Env.View that does nothing (the read
+//     transaction's own cost), and view_get on 8 goroutines at once (wall
+//     time per View over all of them: concurrent begins and ends of read
+//     transactions, the reader table's contention).
 //   - update_put / txn_put: one put per write transaction (MDB_NOSYNC),
 //     through Env.Update and BeginTxn+Commit.
 //
@@ -28,6 +32,10 @@
 package workloads
 
 import (
+	"sync"
+	"sync/atomic"
+	"time"
+
 	"github.com/PowerDNS/lmdb-go/tests/bench/data"
 
 	lmdb "github.com/PowerDNS/lmdb-go/lmdb"
@@ -159,6 +167,53 @@ func goapiGroup(c *ctx) {
 		sink.Add(sum)
 	}
 	c.report("view_get", s)
+
+	s = nil
+	empty := func(*lmdb.Txn) error { return nil }
+	for it := 0; it <= c.p.Reps; it++ {
+		t := startTimer()
+		for range idx[:m] {
+			check(env.View(empty))
+		}
+		s.record(it, t, m)
+	}
+	c.report("view_empty", s)
+
+	s = nil
+	for it := 0; it <= c.p.Reps; it++ {
+		var start atomic.Bool
+		var wg sync.WaitGroup
+		var errp atomic.Pointer[error]
+		for g := 0; g < readers; g++ {
+			wg.Add(1)
+			// Each goroutine does m lookups, from its own place in idx.
+			off := g * m / readers
+			goCheck(wg.Done, &errp, func() {
+				spinUntil(&start)
+				var sum uint64
+				for j := 0; j < m; j++ {
+					key := keys.Key(int(idx[(off+j)%m]))
+					check(env.View(func(txn *lmdb.Txn) error {
+						txn.RawRead = true
+						v, err := txn.Get(db, key)
+						if err != nil {
+							return err
+						}
+						sum += uint64(len(v)) + uint64(v[0])
+						return nil
+					}))
+				}
+				sink.Add(sum)
+			})
+		}
+		time.Sleep(10 * time.Millisecond)
+		t := startTimer()
+		start.Store(true)
+		wg.Wait()
+		rethrow(&errp)
+		s.record(it, t, readers*m)
+	}
+	c.report("view8_get", s)
 
 	s = nil
 	for it := 0; it <= c.p.Reps; it++ {

@@ -11,6 +11,7 @@ Status of the stage-1 engine port (PLAN.md, agent E). rlmdb sources:
 | `internal/sys/*` | `os/unix.rs`, `os/mod.rs` minus shared locks | done (data map, pread/pwrite, fdatasync) |
 | `lockregion.go` | `core/reader.rs` (interface only) | done |
 | `memlock.go` | (none) | in-memory region: NoLock reader table, test stand-in |
+| `slotpool.go` | (none; C's TLS-mode slot reuse) | idle reader slots kept for the next read transaction |
 | `env.go` | `core/env.rs` | done |
 | `dbi.go` | `core/dbi.rs` | done |
 | `txn.go` | `core/txn.rs` | done |
@@ -96,11 +97,19 @@ Status of the stage-1 engine port (PLAN.md, agent E). rlmdb sources:
   write transaction costs O(DBs in use), not O(`MaxDBs`) (stage 2:
   lmdb-go's tests set `MaxDBs` to 65536).
 * `Env.Close` with transactions still alive (stage 2, for lmdb-go's
-  finalizers): they keep their data map, may still `Reset` and `Abort`
-  (without touching the closed lock region, whose slots `Close` cleared),
-  and `BeginRead`, `Renew` and write `BeginTxn` fail with `EINVAL`. The
-  caller serialises `Close` with transactions ending (package `lmdb` does,
-  with its `closeLock`).
+  finalizers; C requires them all to end first): `BeginRead`, `Renew` and
+  write `BeginTxn` fail with `EINVAL`, and the live ones keep working
+  until they end. The teardown (pooled slots, lock region, files,
+  registry entry) runs when the last data map is unmapped
+  (`Env.mapFreed`): every transaction holds a map reference from its begin
+  to its end, Reset included, and takes it before it touches the lock
+  region; the environment holds one on its current map until `Close`. So
+  surviving transactions keep their reader slots and the process's
+  liveness lock (their snapshots stay protected against writers here and
+  in other processes) and never use a torn-down region, without a lock
+  around their operations; reopening the path meanwhile is `EBUSY`
+  (stage 4, review findings P1-4 and P1-5: `Close` cleared their slots and
+  closed the lock file under them).
 * `LockRegion.UnlockWriter` returns an error (the Linux mutex refuses an
   unlock from another thread, EPERM): `Commit` reports it if the commit
   itself succeeded, `Abort` ignores it as C does; the in-process writer
@@ -165,12 +174,32 @@ counts of the API's hot paths are pinned by `lmdb/alloc_test.go`.
   unbounded in-memory reader table (MemLock) that FindOldest consults, and
   write transactions stay serialised by Env.writerMu. Snapshots under
   NoLock still come from the newest meta page (C's mdb_env_pick_meta), so
-  commits by another process (coordinated by the caller) are seen; the
-  reader's slot is published before the meta is checked again. C's
-  observable outputs are kept: no lock file is created, Info.NumReaders is
+  commits by another process (coordinated by the caller) are seen. Readers
+  use the lock-file protocol with an in-process stand-in for mti_txnid
+  (the in-memory region's TxnID: set by this process's writers after the
+  meta write, and to the snapshot they began from before it), plus a
+  catch-up with other processes' commits while no writer of this process
+  holds writerMu (TryLock); a plain copy adopts the newest txnid under the
+  writer lock before its transaction renews (noLockSnapshot; rlmdb's
+  design, commit ade31f0; stage 4, review finding P1-1: comparing the
+  txnids of two copies accepted a torn copy, N's roots with N+2's txnid).
+  C's observable outputs are kept: no lock file is created, Info.NumReaders is
   0, ReaderList is nil (C prints "(no reader locks)"), ReaderCheck is 0,
   and there is no reader limit. A second open of the same path in one
   process fails with EBUSY (rlmdb's registry).
+* Reader slots (stage 4, `slotpool.go`): C with `MDB_NOTLS` (lmdb-go's
+  mode) and rlmdb claim a slot under the reader mutex at every read
+  transaction's begin and free it (`mr_pid = 0`) at the end. Here the end
+  leaves the slot idle and owned (`mr_txnid = (txnid_t)-1`, as C's TLS
+  mode leaves a thread's slot) in a bounded per-`Env` pool, and the next
+  read transaction takes it without the mutex (no cgo call on the read
+  path, AGENTS.md rule 1); C's `MDB_BAD_RSLOT` check (`mr_pid` ours and
+  idle) runs before reuse, and a slot that fails it is dropped. Bound:
+  `min(MaxReaders/4, 64)`; a claim at index `MaxReaders*3/4` or above, or
+  `MDB_READERS_FULL`, turns pooling off until a claim lands lower. Other
+  processes see the idle slots (`mdb_stat -r`: txnid `-`) and count them
+  in `mti_numreaders`, as for a C process in TLS mode; the environment's
+  teardown releases them. Not in rlmdb (to be proposed there).
 * The registry of open environments (EBUSY for a second open in the
   process) holds data files, by resolved path and, once the file exists,
   by device and inode (registered before the lock file is touched, and

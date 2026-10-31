@@ -108,11 +108,18 @@ differently from C is in `internal/engine/PORTING.md` and in rlmdb's
 * **`Cursor.Renew`** is `EINVAL` for a cursor of a write transaction, onto
   a write transaction, and onto a transaction of another environment (C
   does not check the last one and writes past its cursor).
-* **Ending transactions after `Env.Close`.** A read transaction that
-  outlives `Close` keeps its snapshot readable and may still be reset and
-  aborted (the finalizer does that), without touching the closed lock file;
-  `Renew` and new transactions fail. `Commit` of a write transaction after
-  `Close` aborts it and returns `EINVAL`.
+* **Transactions that outlive `Env.Close`.** C requires every transaction
+  to end before `mdb_env_close` (v1 then used freed C memory). Here `Close`
+  stops new transactions and `Renew` (`EINVAL`), but a read transaction
+  that outlives it keeps its snapshot readable and protected, and may
+  still be read, reset and aborted (the finalizer does that): the
+  environment stays open underneath, with the transaction's reader slot,
+  the process's liveness lock in the lock file (so other processes' reader
+  checks leave the slot alone), the files and the registry entry, until
+  the last such transaction (active or reset) has ended, and is torn down
+  then. Until that moment, opening the same path again in this process
+  fails with `EBUSY`. `Commit` of a write transaction after `Close` aborts
+  it and returns `EINVAL`.
 * **`SetMapSize` on an open environment** may run while read transactions
   are active (they keep the map they began with); `EINVAL` while this
   process has a write transaction, as in C.
@@ -130,6 +137,24 @@ differently from C is in `internal/engine/PORTING.md` and in rlmdb's
   `fn == nil` is `EINVAL` (v1: an `OpError` holding errno -1). Before
   `Open` and with `NoLock` the text is `(no reader locks)` (C's output
   without a lock file).
+* **Reader slots outlive read transactions.** lmdb-go opens every
+  environment with `MDB_NOTLS`, under which C claims a reader slot (under
+  the shared reader mutex) at each read transaction's begin and frees it
+  at the end. Here a read transaction that ends (`View`, `Abort`,
+  `Commit`) leaves its slot owned by the process and idle (`mr_pid` the
+  process, `mr_txnid` `(txnid_t)-1`), exactly as C's default TLS mode
+  leaves a thread's slot, and the next read transaction of the
+  environment reuses it without the mutex and without a cgo call. Idle
+  slots pin no snapshot (C's `mdb_find_oldest` ignores them), and other
+  processes' reader checks leave them alone while this process lives.
+  Other processes see them: `mdb_stat -r`, `mdb_reader_list` and
+  `ReaderList` print them with txnid `-`, and `Info().NumReaders` (the
+  table's high-water mark) counts them. At most `MaxReaders/4` slots (and
+  at most 64) are kept; when the table gets nearly full (a new slot in
+  its top quarter, or `MDB_READERS_FULL`) ending transactions release
+  their slots instead; closing the environment releases them all. A reused slot keeps
+  the thread id of the thread that claimed it (diagnostic only). See
+  `internal/engine/slotpool.go`.
 * **Finalizers.** `Env` and unmanaged `Txn`s have v1's finalizers. Cursors
   have none: v1's freed the C cursor of a read transaction, and here
   there is nothing to free. The finalizer of an unreachable nested `Txn`
