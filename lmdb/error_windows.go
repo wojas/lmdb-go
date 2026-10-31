@@ -1,17 +1,12 @@
 package lmdb
 
-/*
-#include <errno.h>
-#include "lmdb.h"
-*/
-import "C"
 import "syscall"
 
-func operrno(op string, ret C.int) error {
-	if ret == C.MDB_SUCCESS {
+func operrno(op string, ret int) error {
+	if ret == success {
 		return nil
 	}
-	if minErrno <= ret && ret <= maxErrno {
+	if minErrno <= int32(ret) && int32(ret) <= maxErrno {
 		return &OpError{Op: op, Errno: Errno(ret)}
 	}
 
@@ -22,19 +17,19 @@ func operrno(op string, ret C.int) error {
 	// following table was generated.
 	var errno syscall.Errno
 	switch ret {
-	case C.ENOENT:
+	case 2: // ENOENT
 		errno = syscall.ENOENT /* 2, FILE_NOT_FOUND */
-	case C.EIO:
+	case 5: // EIO
 		errno = syscall.EIO /* 5, ACCESS_DENIED */
-	case C.ENOMEM:
+	case 12: // ENOMEM
 		errno = syscall.ENOMEM /* 12, INVALID_ACCESS */
-	case C.EACCES:
+	case 13: // EACCES
 		errno = syscall.EACCES /* 13, INVALID_DATA */
-	case C.EBUSY:
+	case 16: // EBUSY
 		errno = syscall.EBUSY /* 16, CURRENT_DIRECTORY */
-	case C.EINVAL:
+	case 22: // EINVAL
 		errno = syscall.EINVAL /* 22, BAD_COMMAND */
-	case C.ENOSPC:
+	case 28: // ENOSPC
 		errno = syscall.ENOSPC /* 28, OUT_OF_PAPER */
 	default:
 		errno = syscall.Errno(ret)

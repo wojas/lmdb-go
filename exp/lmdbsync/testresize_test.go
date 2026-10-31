@@ -16,6 +16,7 @@ import (
 )
 
 func TestResize(t *testing.T) {
+	requireLockFile(t)
 	tempdir, err := ioutil.TempDir("", "lmdbsync_testresize")
 	if err != nil {
 		t.Fatal(err)

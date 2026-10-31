@@ -65,17 +65,9 @@ func TestValBytes(t *testing.T) {
 
 func TestVal(t *testing.T) {
 	orig := []byte("hey hey")
-	val := wrapVal(orig)
+	val := orig
 
-	p := getBytes(val)
-	if !bytes.Equal(p, orig) {
-		t.Errorf("getBytes() not the same as original data: %q", p)
-	}
-	if &p[0] != &orig[0] {
-		t.Errorf("getBytes() is not the same slice as original")
-	}
-
-	p = getBytesCopy(val)
+	p := getBytesCopy(val)
 	if !bytes.Equal(p, orig) {
 		t.Errorf("getBytesCopy() not the same as original data: %q", p)
 	}

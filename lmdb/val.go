@@ -1,34 +1,5 @@
 package lmdb
 
-/*
-#include <stdlib.h>
-#include <stdio.h>
-#include "lmdb.h"
-*/
-import "C"
-
-import (
-	"unsafe"
-
-	"github.com/PowerDNS/lmdb-go/internal/lmdbarch"
-)
-
-// valSizeBits is the number of bits which constraining the length of the
-// single values in an LMDB database, either 32 or 31 depending on the
-// platform.  valMaxSize is the largest data size allowed based.  See runtime
-// source file malloc.go and the compiler typecheck.go for more information
-// about memory limits and array bound limits.
-//
-//	https://github.com/golang/go/blob/a03bdc3e6bea34abd5077205371e6fb9ef354481/src/runtime/malloc.go#L151-L164
-//	https://github.com/golang/go/blob/36a80c5941ec36d9c44d6f3c068d13201e023b5f/src/cmd/compile/internal/gc/typecheck.go#L383
-//
-// On 64-bit systems, luckily, the value 2^32-1 coincides with the maximum data
-// size for LMDB (MAXDATASIZE).
-const (
-	valSizeBits = lmdbarch.Width64*32 + (1-lmdbarch.Width64)*31
-	valMaxSize  = 1<<valSizeBits - 1
-)
-
 // Multi is a wrapper for a contiguous page of sorted, fixed-length values
 // passed to Cursor.PutMulti or retrieved using Cursor.Get with the
 // GetMultiple/NextMultiple flag.
@@ -103,18 +74,9 @@ func valBytes(b []byte) ([]byte, int) {
 	return b, len(b)
 }
 
-func wrapVal(b []byte) *C.MDB_val {
-	p, n := valBytes(b)
-	return &C.MDB_val{
-		mv_data: unsafe.Pointer(&p[0]),
-		mv_size: C.size_t(n),
-	}
-}
-
-func getBytes(val *C.MDB_val) []byte {
-	return (*[valMaxSize]byte)(unsafe.Pointer(val.mv_data))[:val.mv_size:val.mv_size]
-}
-
-func getBytesCopy(val *C.MDB_val) []byte {
-	return C.GoBytes(val.mv_data, C.int(val.mv_size))
+func getBytesCopy(val []byte) []byte {
+	// As C.GoBytes: a new slice, never nil.
+	p := make([]byte, len(val))
+	copy(p, val)
+	return p
 }

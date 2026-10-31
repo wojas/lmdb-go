@@ -1,17 +1,11 @@
 package lmdb
 
-/*
-#include <stdlib.h>
-#include <stdio.h>
-#include "lmdb.h"
-#include "lmdbgo.h"
-*/
-import "C"
-
 import (
 	"log"
 	"runtime"
-	"unsafe"
+	"syscall"
+
+	"github.com/PowerDNS/lmdb-go/internal/engine"
 )
 
 // This flags are used exclusively for Txn.OpenDBI and Txn.OpenRoot.  The
@@ -21,19 +15,19 @@ import (
 const (
 	// Flags for Txn.OpenDBI.
 
-	ReverseKey = C.MDB_REVERSEKEY // Use reverse string keys.
-	DupSort    = C.MDB_DUPSORT    // Use sorted duplicates.
-	DupFixed   = C.MDB_DUPFIXED   // Duplicate items have a fixed size (DupSort).
-	ReverseDup = C.MDB_REVERSEDUP // Reverse duplicate values (DupSort).
-	Create     = C.MDB_CREATE     // Create DB if not already existing.
+	ReverseKey = 0x02    // Use reverse string keys.
+	DupSort    = 0x04    // Use sorted duplicates.
+	DupFixed   = 0x10    // Duplicate items have a fixed size (DupSort).
+	ReverseDup = 0x40    // Reverse duplicate values (DupSort).
+	Create     = 0x40000 // Create DB if not already existing.
 
 	// IntegerKey and IntegerDup should only be used when needed for
 	// compatibility with other programs that require them. The keys will be
 	// interpreted as in-memory integers and sorted according to the endianness
 	// of the system. The keys returned by the API calls will still be
 	// []byte slices.
-	IntegerKey = C.MDB_INTEGERKEY // Use native integer order.
-	IntegerDup = C.MDB_INTEGERDUP // Duplicate integers (DupSort).
+	IntegerKey = 0x08 // Use native integer order.
+	IntegerDup = 0x20 // Duplicate integers (DupSort).
 )
 
 // Txn is a database transaction in an environment.
@@ -58,18 +52,19 @@ type Txn struct {
 	managed  bool
 	readonly bool
 
-	// The value of Txn.ID() is cached so that the cost of cgo does not have to
-	// be paid.  The id of a Txn cannot change over its life, even if it is
-	// reset/renewed
-	id uintptr
+	// pooled: _txn came from env.txns and goes back there when the
+	// transaction ends.
+	pooled bool
 
-	// Pointer to scratch space for key and val in readonly transactions
-	cbuf unsafe.Pointer
+	// gen counts Reset and Renew.  A cursor remembers the generation it was
+	// opened or renewed in; after a Reset and Renew without Cursor.Renew it
+	// starts over unpositioned, as in rlmdb's C API (in C it would keep
+	// pointers into the old snapshot).
+	gen uint32
 
-	env  *Env
-	_txn *C.MDB_txn
-	key  *C.MDB_val
-	val  *C.MDB_val
+	env *Env
+	// _txn is the transaction; nil once it has ended (Commit, Abort).
+	_txn *engine.Txn
 
 	errLogf func(format string, v ...interface{})
 }
@@ -77,45 +72,39 @@ type Txn struct {
 // beginTxn does not lock the OS thread which is a prerequisite for creating a
 // write transaction.
 func beginTxn(env *Env, parent *Txn, flags uint) (*Txn, error) {
+	e := env.eng.Load()
+	if e == nil {
+		// The environment exists only after a successful Open.
+		return nil, errNotOpen
+	}
 	txn := &Txn{
 		readonly: (flags&Readonly != 0),
 		env:      env,
 	}
 
-	var ptxn *C.MDB_txn
+	var ptxn *engine.Txn
 	if parent == nil {
-		if flags&Readonly == 0 {
-			// In a write Txn we can use the shared, C-allocated key and value
-			// allocated by env, and freed when it is closed.
-			txn.key = env.ckey
-			txn.val = env.cval
-		} else {
-			// Readonly transaction.
-			// We cannot share global C.MDB_val values in this scenario, because
-			// there can be multiple simultaneous read transactions.
-			// Allocate C memory for two values in one call.
-			// This is freed in clearTxn(), which is always called at the end
-			// of a transaction through Commit() or Abort().
-			if C.sizeof_MDB_val == 0 {
-				panic("zero C.sizeof_MDB_val") // should never happen
+		if flags&Readonly != 0 {
+			// Readonly transaction: the state of an ended one is reused,
+			// so that nothing is allocated but the Txn.  It goes back to
+			// env.txns in clearTxn(), which is always called at the end of
+			// a transaction through Commit() or Abort().
+			txn._txn = env.readTxn()
+			txn.pooled = true
+			if err := e.BeginRead(txn._txn); err != nil {
+				txn.clearTxn()
+				return nil, operr("mdb_txn_begin", err)
 			}
-			txn.cbuf = C.malloc(2 * C.sizeof_MDB_val)
-			txn.key = (*C.MDB_val)(txn.cbuf)
-			txn.val = (*C.MDB_val)(unsafe.Pointer(
-				uintptr(txn.cbuf) + uintptr(C.sizeof_MDB_val),
-			))
+			return txn, nil
 		}
-	} else {
-		// Because parent Txn objects cannot be used while a sub-Txn is active
-		// it is OK for them to share their C.MDB_val objects.
-		ptxn = parent._txn
-		txn.key = parent.key
-		txn.val = parent.val
+	} else if ptxn = parent._txn; ptxn == nil {
+		return nil, errInvalid("mdb_txn_begin")
 	}
-	ret := C.mdb_txn_begin(env._env, ptxn, C.uint(flags), &txn._txn)
-	if ret != success {
-		return nil, operrno("mdb_txn_begin", ret)
+	_txn, err := e.BeginTxn(ptxn, uint32(flags))
+	if err != nil {
+		return nil, operr("mdb_txn_begin", err)
 	}
+	txn._txn = _txn
 	return txn, nil
 }
 
@@ -126,19 +115,16 @@ func beginTxn(env *Env, parent *Txn, flags uint) (*Txn, error) {
 // See mdb_txn_id.
 func (txn *Txn) ID() uintptr {
 	// It is possible for a txn to legitimately have ID 0 if it a readonly txn
-	// created before any updates.  In practice this does not really happen
-	// because an application typically must do an initial update to initialize
-	// application dbis.  Even so, calling C.mdb_txn_id excessively isn't
-	// actually harmful, it is just slow.
-	if txn.id == 0 {
-		txn.id = txn.getID()
-	}
-
-	return txn.id
+	// created before any updates.  It is 0 after the transaction ended and
+	// while a readonly transaction is reset.
+	return txn.getID()
 }
 
 func (txn *Txn) getID() uintptr {
-	return uintptr(C.mdb_txn_id(txn._txn))
+	if txn._txn == nil {
+		return 0
+	}
+	return uintptr(txn._txn.ID())
 }
 
 // RunOp executes fn with txn as an argument.  During the execution of fn no
@@ -206,9 +192,28 @@ func (txn *Txn) Commit() error {
 }
 
 func (txn *Txn) commit() error {
-	ret := C.mdb_txn_commit(txn._txn)
+	if txn._txn == nil {
+		// mdb_txn_commit(NULL)
+		return errInvalid("mdb_txn_commit")
+	}
+	var err error
+	if txn.readonly {
+		// Ends the transaction, which is safe after Env.Close (v1 did not
+		// lock here either).
+		err = txn._txn.Commit()
+	} else {
+		// Keep Env.Close from running during the commit.
+		txn.env.closeLock.RLock()
+		if txn.env.closed {
+			txn._txn.Abort()
+			err = syscall.EINVAL
+		} else {
+			err = txn._txn.Commit()
+		}
+		txn.env.closeLock.RUnlock()
+	}
 	txn.clearTxn()
-	return operrno("mdb_txn_commit", ret)
+	return operr("mdb_txn_commit", err)
 }
 
 // Abort discards pending writes in the transaction and clears the finalizer on
@@ -230,42 +235,26 @@ func (txn *Txn) abort() {
 	}
 
 	// Get a read-lock on the environment so we can abort txn if needed.
-	// txn.env **should** terminate all readers otherwise when it closes.
+	// After Close, aborting only releases the transaction's memory map:
+	// Close released its reader slot.
 	txn.env.closeLock.RLock()
-	if txn.env._env != nil {
-		C.mdb_txn_abort(txn._txn)
-	}
+	txn._txn.Abort()
 	txn.env.closeLock.RUnlock()
 
 	txn.clearTxn()
 }
 
 func (txn *Txn) clearTxn() {
-	// Clear the C object to prevent any potential future use of the freed
-	// pointer.
+	// Clear the transaction to prevent any potential future use of it, which
+	// fails cleanly from now on.
+	t := txn._txn
 	txn._txn = nil
 
-	// Clear txn.id because it no longer matches the value of txn._txn (and
-	// future calls to txn.ID() should not see the stale id).  Instead of
-	// returning the old ID future calls to txn.ID() will query LMDB to make
-	// sure the value returned for an invalid Txn is more or less consistent
-	// for people familiar with the C semantics.
-	txn.resetID()
-
-	// Release C allocated buffer, if used
-	if txn.cbuf != nil {
-		txn.key = nil
-		txn.val = nil
-		C.free(txn.cbuf)
-		txn.cbuf = nil
+	// Return the state of a readonly transaction for reuse.
+	if txn.pooled {
+		txn.pooled = false
+		txn.env.txns.Put(t)
 	}
-}
-
-// resetID has to be called anytime the value of Txn.getID() may change
-// otherwise the cached value may diverge from the actual value and the
-// abstraction has failed.
-func (txn *Txn) resetID() {
-	txn.id = 0
 }
 
 // Reset aborts the transaction clears internal state so the transaction may be
@@ -283,7 +272,10 @@ func (txn *Txn) Reset() {
 }
 
 func (txn *Txn) reset() {
-	C.mdb_txn_reset(txn._txn)
+	if txn._txn != nil {
+		txn._txn.Reset()
+		txn.gen++
+	}
 }
 
 // Renew reuses a transaction that was previously reset by calling txn.Reset().
@@ -299,7 +291,11 @@ func (txn *Txn) Renew() error {
 }
 
 func (txn *Txn) renew() error {
-	ret := C.mdb_txn_renew(txn._txn)
+	if txn._txn == nil {
+		return errInvalid("mdb_txn_renew")
+	}
+	err := txn._txn.Renew()
+	txn.gen++
 
 	// mdb_txn_renew causes txn._txn to pick up a new transaction ID.  It's
 	// slightly confusing in the LMDB docs.  Txn ID corresponds to database
@@ -308,9 +304,8 @@ func (txn *Txn) renew() error {
 	// since they were last renewed).  It should follow that renewing a Txn
 	// results in the freeing of stale pages the Txn has been holding, though
 	// this has not been confirmed in any way by bmatsuo as of 2017-02-15.
-	txn.resetID()
 
-	return operrno("mdb_txn_renew", ret)
+	return operr("mdb_txn_renew", err)
 }
 
 // OpenDBI opens a named database in the environment.  An error is returned if
@@ -326,9 +321,8 @@ func (txn *Txn) renew() error {
 //
 // See mdb_dbi_open.
 func (txn *Txn) OpenDBI(name string, flags uint) (DBI, error) {
-	cname := C.CString(name)
+	cname := cString(name)
 	dbi, err := txn.openDBI(cname, flags)
-	C.free(unsafe.Pointer(cname))
 	return dbi, err
 }
 
@@ -339,9 +333,11 @@ func (txn *Txn) CreateDBI(name string) (DBI, error) {
 
 // Flags returns the database flags for handle dbi.
 func (txn *Txn) Flags(dbi DBI) (uint, error) {
-	var cflags C.uint
-	ret := C.mdb_dbi_flags(txn._txn, C.MDB_dbi(dbi), (*C.uint)(&cflags))
-	return uint(cflags), operrno("mdb_dbi_flags", ret)
+	if txn._txn == nil {
+		return 0, errInvalid("mdb_dbi_flags")
+	}
+	cflags, err := txn._txn.DBIFlags(engine.DBI(dbi))
+	return uint(cflags), operr("mdb_dbi_flags", err)
 }
 
 // OpenRoot opens the root database.  OpenRoot behaves similarly to OpenDBI but
@@ -356,28 +352,35 @@ func (txn *Txn) OpenRoot(flags uint) (DBI, error) {
 // returned in those cases.  This is not a big deal for now because
 // applications are expected to handle any error encountered opening a
 // database.
-func (txn *Txn) openDBI(cname *C.char, flags uint) (DBI, error) {
-	var dbi C.MDB_dbi
-	ret := C.mdb_dbi_open(txn._txn, cname, C.uint(flags), &dbi)
-	return DBI(dbi), operrno("mdb_dbi_open", ret)
+func (txn *Txn) openDBI(cname []byte, flags uint) (DBI, error) {
+	if txn._txn == nil {
+		return 0, errInvalid("mdb_dbi_open")
+	}
+	dbi, err := txn._txn.OpenDBI(cname, uint32(flags))
+	if err != nil {
+		dbi = 0
+	}
+	return DBI(dbi), operr("mdb_dbi_open", err)
 }
 
 // Stat returns a Stat describing the database dbi.
 //
 // See mdb_stat.
 func (txn *Txn) Stat(dbi DBI) (*Stat, error) {
-	var _stat C.MDB_stat
-	ret := C.mdb_stat(txn._txn, C.MDB_dbi(dbi), &_stat)
-	if ret != success {
-		return nil, operrno("mdb_stat", ret)
+	if txn._txn == nil {
+		return nil, errInvalid("mdb_stat")
+	}
+	_stat, err := txn._txn.Stat(engine.DBI(dbi))
+	if err != nil {
+		return nil, operr("mdb_stat", err)
 	}
 	stat := Stat{
-		PSize:         uint(_stat.ms_psize),
-		Depth:         uint(_stat.ms_depth),
-		BranchPages:   uint64(_stat.ms_branch_pages),
-		LeafPages:     uint64(_stat.ms_leaf_pages),
-		OverflowPages: uint64(_stat.ms_overflow_pages),
-		Entries:       uint64(_stat.ms_entries),
+		PSize:         uint(_stat.PageSize),
+		Depth:         uint(_stat.Depth),
+		BranchPages:   _stat.BranchPages,
+		LeafPages:     _stat.LeafPages,
+		OverflowPages: _stat.OverflowPages,
+		Entries:       _stat.Entries,
 	}
 	return &stat, nil
 }
@@ -387,8 +390,10 @@ func (txn *Txn) Stat(dbi DBI) (*Stat, error) {
 //
 // See mdb_drop.
 func (txn *Txn) Drop(dbi DBI, del bool) error {
-	ret := C.mdb_drop(txn._txn, C.MDB_dbi(dbi), cbool(del))
-	return operrno("mdb_drop", ret)
+	if txn._txn == nil {
+		return errInvalid("mdb_drop")
+	}
+	return operr("mdb_drop", txn._txn.Drop(engine.DBI(dbi), del))
 }
 
 // Sub executes fn in a subtransaction.  Sub commits the subtransaction iff a
@@ -422,9 +427,9 @@ func (txn *Txn) subFlag(flags uint, fn TxnOp) error {
 	return sub.commit()
 }
 
-func (txn *Txn) bytes(val *C.MDB_val) []byte {
+func (txn *Txn) bytes(val []byte) []byte {
 	if txn.RawRead {
-		return getBytes(val)
+		return val
 	}
 	return getBytesCopy(val)
 }
@@ -435,97 +440,88 @@ func (txn *Txn) bytes(val *C.MDB_val) []byte {
 //
 // See mdb_get.
 func (txn *Txn) Get(dbi DBI, key []byte) ([]byte, error) {
-	kdata, kn := valBytes(key)
-	ret := C.lmdbgo_mdb_get(
-		txn._txn, C.MDB_dbi(dbi),
-		(*C.char)(unsafe.Pointer(&kdata[0])), C.size_t(kn),
-		txn.val,
-	)
-	err := operrno("mdb_get", ret)
-	if err != nil {
-		*txn.val = C.MDB_val{}
-		return nil, err
+	if txn._txn == nil {
+		return nil, errInvalid("mdb_get")
 	}
-	b := txn.bytes(txn.val)
-	*txn.val = C.MDB_val{}
+	kdata, kn := valBytes(key)
+	val, err := txn._txn.Get(engine.DBI(dbi), kdata[:kn])
+	if err != nil {
+		return nil, getErr(err)
+	}
+	b := txn.bytes(val)
 	return b, nil
 }
 
 func (txn *Txn) putNilKey(dbi DBI, flags uint) error {
 	// mdb_put with an empty key will always fail
-	ret := C.lmdbgo_mdb_put2(txn._txn, C.MDB_dbi(dbi), nil, 0, nil, 0, C.uint(flags))
-	return operrno("mdb_put", ret)
+	err := txn._txn.Put(engine.DBI(dbi), eb[:0], eb[:0], uint32(flags))
+	return operr("mdb_put", err)
 }
 
 // Put stores an item in database dbi.
 //
 // See mdb_put.
 func (txn *Txn) Put(dbi DBI, key []byte, val []byte, flags uint) error {
+	if txn._txn == nil {
+		return errInvalid("mdb_put")
+	}
 	kn := len(key)
 	if kn == 0 {
 		return txn.putNilKey(dbi, flags)
 	}
 	vn := len(val)
 	if vn == 0 {
-		val = []byte{0}
+		val = eb[:0]
 	}
 
-	ret := C.lmdbgo_mdb_put2(
-		txn._txn, C.MDB_dbi(dbi),
-		(*C.char)(unsafe.Pointer(&key[0])), C.size_t(kn),
-		(*C.char)(unsafe.Pointer(&val[0])), C.size_t(vn),
-		C.uint(flags),
-	)
-	return operrno("mdb_put", ret)
+	err := txn._txn.Put(engine.DBI(dbi), key, val, uint32(flags))
+	return operr("mdb_put", err)
 }
 
 // PutReserve returns a []byte of length n that can be written to, potentially
 // avoiding a memcopy.  The returned byte slice is only valid in txn's thread,
 // before it has terminated.
 func (txn *Txn) PutReserve(dbi DBI, key []byte, n int, flags uint) ([]byte, error) {
+	if txn._txn == nil {
+		return nil, errInvalid("mdb_put")
+	}
 	if len(key) == 0 {
 		return nil, txn.putNilKey(dbi, flags)
 	}
-	txn.val.mv_size = C.size_t(n)
-	ret := C.lmdbgo_mdb_put1(
-		txn._txn, C.MDB_dbi(dbi),
-		(*C.char)(unsafe.Pointer(&key[0])), C.size_t(len(key)),
-		txn.val,
-		C.uint(flags|C.MDB_RESERVE),
-	)
-	err := operrno("mdb_put", ret)
-	if err != nil {
-		*txn.val = C.MDB_val{}
-		return nil, err
+	if n < 0 {
+		// A size_t above MAXDATASIZE in C.
+		return nil, &OpError{Op: "mdb_put", Errno: BadValSize}
 	}
-	b := getBytes(txn.val)
-	*txn.val = C.MDB_val{}
+	b, err := txn._txn.PutReserve(engine.DBI(dbi), key, n, uint32(flags))
+	if err != nil {
+		return nil, operr("mdb_put", err)
+	}
 	return b, nil
 }
 
 // Del deletes an item from database dbi.  Del ignores val unless dbi has the
 // DupSort flag.
+// For a DupSort database a nil val deletes all values of key (mdb_del with
+// NULL data); lmdb-go v1 passed an empty value instead, which C looked for.
 //
 // See mdb_del.
 func (txn *Txn) Del(dbi DBI, key, val []byte) error {
+	if txn._txn == nil {
+		return errInvalid("mdb_del")
+	}
 	kdata, kn := valBytes(key)
-	vdata, vn := valBytes(val)
-	ret := C.lmdbgo_mdb_del(
-		txn._txn, C.MDB_dbi(dbi),
-		(*C.char)(unsafe.Pointer(&kdata[0])), C.size_t(kn),
-		(*C.char)(unsafe.Pointer(&vdata[0])), C.size_t(vn),
-	)
-	return operrno("mdb_del", ret)
+	vdata := val // nil is NULL
+	err := txn._txn.Del(engine.DBI(dbi), kdata[:kn], vdata)
+	return operr("mdb_del", err)
 }
 
 // OpenCursor allocates and initializes a Cursor to database dbi.
 //
 // See mdb_cursor_open.
 func (txn *Txn) OpenCursor(dbi DBI) (*Cursor, error) {
+	// A cursor holds nothing that needs a finalizer (v1 freed the C cursor
+	// of a readonly transaction in one).
 	cur, err := openCursor(txn, dbi)
-	if cur != nil && txn.readonly {
-		runtime.SetFinalizer(cur, (*Cursor).close)
-	}
 	return cur, err
 }
 
@@ -540,7 +536,7 @@ func (txn *Txn) errf(format string, v ...interface{}) {
 func (txn *Txn) finalize() {
 	if txn._txn != nil {
 		if !txn.Pooled {
-			txn.errf("lmdb: aborting unreachable transaction %#x", uintptr(unsafe.Pointer(txn)))
+			txn.errf("lmdb: aborting unreachable transaction %p", txn)
 		}
 
 		txn.abort()

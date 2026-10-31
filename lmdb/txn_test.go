@@ -709,7 +709,7 @@ func TestTxn_Flags(t *testing.T) {
 		return
 	}
 	defer env.Close()
-	err = env.Open(path, 0, 0644)
+	err = env.Open(path, testFlags(0), 0644)
 	if err != nil {
 		t.Error(err)
 		return
@@ -918,8 +918,8 @@ func TestTxn_Reset_writeTxn(t *testing.T) {
 	}
 }
 
-// This test demonstrates that in a readonly transaction C memory is allocated
-// for the values, and freed during a Reset.
+// This test demonstrates that in a readonly transaction state is reused (in
+// lmdb-go v1: C memory is allocated for the values), and freed during Abort.
 func TestTxn_Reset_readonly_C_free(t *testing.T) {
 	env := setup(t)
 	path, err := env.Path()
@@ -941,18 +941,18 @@ func TestTxn_Reset_readonly_C_free(t *testing.T) {
 	}
 	defer txn.Abort()
 
-	// Since this is a readonly transaction, the global Env key/val cannot be
-	// reused and new C memory must be allocated.
-	if txn.key == env.ckey || txn.val == env.cval {
-		t.Error("env.ckey and cval must not be used in a readonly Txn")
+	// Since this is a readonly transaction, its state comes from the
+	// environment's pool.
+	if !txn.pooled {
+		t.Error("state of a readonly Txn expected to come from the pool")
 	}
-	if txn.cbuf == nil {
-		t.Error("cbuf expected to not be nil when opening a readonly Txn")
+	if txn._txn == nil {
+		t.Error("_txn expected to not be nil when opening a readonly Txn")
 	}
 
 	// Reset must not free the buffer
 	txn.Reset()
-	if txn.cbuf == nil {
+	if txn._txn == nil {
 		t.Error("cbuf must not be nil after Reset")
 		return
 	}
@@ -963,18 +963,18 @@ func TestTxn_Reset_readonly_C_free(t *testing.T) {
 		t.Error(err)
 		return
 	}
-	if txn.cbuf == nil {
+	if txn._txn == nil {
 		t.Error("cbuf must not be nil after Renew")
 		return
 	}
 
 	// Abort must free the buffer
 	txn.Abort()
-	if txn.cbuf != nil {
-		t.Error("cbuf expected to be nil, C memory not freed")
+	if txn._txn != nil {
+		t.Error("_txn expected to be nil, state not freed")
 	}
-	if txn.key != nil || txn.val != nil {
-		t.Error("key and val expected to be nil after C memory free")
+	if txn.pooled {
+		t.Error("state expected to be back in the pool")
 	}
 
 	// A second Abort must not panic

@@ -1,15 +1,10 @@
 package lmdb
 
-/*
-#include <stdlib.h>
-#include <stdio.h>
-#include "lmdb.h"
-#include "lmdbgo.h"
-*/
-import "C"
 import (
-	"runtime"
-	"unsafe"
+	"syscall"
+
+	"github.com/PowerDNS/lmdb-go/internal/engine"
+	"github.com/PowerDNS/lmdb-go/internal/format"
 )
 
 // These flags are used exclusively for Cursor.Get.
@@ -18,24 +13,24 @@ const (
 	//
 	// See MDB_cursor_op.
 
-	First        = C.MDB_FIRST          // The first item.
-	FirstDup     = C.MDB_FIRST_DUP      // The first value of current key (DupSort).
-	GetBoth      = C.MDB_GET_BOTH       // Get the key as well as the value (DupSort).
-	GetBothRange = C.MDB_GET_BOTH_RANGE // Get the key and the nearsest value (DupSort).
-	GetCurrent   = C.MDB_GET_CURRENT    // Get the key and value at the current position.
-	GetMultiple  = C.MDB_GET_MULTIPLE   // Get up to a page dup values for key at current position (DupFixed).
-	Last         = C.MDB_LAST           // Last item.
-	LastDup      = C.MDB_LAST_DUP       // Position at last value of current key (DupSort).
-	Next         = C.MDB_NEXT           // Next value.
-	NextDup      = C.MDB_NEXT_DUP       // Next value of the current key (DupSort).
-	NextMultiple = C.MDB_NEXT_MULTIPLE  // Get key and up to a page of values from the next cursor position (DupFixed).
-	NextNoDup    = C.MDB_NEXT_NODUP     // The first value of the next key (DupSort).
-	Prev         = C.MDB_PREV           // The previous item.
-	PrevDup      = C.MDB_PREV_DUP       // The previous item of the current key (DupSort).
-	PrevNoDup    = C.MDB_PREV_NODUP     // The last data item of the previous key (DupSort).
-	Set          = C.MDB_SET            // The specified key.
-	SetKey       = C.MDB_SET_KEY        // Get key and data at the specified key.
-	SetRange     = C.MDB_SET_RANGE      // The first key no less than the specified key.
+	First        = 0  // The first item.
+	FirstDup     = 1  // The first value of current key (DupSort).
+	GetBoth      = 2  // Get the key as well as the value (DupSort).
+	GetBothRange = 3  // Get the key and the nearsest value (DupSort).
+	GetCurrent   = 4  // Get the key and value at the current position.
+	GetMultiple  = 5  // Get up to a page dup values for key at current position (DupFixed).
+	Last         = 6  // Last item.
+	LastDup      = 7  // Position at last value of current key (DupSort).
+	Next         = 8  // Next value.
+	NextDup      = 9  // Next value of the current key (DupSort).
+	NextMultiple = 10 // Get key and up to a page of values from the next cursor position (DupFixed).
+	NextNoDup    = 11 // The first value of the next key (DupSort).
+	Prev         = 12 // The previous item.
+	PrevDup      = 13 // The previous item of the current key (DupSort).
+	PrevNoDup    = 14 // The last data item of the previous key (DupSort).
+	Set          = 15 // The specified key.
+	SetKey       = 16 // Get key and data at the specified key.
+	SetRange     = 17 // The first key no less than the specified key.
 )
 
 // The MDB_MULTIPLE and MDB_RESERVE flags are special and do not fit the
@@ -47,11 +42,11 @@ const (
 	//
 	// See mdb_put and mdb_cursor_put.
 
-	Current     = C.MDB_CURRENT     // Replace the item at the current key position (Cursor only)
-	NoDupData   = C.MDB_NODUPDATA   // Store the key-value pair only if key is not present (DupSort).
-	NoOverwrite = C.MDB_NOOVERWRITE // Store a new key-value pair only if key is not present.
-	Append      = C.MDB_APPEND      // Append an item to the database.
-	AppendDup   = C.MDB_APPENDDUP   // Append an item to the database (DupSort).
+	Current     = 0x40    // Replace the item at the current key position (Cursor only)
+	NoDupData   = 0x20    // Store the key-value pair only if key is not present (DupSort).
+	NoOverwrite = 0x10    // Store a new key-value pair only if key is not present.
+	Append      = 0x20000 // Append an item to the database.
+	AppendDup   = 0x40000 // Append an item to the database (DupSort).
 )
 
 // Cursor operates on data inside a transaction and holds a position in the
@@ -60,37 +55,73 @@ const (
 // See MDB_cursor.
 type Cursor struct {
 	txn *Txn
-	_c  *C.MDB_cursor
+	_c  *engine.Cursor // nil once closed
+
+	// gen is the generation of txn (Txn.gen) _c was positioned in.
+	gen uint32
+	// pooled: _c belongs to a readonly transaction and goes back to the
+	// environment's pool when closed.
+	pooled bool
 }
 
 func openCursor(txn *Txn, db DBI) (*Cursor, error) {
-	c := &Cursor{txn: txn}
-	ret := C.mdb_cursor_open(txn._txn, C.MDB_dbi(db), &c._c)
-	if ret != success {
-		return nil, operrno("mdb_cursor_open", ret)
+	if txn._txn == nil {
+		return nil, errInvalid("mdb_cursor_open")
 	}
+	c := &Cursor{txn: txn, gen: txn.gen}
+	if txn.readonly {
+		// The state of a closed read cursor is reused: nothing is
+		// allocated but the Cursor.
+		c._c = txn.env.readCursor()
+		c.pooled = true
+		if err := txn._txn.OpenCursorInto(c._c, engine.DBI(db)); err != nil {
+			txn.env.cursors.Put(c._c)
+			return nil, operr("mdb_cursor_open", err)
+		}
+		return c, nil
+	}
+	_c, err := txn._txn.OpenCursor(engine.DBI(db))
+	if err != nil {
+		return nil, operr("mdb_cursor_open", err)
+	}
+	c._c = _c
 	return c, nil
 }
 
 // Renew associates readonly cursor with txn.
 //
+// txn must belong to the same Env as the transaction the cursor was opened
+// in: renewing it with a transaction from another environment returns
+// EINVAL.
+//
 // See mdb_cursor_renew.
 func (c *Cursor) Renew(txn *Txn) error {
-	ret := C.mdb_cursor_renew(txn._txn, c._c)
-	err := operrno("mdb_cursor_renew", ret)
+	if c._c == nil || txn == nil || txn._txn == nil || !c.pooled || !txn.readonly || txn.env != c.txn.env {
+		// Closed cursors and transactions, cursors of write transactions,
+		// write transactions, and another environment's transactions (C
+		// does not check that one and corrupts memory).
+		return errInvalid("mdb_cursor_renew")
+	}
+	// mdb_cursor_renew is mdb_cursor_open into the cursor; not through
+	// the old transaction, whose state may serve another one by now.
+	err := operr("mdb_cursor_renew", txn._txn.OpenCursorInto(c._c, c._c.DBI()))
 	if err != nil {
 		return err
 	}
 	c.txn = txn
+	c.gen = txn.gen
 	return nil
 }
 
 func (c *Cursor) close() bool {
 	if c._c != nil {
-		if c.txn._txn == nil && !c.txn.readonly {
+		if c.pooled {
+			// A read cursor holds nothing but its memory.
+			c.txn.env.cursors.Put(c._c)
+		} else if c.txn._txn == nil && !c.txn.readonly {
 			// the cursor has already been released by LMDB.
 		} else {
-			C.mdb_cursor_close(c._c)
+			c._c.Close()
 		}
 		c.txn = nil
 		c._c = nil
@@ -99,15 +130,13 @@ func (c *Cursor) close() bool {
 	return false
 }
 
-// Close the cursor handle and clear the finalizer on c.  Cursors belonging to
+// Close the cursor handle.  Cursors belonging to
 // write transactions are closed automatically when the transaction is
 // terminated.
 //
 // See mdb_cursor_close.
 func (c *Cursor) Close() {
-	if c.close() {
-		runtime.SetFinalizer(c, nil)
-	}
+	c.close()
 }
 
 // Txn returns the cursor's transaction.
@@ -124,11 +153,10 @@ func (c *Cursor) DBI() DBI {
 	// have many open databases in an environment.
 	const dbiInvalid = ^DBI(0)
 
-	// mdb_cursor_dbi segfaults when passed a nil value
 	if c._c == nil {
 		return dbiInvalid
 	}
-	return DBI(C.mdb_cursor_dbi(c._c))
+	return DBI(c._c.DBI())
 }
 
 // Get retrieves items from the database. If c.Txn().RawRead is true the slices
@@ -142,43 +170,40 @@ func (c *Cursor) DBI() DBI {
 //
 // Get ignores setval if setkey is empty.
 //
+// With GetMultiple on a key that has a single value, val is that value (a
+// page of one item); lmdb-go v1 returned an empty slice.  FirstDup and
+// LastDup return the current key.
+//
 // See mdb_cursor_get.
 func (c *Cursor) Get(setkey, setval []byte, op uint) (key, val []byte, err error) {
+	if err = c.ready("mdb_cursor_get"); err != nil {
+		return nil, nil, err
+	}
 	switch {
 	case len(setkey) == 0:
-		err = c.getVal0(op)
+		key, val, err = c.getVal0(op)
 	case len(setval) == 0:
-		err = c.getVal1(setkey, op)
+		key, val, err = c.getVal1(setkey, op)
 	default:
-		err = c.getVal2(setkey, setval, op)
+		key, val, err = c.getVal2(setkey, setval, op)
+	}
+	if err == nil && op == GetMultiple {
+		val, err = c.multipleOfOne(val)
 	}
 	if err != nil {
-		*c.txn.key = C.MDB_val{}
-		*c.txn.val = C.MDB_val{}
-		return nil, nil, err
+		return nil, nil, cursorGetErr(err)
 	}
 
 	// When MDB_SET is passed to mdb_cursor_get its first argument will be
-	// returned unchanged.  Unfortunately, the normal slice copy/extraction
-	// routines will be bad for the Go runtime when operating on Go memory
-	// (panic or potentially garbage memory reference).
+	// returned unchanged.
 	if op == Set {
-		if c.txn.RawRead {
-			key = setkey
-		} else {
-			p := make([]byte, len(setkey))
-			copy(p, setkey)
-			key = p
-		}
-	} else {
-		key = c.txn.bytes(c.txn.key)
+		key = setkey
 	}
-	val = c.txn.bytes(c.txn.val)
-
-	// Clear transaction storage record storage area for future use and to
-	// prevent dangling references.
-	*c.txn.key = C.MDB_val{}
-	*c.txn.val = C.MDB_val{}
+	if c.txn.RawRead {
+		return key, val, nil
+	}
+	// Key and value in one allocation.
+	key, val = copyPair(key, val)
 
 	return key, val, nil
 }
@@ -187,130 +212,116 @@ func (c *Cursor) Get(setkey, setval []byte, op uint) (key, val []byte, err error
 // data for reference (Next, First, Last, etc).
 //
 // See mdb_cursor_get.
-func (c *Cursor) getVal0(op uint) error {
-	ret := C.mdb_cursor_get(c._c, c.txn.key, c.txn.val, C.MDB_cursor_op(op))
-	return operrno("mdb_cursor_get", ret)
+func (c *Cursor) getVal0(op uint) ([]byte, []byte, error) {
+	return c._c.Get(eb[:0], eb[:0], format.CursorOp(op))
 }
 
 // getVal1 retrieves items from the database using key data for reference
 // (Set, SetRange, etc).
 //
 // See mdb_cursor_get.
-func (c *Cursor) getVal1(setkey []byte, op uint) error {
-	ret := C.lmdbgo_mdb_cursor_get1(
-		c._c,
-		(*C.char)(unsafe.Pointer(&setkey[0])), C.size_t(len(setkey)),
-		c.txn.key, c.txn.val,
-		C.MDB_cursor_op(op),
-	)
-	return operrno("mdb_cursor_get", ret)
+func (c *Cursor) getVal1(setkey []byte, op uint) ([]byte, []byte, error) {
+	return c._c.Get(setkey, eb[:0], format.CursorOp(op))
 }
 
 // getVal2 retrieves items from the database using key and value data for
 // reference (GetBoth, GetBothRange, etc).
 //
 // See mdb_cursor_get.
-func (c *Cursor) getVal2(setkey, setval []byte, op uint) error {
-	ret := C.lmdbgo_mdb_cursor_get2(
-		c._c,
-		(*C.char)(unsafe.Pointer(&setkey[0])), C.size_t(len(setkey)),
-		(*C.char)(unsafe.Pointer(&setval[0])), C.size_t(len(setval)),
-		c.txn.key, c.txn.val,
-		C.MDB_cursor_op(op),
-	)
-	return operrno("mdb_cursor_get", ret)
+func (c *Cursor) getVal2(setkey, setval []byte, op uint) ([]byte, []byte, error) {
+	return c._c.Get(setkey, setval, format.CursorOp(op))
 }
 
 func (c *Cursor) putNilKey(flags uint) error {
-	ret := C.lmdbgo_mdb_cursor_put2(c._c, nil, 0, nil, 0, C.uint(flags))
-	return operrno("mdb_cursor_put", ret)
+	err := c._c.Put(eb[:0], eb[:0], uint32(flags))
+	return operr("mdb_cursor_put", err)
 }
 
 // Put stores an item in the database.
 //
 // See mdb_cursor_put.
 func (c *Cursor) Put(key, val []byte, flags uint) error {
+	if err := c.ready("mdb_cursor_put"); err != nil {
+		return err
+	}
 	kn := len(key)
 	if kn == 0 {
 		return c.putNilKey(flags)
 	}
 	vn := len(val)
 	if vn == 0 {
-		val = []byte{0}
+		val = eb[:0]
 	}
-	ret := C.lmdbgo_mdb_cursor_put2(
-		c._c,
-		(*C.char)(unsafe.Pointer(&key[0])), C.size_t(kn),
-		(*C.char)(unsafe.Pointer(&val[0])), C.size_t(vn),
-		C.uint(flags),
-	)
-	return operrno("mdb_cursor_put", ret)
+	err := c._c.Put(key, val, uint32(flags))
+	return operr("mdb_cursor_put", err)
 }
 
 // PutReserve returns a []byte of length n that can be written to, potentially
 // avoiding a memcopy.  The returned byte slice is only valid in txn's thread,
 // before it has terminated.
 func (c *Cursor) PutReserve(key []byte, n int, flags uint) ([]byte, error) {
+	if err := c.ready("mdb_cursor_put"); err != nil {
+		return nil, err
+	}
 	if len(key) == 0 {
 		return nil, c.putNilKey(flags)
 	}
-
-	c.txn.val.mv_size = C.size_t(n)
-	ret := C.lmdbgo_mdb_cursor_put1(
-		c._c,
-		(*C.char)(unsafe.Pointer(&key[0])), C.size_t(len(key)),
-		c.txn.val,
-		C.uint(flags|C.MDB_RESERVE),
-	)
-	err := operrno("mdb_cursor_put", ret)
-	if err != nil {
-		*c.txn.val = C.MDB_val{}
-		return nil, err
+	if n < 0 {
+		// A size_t above MAXDATASIZE in C.
+		return nil, &OpError{Op: "mdb_cursor_put", Errno: BadValSize}
 	}
-	b := getBytes(c.txn.val)
-	*c.txn.val = C.MDB_val{}
+
+	b, err := c._c.PutReserve(key, n, uint32(flags))
+	if err != nil {
+		return nil, operr("mdb_cursor_put", err)
+	}
 	return b, nil
 }
 
 // PutMulti stores a set of contiguous items with stride size under key.
 // PutMulti panics if len(page) is not a multiple of stride.  The cursor's
 // database must be DupFixed and DupSort.
+// An empty page or a stride below 1 is EINVAL.
 //
 // See mdb_cursor_put.
 func (c *Cursor) PutMulti(key []byte, page []byte, stride int, flags uint) error {
+	if err := c.ready("mdb_cursor_put"); err != nil {
+		return err
+	}
 	if len(key) == 0 {
 		return c.putNilKey(flags)
 	}
-	if len(page) == 0 {
-		page = []byte{0}
+	if len(page) == 0 || stride < 1 {
+		// lmdb-go v1 stored one zero byte (stride 1) or panicked.
+		return &OpError{Op: "mdb_cursor_put", Errno: syscall.EINVAL}
 	}
 
 	vn := WrapMulti(page, stride).Len()
-	ret := C.lmdbgo_mdb_cursor_putmulti(
-		c._c,
-		(*C.char)(unsafe.Pointer(&key[0])), C.size_t(len(key)),
-		(*C.char)(unsafe.Pointer(&page[0])), C.size_t(vn), C.size_t(stride),
-		C.uint(flags|C.MDB_MULTIPLE),
-	)
-	return operrno("mdb_cursor_put", ret)
+	_, err := c._c.PutMulti(key, page[:vn*stride], stride, uint32(flags))
+	return operr("mdb_cursor_put", err)
 }
 
 // Del deletes the item referred to by the cursor from the database.
 //
 // See mdb_cursor_del.
 func (c *Cursor) Del(flags uint) error {
-	ret := C.mdb_cursor_del(c._c, C.uint(flags))
-	return operrno("mdb_cursor_del", ret)
+	if err := c.ready("mdb_cursor_del"); err != nil {
+		return err
+	}
+	err := c._c.Del(uint32(flags))
+	return operr("mdb_cursor_del", err)
 }
 
 // Count returns the number of duplicates for the current key.
 //
 // See mdb_cursor_count.
 func (c *Cursor) Count() (uint64, error) {
-	var _size C.size_t
-	ret := C.mdb_cursor_count(c._c, &_size)
-	if ret != success {
-		return 0, operrno("mdb_cursor_count", ret)
+	if err := c.ready("mdb_cursor_count"); err != nil {
+		return 0, err
 	}
-	return uint64(_size), nil
+	_size, err := c._c.Count()
+	if err != nil {
+		return 0, operr("mdb_cursor_count", err)
+	}
+	return _size, nil
 }
