@@ -63,8 +63,21 @@ type Txn struct {
 	gen uint32
 
 	env *Env
-	// _txn is the transaction; nil once it has ended (Commit, Abort).
+	// _txn is the transaction; nil once it has ended (Commit, Abort, or
+	// the end of its parent).
 	_txn *engine.Txn
+	// tok is _txn's Owner when the transaction began.  The engine reuses
+	// the state of ended transactions (the environment's write
+	// transaction, as C reuses me_txn0; a parent's next child; pooled read
+	// transactions): a handle whose tok is not _txn's Owner any more must
+	// not touch it (see ended).
+	tok uint64
+	// child is the nested transaction begun last in this one.  While it
+	// is active it ends with this one (endChildren), and this reference
+	// keeps its finalizer from running while this one lives: it would end
+	// the child on the finalizer's goroutine, changing this transaction
+	// under its user.
+	child *Txn
 
 	errLogf func(format string, v ...interface{})
 }
@@ -95,9 +108,10 @@ func beginTxn(env *Env, parent *Txn, flags uint) (*Txn, error) {
 				txn.clearTxn()
 				return nil, operr("mdb_txn_begin", err)
 			}
+			txn.tok = txn._txn.Owner()
 			return txn, nil
 		}
-	} else if ptxn = parent._txn; ptxn == nil {
+	} else if ptxn = parent._txn; parent.ended() {
 		return nil, errInvalid("mdb_txn_begin")
 	}
 	_txn, err := e.BeginTxn(ptxn, uint32(flags))
@@ -105,6 +119,10 @@ func beginTxn(env *Env, parent *Txn, flags uint) (*Txn, error) {
 		return nil, operr("mdb_txn_begin", err)
 	}
 	txn._txn = _txn
+	txn.tok = _txn.Owner()
+	if parent != nil {
+		parent.child = txn
+	}
 	return txn, nil
 }
 
@@ -121,7 +139,7 @@ func (txn *Txn) ID() uintptr {
 }
 
 func (txn *Txn) getID() uintptr {
-	if txn._txn == nil {
+	if txn.ended() {
 		return 0
 	}
 	return uintptr(txn._txn.ID())
@@ -192,7 +210,7 @@ func (txn *Txn) Commit() error {
 }
 
 func (txn *Txn) commit() error {
-	if txn._txn == nil {
+	if txn.ended() {
 		// mdb_txn_commit(NULL)
 		return errInvalid("mdb_txn_commit")
 	}
@@ -230,7 +248,7 @@ func (txn *Txn) Abort() {
 }
 
 func (txn *Txn) abort() {
-	if txn._txn == nil {
+	if txn.ended() {
 		return
 	}
 
@@ -249,6 +267,7 @@ func (txn *Txn) clearTxn() {
 	// fails cleanly from now on.
 	t := txn._txn
 	txn._txn = nil
+	txn.endChildren()
 
 	// Return the state of a readonly transaction for reuse.
 	if txn.pooled {
@@ -272,7 +291,7 @@ func (txn *Txn) Reset() {
 }
 
 func (txn *Txn) reset() {
-	if txn._txn != nil {
+	if !txn.ended() {
 		txn._txn.Reset()
 		txn.gen++
 	}
@@ -291,7 +310,7 @@ func (txn *Txn) Renew() error {
 }
 
 func (txn *Txn) renew() error {
-	if txn._txn == nil {
+	if txn.ended() {
 		return errInvalid("mdb_txn_renew")
 	}
 	err := txn._txn.Renew()
@@ -333,7 +352,7 @@ func (txn *Txn) CreateDBI(name string) (DBI, error) {
 
 // Flags returns the database flags for handle dbi.
 func (txn *Txn) Flags(dbi DBI) (uint, error) {
-	if txn._txn == nil {
+	if txn.ended() {
 		return 0, errInvalid("mdb_dbi_flags")
 	}
 	cflags, err := txn._txn.DBIFlags(engine.DBI(dbi))
@@ -353,7 +372,7 @@ func (txn *Txn) OpenRoot(flags uint) (DBI, error) {
 // applications are expected to handle any error encountered opening a
 // database.
 func (txn *Txn) openDBI(cname []byte, flags uint) (DBI, error) {
-	if txn._txn == nil {
+	if txn.ended() {
 		return 0, errInvalid("mdb_dbi_open")
 	}
 	dbi, err := txn._txn.OpenDBI(cname, uint32(flags))
@@ -367,7 +386,7 @@ func (txn *Txn) openDBI(cname []byte, flags uint) (DBI, error) {
 //
 // See mdb_stat.
 func (txn *Txn) Stat(dbi DBI) (*Stat, error) {
-	if txn._txn == nil {
+	if txn.ended() {
 		return nil, errInvalid("mdb_stat")
 	}
 	_stat, err := txn._txn.Stat(engine.DBI(dbi))
@@ -390,7 +409,7 @@ func (txn *Txn) Stat(dbi DBI) (*Stat, error) {
 //
 // See mdb_drop.
 func (txn *Txn) Drop(dbi DBI, del bool) error {
-	if txn._txn == nil {
+	if txn.ended() {
 		return errInvalid("mdb_drop")
 	}
 	return operr("mdb_drop", txn._txn.Drop(engine.DBI(dbi), del))
@@ -440,7 +459,7 @@ func (txn *Txn) bytes(val []byte) []byte {
 //
 // See mdb_get.
 func (txn *Txn) Get(dbi DBI, key []byte) ([]byte, error) {
-	if txn._txn == nil {
+	if txn.ended() {
 		return nil, errInvalid("mdb_get")
 	}
 	kdata, kn := valBytes(key)
@@ -462,7 +481,7 @@ func (txn *Txn) putNilKey(dbi DBI, flags uint) error {
 //
 // See mdb_put.
 func (txn *Txn) Put(dbi DBI, key []byte, val []byte, flags uint) error {
-	if txn._txn == nil {
+	if txn.ended() {
 		return errInvalid("mdb_put")
 	}
 	kn := len(key)
@@ -482,7 +501,7 @@ func (txn *Txn) Put(dbi DBI, key []byte, val []byte, flags uint) error {
 // avoiding a memcopy.  The returned byte slice is only valid in txn's thread,
 // before it has terminated.
 func (txn *Txn) PutReserve(dbi DBI, key []byte, n int, flags uint) ([]byte, error) {
-	if txn._txn == nil {
+	if txn.ended() {
 		return nil, errInvalid("mdb_put")
 	}
 	if len(key) == 0 {
@@ -506,7 +525,7 @@ func (txn *Txn) PutReserve(dbi DBI, key []byte, n int, flags uint) ([]byte, erro
 //
 // See mdb_del.
 func (txn *Txn) Del(dbi DBI, key, val []byte) error {
-	if txn._txn == nil {
+	if txn.ended() {
 		return errInvalid("mdb_del")
 	}
 	kdata, kn := valBytes(key)
@@ -534,7 +553,7 @@ func (txn *Txn) errf(format string, v ...interface{}) {
 }
 
 func (txn *Txn) finalize() {
-	if txn._txn != nil {
+	if !txn.ended() {
 		if !txn.Pooled {
 			txn.errf("lmdb: aborting unreachable transaction %p", txn)
 		}

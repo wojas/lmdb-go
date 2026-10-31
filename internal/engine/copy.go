@@ -7,7 +7,9 @@
 // snapshot. The two meta pages are copied while holding the writer lock
 // (so no commit can change them halfway), after starting the read
 // transaction that pins the snapshot; then the other pages follow without
-// the lock. The result is byte for byte what C's mdb_copy writes.
+// the lock. Without a lock file the writers of this process are locked
+// out the same way (C locks nothing then). The result is byte for byte
+// what C's mdb_copy writes.
 //
 // Compacting copy: only the pages the snapshot uses, renumbered from page
 // 2 in depth-first order (each page after the pages below it, so a tree's
@@ -39,6 +41,10 @@ const wbuf = 1 << 20
 
 // plainChunk is the read size of a plain copy.
 const plainChunk = 4 << 20
+
+// copySnapshotHook, if set (tests), runs in a plain copy between taking
+// the snapshot and copying the meta pages.
+var copySnapshotHook func()
 
 // maxCwalkNesting is the deepest valid cwalk nesting: main DB, named DB,
 // sub-DB of duplicates. C recurses without a limit.
@@ -102,44 +108,42 @@ func (e *Env) copyPlain(w io.Writer) error {
 	ps := e.pageSize
 	buf := make([]byte, max(plainChunk, 2*ps))
 	txn := new(Txn)
-	if !e.lockFile {
-		if err := e.BeginRead(txn); err != nil {
-			return err
+	// Do the lock/unlock of the reader mutex before starting the write
+	// lock, so read txns do not block writers.
+	if err := e.BeginRead(txn); err != nil {
+		return err
+	}
+	defer txn.Abort()
+	txn.Reset()
+	// Temporarily block writers until we snapshot the meta pages; the
+	// read transaction must start after that. C takes no lock without a
+	// lock file (MDB_NOLOCK); here the writers of this process are kept
+	// out all the same (AGENTS.md rule 2a: writerMu and the in-memory
+	// region's writer lock), or a commit could write pages past the
+	// snapshot's end, which the copy leaves out, and a meta page naming
+	// them. rlmdb copies there without a writer lock, as C does.
+	runtime.LockOSThread()
+	e.writerMu.Lock()
+	err := e.lock.LockWriter(func() (uint64, error) {
+		m, err := e.pickMeta()
+		return m.TxnID, err
+	})
+	if err == nil {
+		err = txn.Renew()
+		if err == nil && copySnapshotHook != nil {
+			copySnapshotHook()
 		}
-		defer txn.Abort()
-		if err := readExactAt(e.dataFile, buf[:2*ps], 0); err != nil {
-			return err
-		}
-	} else {
-		// Do the lock/unlock of the reader mutex before starting the write
-		// lock, so read txns do not block writers.
-		if err := e.BeginRead(txn); err != nil {
-			return err
-		}
-		defer txn.Abort()
-		txn.Reset()
-		// Temporarily block writers until we snapshot the meta pages; the
-		// read transaction must start after that.
-		runtime.LockOSThread()
-		e.writerMu.Lock()
-		err := e.lock.LockWriter(func() (uint64, error) {
-			m, err := e.pickMeta()
-			return m.TxnID, err
-		})
 		if err == nil {
-			err = txn.Renew()
-			if err == nil {
-				err = readExactAt(e.dataFile, buf[:2*ps], 0)
-			}
-			if uerr := e.lock.UnlockWriter(); err == nil {
-				err = uerr
-			}
+			err = readExactAt(e.dataFile, buf[:2*ps], 0)
 		}
-		e.writerMu.Unlock()
-		runtime.UnlockOSThread()
-		if err != nil {
-			return err
+		if uerr := e.lock.UnlockWriter(); err == nil {
+			err = uerr
 		}
+	}
+	e.writerMu.Unlock()
+	runtime.UnlockOSThread()
+	if err != nil {
+		return err
 	}
 	if err := writeAll(w, buf[:2*ps]); err != nil {
 		return err
