@@ -609,8 +609,8 @@ func TestEnv_Close_racesWithTxns(t *testing.T) {
 
 // setupMaxDBs is setup with maxDBs named databases instead of setup's
 // 65536. A transaction's table of databases has an entry per possible
-// database (C's mt_dbs and mt_dbflags have me_maxdbs entries too), about
-// 90 bytes each: with setup's MaxDBs the 1280 read transactions of
+// database (C's mt_dbs and mt_dbflags have me_maxdbs entries too), 104
+// bytes each: with setup's MaxDBs the 1280 read transactions of
 // TestEnv_Close_racesWithTxns took 7 GiB of heap, which the collector
 // then let the next tests' garbage grow to.
 func setupMaxDBs(t *testing.T, maxDBs int) *Env {
