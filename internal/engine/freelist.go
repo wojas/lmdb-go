@@ -36,8 +36,13 @@ func txnidKey(key []byte) (uint64, error) {
 	return v, nil
 }
 
-func txnidBytes(id uint64) []byte {
-	return binary.NativeEndian.AppendUint64(make([]byte, 0, 8), id)
+// txnidBytes writes the free DB key of txnid id into buf and returns it.
+// The key reaches comparators through function values, so a local array
+// would escape: callers pass a buffer of their wstate (reclaimRun's and
+// freelistSave's are distinct: a put of freelistSave can call reclaimRun).
+func txnidBytes(buf *[8]byte, id uint64) []byte {
+	binary.NativeEndian.PutUint64(buf[:], id)
+	return buf[:]
 }
 
 // How the buffer of a newly allocated page starts.
@@ -197,7 +202,8 @@ func (t *Txn) reclaimRun(num int) (int, bool, error) {
 		case format.First:
 			k, v, err = cursorFirst(t, m2, nil)
 		case format.SetRange:
-			k, v, _, err = cursorSet(t, m2, nil, format.Comparator{}, false, txnidBytes(last), nil, false, format.SetRange, false)
+			key := txnidBytes(&w.reclaimKey, last)
+			k, v, _, err = cursorSet(t, m2, nil, format.Comparator{}, false, key, nil, false, format.SetRange, false)
 		default:
 			k, v, err = cursorNext(t, m2, nil, format.Next)
 		}
@@ -236,7 +242,7 @@ func (t *Txn) reclaimRun(num int) (int, bool, error) {
 		w.pglast = last
 		// Merge in descending sorted order (straight from the record).
 		if w.pghead == nil {
-			w.pghead = format.IDL{}
+			w.pghead = w.emptyPghead()
 		}
 		if !w.pghead.XMergeEncoded(v) {
 			return 0, false, format.Corrupted
@@ -411,7 +417,7 @@ func (t *Txn) freelistSave0(mc cref) error {
 					return err
 				}
 			}
-			key := txnidBytes(txnid)
+			key := txnidBytes(&w.saveKey, txnid)
 			for {
 				freecnt = len(w.freePgs)
 				size := (freecnt + 1) * 8
@@ -462,7 +468,7 @@ func (t *Txn) freelistSave0(mc cref) error {
 			headRoom = 0
 		}
 		size := (headRoom + 1) * 8
-		if _, err := t.putAt(mc, txnidBytes(headID), putReserve(size), format.Reserve); err != nil {
+		if _, err := t.putAt(mc, txnidBytes(&w.saveKey, headID), putReserve(size), format.Reserve); err != nil {
 			return err
 		}
 		// The IDL is initially empty.
@@ -480,12 +486,13 @@ func (t *Txn) freelistSave0(mc cref) error {
 		w.loose = nil
 		loose.Sort()
 		if w.pghead == nil {
-			w.pghead = format.IDL{}
+			w.pghead = w.emptyPghead()
 		}
 		w.pghead.XMerge(loose)
 	}
 	// Fill in the reserved pghead records.
-	mop := append([]uint64(nil), w.pghead...)
+	mop := append(w.mopBuf[:0], w.pghead...)
+	w.mopBuf = mop
 	mopLen := len(mop)
 	if mopLen == 0 {
 		return nil
@@ -520,8 +527,14 @@ func (t *Txn) freelistSave0(mc cref) error {
 		}
 		n = min(n, mopLen)
 		// The record holds the n lowest remaining page numbers.
-		ids := format.IDL(mop[mopLen-n : mopLen]).Bytes()
-		if _, err := t.putAt(mc, txnidBytes(id), putBytes(ids), format.Current); err != nil {
+		ids := w.idsBuf[:0]
+		if need := 8 * (n + 1); cap(ids) < need {
+			ids = make([]byte, need)
+		}
+		ids = ids[:8*(n+1)]
+		w.idsBuf = ids
+		format.IDL(mop[mopLen-n : mopLen]).EncodeInto(ids)
+		if _, err := t.putAt(mc, txnidBytes(&w.saveKey, id), putBytes(ids), format.Current); err != nil {
 			return err
 		}
 		mopLen -= n

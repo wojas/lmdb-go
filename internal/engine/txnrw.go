@@ -96,8 +96,19 @@ type wstate struct {
 	// reclaimRun.
 	rc, rx     rcursor
 	reclaimCur rcursor
-	// flushBuf is the reused buffer of page writes.
+	// flushBuf is the reused buffer of page writes, runs that of the pages
+	// to write.
 	flushBuf []byte
+	runs     []flushEntry
+	// pgheadSpare is the memory of the last pghead (C frees me_pghead at
+	// the end of each transaction), mopBuf and idsBuf freelistSave's
+	// scratch buffers.
+	pgheadSpare format.IDL
+	mopBuf      []uint64
+	idsBuf      []byte
+	// reclaimKey and saveKey hold the free DB keys of reclaimRun and
+	// freelistSave (see txnidBytes).
+	reclaimKey, saveKey [8]byte
 	// unlock releases the writer locks (top-level transactions).
 	locked bool
 }
@@ -226,7 +237,7 @@ func (t *Txn) end(keep bool) error {
 	}
 	w.freePgs = w.freePgs[:0]
 	w.loose = w.loose[:0]
-	w.pghead = nil
+	w.dropPghead()
 	w.pglast = 0
 	w.flags = txnFinished
 	if w.locked {
@@ -248,6 +259,25 @@ func (t *Txn) end(keep bool) error {
 		return err
 	}
 	return nil
+}
+
+// dropPghead sets pghead back to nil (no free DB record read), keeping
+// its memory for the next transaction's.
+func (w *wstate) dropPghead() {
+	if cap(w.pghead) > cap(w.pgheadSpare) {
+		w.pgheadSpare = w.pghead[:0]
+	}
+	w.pghead = nil
+}
+
+// emptyPghead is an empty, non-nil pghead, in the memory dropPghead kept.
+func (w *wstate) emptyPghead() format.IDL {
+	b := w.pgheadSpare[:0]
+	w.pgheadSpare = nil
+	if b == nil {
+		b = format.IDL{}
+	}
+	return b
 }
 
 // wroteMeta: after mdb_env_write_meta wrote meta and published its txnid,
