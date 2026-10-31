@@ -205,8 +205,10 @@ func (r *Region) MaxReaders() uint32 { return r.maxReaders }
 // pinned already is fine) until UnlockWriter, which must be called by the
 // same goroutine. On macOS the lock is a semaphore and the pin is not
 // needed, but it is kept for the same semantics everywhere. If the
-// goroutine exits holding the lock, its thread ends, and the next locker
-// anywhere recovers as from a dead process.
+// goroutine exits holding the lock, its thread ends (Linux), and the next
+// locker anywhere recovers as from a dead process; but Go never ends the
+// main thread, so a goroutine that exits there holding the lock leaves it
+// held until the process exits.
 //
 // If the previous owner died holding the lock (Linux, EOWNERDEAD), this
 // repairs the state as mdb_mutex_failed does for the writer: it publishes

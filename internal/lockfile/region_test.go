@@ -25,6 +25,10 @@ func TestMain(m *testing.M) {
 	if mode := os.Getenv("LOCKFILE_TEST_HELPER"); mode != "" {
 		os.Exit(runHelper(mode))
 	}
+	// Keep the main thread to this goroutine, so no test goroutine runs on
+	// it: Go never ends the main thread, so a robust mutex that a goroutine
+	// holds there when it exits is never released (TestWriterThreadExit).
+	runtime.LockOSThread()
 	os.Exit(m.Run())
 }
 
@@ -549,11 +553,20 @@ func TestWriterThreadExit(t *testing.T) {
 		t.Fatal(err)
 	}
 	called := false
-	if err := r.LockWriter(func() (uint64, error) { called = true; return 2, nil }); err != nil || !called {
-		t.Fatalf("lock after the holder's thread ended: %v, repair called %v", err, called)
-	}
-	if err := r.UnlockWriter(); err != nil {
-		t.Fatal(err)
+	go func() {
+		err := r.LockWriter(func() (uint64, error) { called = true; return 2, nil })
+		if err == nil {
+			err = r.UnlockWriter()
+		}
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err != nil || !called {
+			t.Fatalf("lock after the holder's thread ended: %v, repair called %v", err, called)
+		}
+	case <-time.After(20 * time.Second):
+		t.Fatal("the writer lock of an ended thread was not released")
 	}
 	// The dead goroutine's LockWriter is never matched: the mapping stays.
 	r.writers.Add(-1)
