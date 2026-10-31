@@ -162,12 +162,124 @@ Tried and not kept (measured, reverted):
   slots owned by the process would avoid that
   (and beat C), but other processes would then see idle slots of this
   process in the reader table (`mdb_stat -r`), so that is left to the
-  owner.
+  owner. (Stage 4 did that, with the owner's approval: see below.)
 * **GC**: with no steady-state allocations on these paths the collector
   is no longer a factor (context switches per one-put commit on macOS:
   1.16 before, 0.05 after). The remaining allocations in lmdb-bench's
   write groups (`put_64k` 0.22, `put_4k` 0.04 allocs/op) are the first
   transaction of the fresh environment each repetition opens.
+
+## Stage 4: reader slots kept for reuse
+
+Measured as above (`lmdb-bench`, interleaved, median (minimum) ns/op), at
+`-n 500000 -rounds 3 -reps 5`. "Before" is the start of stage 4 (`main`
+with the two new `goapi` workloads, below), "after" the end of branch
+`stage4-slots`, review fixes included. Each column pair comes from one
+run of both sides. The machine was loaded more heavily than in stage 3
+(load average 22 to 92 on 10 cores during the macOS runs), so medians
+are noisy; the effects below are many times the noise, and the minima
+agree.
+
+**What changed.** A read transaction that ends no longer gives its
+reader slot back: the slot stays owned by the process and idle
+(`mr_txnid = (txnid_t)-1`, what C leaves behind in its default TLS mode)
+in a bounded pool of the `Env`, and the next read transaction takes it
+without the shared reader mutex and without a cgo call
+(`internal/engine/slotpool.go`, with the correctness argument; ledgers in
+`internal/engine/PORTING.md` and `lmdb/DEVIATIONS.md`). Before, every
+`Env.View` (lmdb-go begins a new transaction per `View`) locked and
+unlocked the reader mutex through cgo (on macOS a semaphore system call
+each way), and all readers of the process queued on it. Two `goapi`
+workloads were added to see it: `view_empty` (a `View` that does
+nothing) and `view8_get` (`view_get` on 8 goroutines at once, wall time
+per `View`).
+
+Port before and after (`lmdb-bench -ab`, macOS, interleaved; below 1:
+after is faster):
+
+| workload | before | after | after/before |
+|---|---:|---:|---:|
+| view_empty | 1513 (976) | 164 (150) | 0.11 |
+| view_get | 3098 (2051) | 1132 (994) | 0.37 |
+| txn_get | 3611 (2665) | 1377 (1070) | 0.38 |
+| view8_get | 15259 (13042) | 445 (359) | 0.03 |
+| renew_get, cursor_renew_set, gets, scans, readers8_get | | | 0.71-1.28, noise both ways (unchanged code) |
+| update_put, txn_put | | | 0.95, 1.03 |
+
+Ratios port/cgo (**below 1: the port is faster**), each from a run of
+both implementations with the build named:
+
+| workload | macOS before | macOS after | Linux before | Linux after |
+|---|---:|---:|---:|---:|
+| view_empty | 1.02 | **0.16** | 1.16 | **0.63** |
+| view_get | 0.81 | **0.51** | 0.98 | **0.82** |
+| txn_get | 0.87 | **0.54** | 1.26 | **0.89** |
+| view8_get | 1.43 | **0.03** | 2.41 | **0.63** |
+| renew_get | 0.82 | 0.80 | 1.34 | 0.97 |
+
+On macOS after: `view_empty` 967 (931) ns with cgo, 158 (150) with the
+port; `view8_get` 15475 (4718) against 406 (337). On Linux (container,
+load average 12 to 18), where v1's cgo calls cost less, port before and
+after (`-ab`): `view_empty` 334 (318) -> 179 (168), `view_get` 0.88,
+`txn_get` 0.85, `view8_get` 1548 (1134) -> 625 (493); everything else
+0.92-1.14 (unchanged code). `renew_get` on Linux moved between the two
+cgo runs (1.34, 0.97) with unchanged code on both sides: noise of the
+shared VM. Allocations are
+unchanged (one per `View`, the `*Txn`, as in v1; `lmdb/alloc_test.go`).
+The pool's cost: its cells are a compare-and-swap each way, and other
+processes see up to `min(MaxReaders/4, 64)` idle slots of this process
+in the reader table (`mdb_stat -r`, txnid `-`). Concurrent `View`s on 8
+goroutines now reach 2.5 to 3 times one goroutine's rate (before: less
+than one goroutine's, all queued on the reader mutex); the next shared
+word they all write is the data map's reference count (a profile shows
+it next to the pool's cells; padding the cells to a cache line each
+moved the time to the count and was not kept).
+
+The review fixes that came with this branch (meta pages read through a
+referenced map, NoLock snapshots with rlmdb's in-process `mti_txnid`, the
+environment kept alive until its last transaction ends) do the same
+atomic operations on the read path as before, in another order; a write
+transaction takes one more map reference. (The runs above predate the
+NoLock change, which touches only environments without a lock file;
+the benchmarks use a lock file.)
+
+### Sequential append and DUPSORT puts (time-boxed, nothing kept)
+
+Profiled on macOS (`go test ./bench -bench 'SeqPut|Dupsort'
+-cpuprofile`, `-lmdb.n 1000000`) to look for cheap wins; none was found
+that would measurably change these workloads without restructuring, so
+nothing changed:
+
+* **`seq_put_append`** (1.64 macOS / 1.39 Linux in stage 3): system time
+  is the same as v1's (0.37 s for 10 runs of 1 M puts, both), the port
+  spends about 70 ns more user time per put. pprof attributes half the
+  samples to `pwrite`, but the system times say that is sampling bias:
+  the difference is in the put path (about 68 ns per put in the
+  profile), spread thinly: the descent to the last
+  leaf (`seekLast`, 22 ns: C also searches from the root for every
+  `mdb_put` with `MDB_APPEND`), the node insert (`insertLeafNode`,
+  19 ns), and per-put bookkeeping of the write-cursor structure (opening
+  and closing the put's cursor in the arena, dirty-list lookups behind
+  page numbers and slot hints, the cursor fix-up loop). Commit's own user
+  time is small (it writes the same pages as C, in the same batches).
+* **`dup_put`** (1.38 / 1.29): the profile is dominated by the first
+  read of a freshly mapped page on the way down the tree (one 16-bit
+  load holding about a third of the samples), which `rand_put`, at
+  parity with C, shows in the same way, and whose page faults C pays
+  equally (minor faults counted for the whole group: 52 210 cgo,
+  52 816 port). The rest is spread over the same write-cursor
+  bookkeeping, plus the read-path copy of the cursor state that a
+  DUPSORT put's positioning goes through.
+
+What would close the gap is the refactor stage 3 already named for
+`del_rand`: write cursors that hold page references (C's pointers, with
+a generation check against reuse) instead of page numbers plus
+dirty-list slot hints, so that a put neither looks pages up again nor
+copies cursor state into a read cursor to position itself; and, on top
+of it, a transaction-level append cursor kept across `mdb_put` calls
+(invalidated by any other change to the tree), which C does not have.
+Both are large changes to `wcursor.go`, `cursorput.go`, `split.go` and
+`cursordel.go`, against the low priority of these workloads.
 
 ## Full tables
 
