@@ -17,8 +17,8 @@ other:
 | `internal/engine` | `rlmdb/src/core/*` minus `reader.rs` | env, read and write txns, cursors, put/del, split, rebalance, spill, free list, commit, nested txns, copy, audit |
 | `lmdb` | lmdb-go's `lmdb` (API), rlmdb-capi's behaviour | the public API on top of `engine` |
 | `lmdbscan`, `exp/lmdbsync`, `cmd/*` | lmdb-go | kept, ported to the new `lmdb` |
-| `tests/` (own `go.mod`, cgo allowed) | rlmdb tests, interop | oracles: lmdb-go v1 (cgo), the C binaries from rlmdb's interop build, cross-process tests |
-| `bench/` (own `go.mod`, cgo allowed) | rlmdb `bench` | A/B against lmdb-go v1 |
+| `tests/` (own `go.mod`, cgo allowed) | rlmdb tests, interop | oracles: the C binaries from rlmdb's interop build, lmdb-go v1 (cgo) as a separate build (`-modfile=go.cgo.mod`), cross-process tests |
+| `bench/` (own `go.mod` + `go.cgo.mod`, cgo allowed) | rlmdb `bench` | A/B against lmdb-go v1: one source importing `github.com/PowerDNS/lmdb-go/lmdb`, built once per mod file |
 | `cmd/gopeer` or `tests/gopeer` | `interop/src/bin/rpeer` | the interop peer protocol (`interop/README.md`), so rlmdb's harness can run Go as a fourth implementation |
 
 Names inside packages follow rlmdb's concepts in Go style (`numKeys`,
@@ -106,4 +106,5 @@ uses a test fake of the interface (in-process only).
 ## Status
 
 * Stage 0 (coordinator): fork created from lmdb-go `master` (v1.9.4), C
-  sources removed; this plan; `scripts/linux-test.sh`.
+  sources removed; this plan; `scripts/linux-test.sh`. The module path
+  stays `github.com/PowerDNS/lmdb-go` (owner: drop-in `replace`).
