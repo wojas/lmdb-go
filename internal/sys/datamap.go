@@ -52,15 +52,20 @@ type DataMap struct {
 
 // MapReadOnly maps size bytes of f read-only and shared. random applies
 // madvise(MADV_RANDOM) where available (MDB_NORDAHEAD). metaEnd is the end
-// of the meta pages, which Slice refuses. f must stay open while the map
-// is in use. The map starts with one reference, the caller's.
+// of the meta pages, which Slice refuses. The map keeps a duplicate of f's
+// descriptor to refresh the file size, closed with the mapping. It starts
+// with one reference, the caller's.
 func MapReadOnly(f *os.File, size int, random bool, metaEnd int) (*DataMap, error) {
 	if size <= 0 {
 		return nil, syscall.EINVAL
 	}
-	fd := int(f.Fd())
+	fd, err := dupCloexec(int(f.Fd()))
+	if err != nil {
+		return nil, err
+	}
 	data, err := syscall.Mmap(fd, 0, size, syscall.PROT_READ, syscall.MAP_SHARED)
 	if err != nil {
+		syscall.Close(fd)
 		return nil, err
 	}
 	if random {
@@ -70,6 +75,7 @@ func MapReadOnly(f *os.File, size int, random bool, metaEnd int) (*DataMap, erro
 	var st syscall.Stat_t
 	if err := syscall.Fstat(fd, &st); err != nil {
 		_ = syscall.Munmap(data)
+		syscall.Close(fd)
 		return nil, err
 	}
 	m.knownSize.Store(st.Size)
@@ -143,9 +149,22 @@ func (m *DataMap) Release() {
 	if m.refs.Add(-1) == 0 {
 		_ = syscall.Munmap(m.data)
 		m.data = nil
+		syscall.Close(m.fd)
 	}
 }
 
 // OSPageSize is the OS memory page size (4096 on x86-64 Linux, 16384 on
 // Apple Silicon macOS).
 func OSPageSize() int { return os.Getpagesize() }
+
+// dupCloexec duplicates fd with the close-on-exec flag set.
+func dupCloexec(fd int) (int, error) {
+	syscall.ForkLock.RLock()
+	defer syscall.ForkLock.RUnlock()
+	nfd, err := syscall.Dup(fd)
+	if err != nil {
+		return -1, err
+	}
+	syscall.CloseOnExec(nfd)
+	return nfd, nil
+}
