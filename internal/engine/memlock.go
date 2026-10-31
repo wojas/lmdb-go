@@ -1,8 +1,16 @@
-// An in-process LockRegion, for tests of the engine without the lock file
-// (rlmdb's tests use the real lock file; the Go engine is tested against
-// this until internal/lockfile is wired in). It keeps the reader-table
-// protocol of core/reader.rs in memory, so it does not interoperate with
-// other processes: use it only for environments no other process opens.
+// An in-memory LockRegion: the reader table of an environment without a
+// lock file (MDB_NOLOCK, or a read-only environment on a read-only file
+// system), and an in-process stand-in for the lock file in tests.
+//
+// AGENTS.md rule 2a: NoLock removes only the cross-process locking. Within
+// the process, write transactions are still serialised (Env.writerMu) and
+// readers are tracked in this table, which the writer consults through
+// FindOldest exactly as it consults the lock file's table, so pages a live
+// reader can still see are never reused. C's MDB_NOLOCK leaves both to the
+// caller; rlmdb tracks no readers there (its find_oldest returns txnid-1
+// without a lock region), which the Go port does not follow. Nothing on
+// disk changes. It keeps the reader-table protocol of rlmdb core/reader.rs
+// in memory and does not interoperate with other processes.
 
 package engine
 
@@ -19,33 +27,42 @@ type memSlot struct {
 	txnid atomic.Uint64
 }
 
-// MemLock is an in-process LockRegion.
+// MemLock is an in-memory LockRegion.
 type MemLock struct {
-	mu         sync.Mutex // the reader mutex
-	writer     chan struct{}
+	mu     sync.Mutex // the reader mutex
+	writer chan struct{}
+	// slots are the reader slots; grown (copy on write, under mu) when
+	// max is 0.
+	slots      atomic.Pointer[[]*memSlot]
+	max        int
 	exclusive  atomic.Bool
 	txnid      atomic.Uint64
 	numReaders atomic.Uint32
-	slots      []memSlot
 	pid        int32
 }
 
-// NewMemLock is a fresh in-process lock region with maxReaders slots, as
-// if this process were the exclusive opener.
+// NewMemLock is a fresh in-memory region with maxReaders slots (0: as
+// many as needed, for MDB_NOLOCK, which has no reader limit in C), as if
+// this process were the exclusive opener.
 func NewMemLock(maxReaders uint32) *MemLock {
-	m := &MemLock{
-		writer: make(chan struct{}, 1),
-		slots:  make([]memSlot, maxReaders),
-		pid:    int32(os.Getpid()),
+	m := &MemLock{writer: make(chan struct{}, 1), max: int(maxReaders), pid: int32(os.Getpid())}
+	n := max(int(maxReaders), 8)
+	s := make([]*memSlot, n)
+	for i := range s {
+		s[i] = new(memSlot)
 	}
+	m.slots.Store(&s)
 	m.exclusive.Store(true)
 	return m
 }
 
-// OpenMemLock is an OpenLockFunc that returns a fresh MemLock.
+// OpenMemLock is an OpenLockFunc that returns a fresh bounded MemLock: an
+// in-process stand-in for the lock file in tests.
 func OpenMemLock(_ string, _ os.FileMode, maxReaders uint32, _ bool, _ format.Format) (LockRegion, error) {
 	return NewMemLock(maxReaders), nil
 }
+
+func (m *MemLock) slot(i int) *memSlot { return (*m.slots.Load())[i] }
 
 // IsExclusive implements LockRegion.
 func (m *MemLock) IsExclusive() bool { return m.exclusive.Load() }
@@ -58,9 +75,9 @@ func (m *MemLock) Downgrade(txnid uint64) error {
 }
 
 // MaxReaders implements LockRegion.
-func (m *MemLock) MaxReaders() uint32 { return uint32(len(m.slots)) }
+func (m *MemLock) MaxReaders() uint32 { return uint32(m.max) }
 
-// LockWriter implements LockRegion.
+// LockWriter implements LockRegion (in-process only).
 func (m *MemLock) LockWriter(func() (uint64, error)) error {
 	m.writer <- struct{}{}
 	return nil
@@ -82,36 +99,49 @@ func (m *MemLock) NumReaders() uint32 { return m.numReaders.Load() }
 func (m *MemLock) AcquireSlot() (int, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	slots := *m.slots.Load()
 	nr := int(m.numReaders.Load())
 	i := nr
 	for j := 0; j < nr; j++ {
-		if m.slots[j].pid.Load() == 0 {
+		if slots[j].pid.Load() == 0 {
 			i = j
 			break
 		}
 	}
-	if i >= len(m.slots) {
+	if m.max > 0 && i >= m.max {
 		return 0, format.ReadersFull
 	}
-	m.slots[i].pid.Store(0)
-	m.slots[i].txnid.Store(^uint64(0))
+	if i >= len(slots) {
+		grown := make([]*memSlot, 2*len(slots))
+		copy(grown, slots)
+		for j := len(slots); j < len(grown); j++ {
+			grown[j] = new(memSlot)
+		}
+		m.slots.Store(&grown)
+		slots = grown
+	}
+	s := slots[i]
+	s.pid.Store(0)
+	s.txnid.Store(^uint64(0))
 	if i == nr {
 		m.numReaders.Store(uint32(nr + 1))
 	}
-	m.slots[i].pid.Store(m.pid)
+	s.pid.Store(m.pid)
 	return i, nil
 }
 
 // SlotIsIdleAndOurs implements LockRegion.
 func (m *MemLock) SlotIsIdleAndOurs(i int) bool {
-	return m.slots[i].pid.Load() == m.pid && m.slots[i].txnid.Load() == ^uint64(0)
+	s := m.slot(i)
+	return s.pid.Load() == m.pid && s.txnid.Load() == ^uint64(0)
 }
 
 // PublishCurrentTxnID implements LockRegion.
 func (m *MemLock) PublishCurrentTxnID(i int) uint64 {
+	s := m.slot(i)
 	for {
 		t := m.txnid.Load()
-		m.slots[i].txnid.Store(t)
+		s.txnid.Store(t)
 		if m.txnid.Load() == t {
 			return t
 		}
@@ -119,26 +149,28 @@ func (m *MemLock) PublishCurrentTxnID(i int) uint64 {
 }
 
 // SlotTxnID implements LockRegion.
-func (m *MemLock) SlotTxnID(i int) uint64 { return m.slots[i].txnid.Load() }
+func (m *MemLock) SlotTxnID(i int) uint64 { return m.slot(i).txnid.Load() }
 
 // SetSlotTxnID implements LockRegion.
-func (m *MemLock) SetSlotTxnID(i int, t uint64) { m.slots[i].txnid.Store(t) }
+func (m *MemLock) SetSlotTxnID(i int, t uint64) { m.slot(i).txnid.Store(t) }
 
 // ResetSlot implements LockRegion.
-func (m *MemLock) ResetSlot(i int) { m.slots[i].txnid.Store(^uint64(0)) }
+func (m *MemLock) ResetSlot(i int) { m.slot(i).txnid.Store(^uint64(0)) }
 
 // ReleaseSlot implements LockRegion.
 func (m *MemLock) ReleaseSlot(i int) {
-	m.slots[i].txnid.Store(^uint64(0))
-	m.slots[i].pid.Store(0)
+	s := m.slot(i)
+	s.txnid.Store(^uint64(0))
+	s.pid.Store(0)
 }
 
-// FindOldest implements LockRegion.
+// FindOldest implements LockRegion (mdb_find_oldest).
 func (m *MemLock) FindOldest(txnid uint64) uint64 {
 	oldest := txnid - 1
-	for i := int(m.numReaders.Load()) - 1; i >= 0; i-- {
-		if m.slots[i].pid.Load() != 0 {
-			oldest = min(oldest, m.slots[i].txnid.Load())
+	slots := *m.slots.Load()
+	for i := min(int(m.numReaders.Load()), len(slots)) - 1; i >= 0; i-- {
+		if slots[i].pid.Load() != 0 {
+			oldest = min(oldest, slots[i].txnid.Load())
 		}
 	}
 	return oldest
@@ -147,9 +179,10 @@ func (m *MemLock) FindOldest(txnid uint64) uint64 {
 // ReaderList implements LockRegion.
 func (m *MemLock) ReaderList() []format.ReaderInfo {
 	var out []format.ReaderInfo
-	for i := 0; i < int(m.numReaders.Load()); i++ {
-		if pid := m.slots[i].pid.Load(); pid != 0 {
-			t := m.slots[i].txnid.Load()
+	slots := *m.slots.Load()
+	for i := 0; i < min(int(m.numReaders.Load()), len(slots)); i++ {
+		if pid := slots[i].pid.Load(); pid != 0 {
+			t := slots[i].txnid.Load()
 			out = append(out, format.ReaderInfo{PID: pid, TxnID: t, InTxn: t != ^uint64(0)})
 		}
 	}

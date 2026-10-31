@@ -260,9 +260,7 @@ func (t *Txn) writeMeta() error {
 			return err
 		}
 	}
-	if e.lock != nil {
-		e.lock.SetTxnID(txnid)
-	}
+	e.lock.SetTxnID(txnid)
 	t.wroteMeta(meta)
 	return nil
 }

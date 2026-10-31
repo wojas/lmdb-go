@@ -108,25 +108,21 @@ func (e *Env) beginWrite() (*Txn, error) {
 		return nil, syscall.EACCES
 	}
 	e.writerMu.Lock()
-	if e.lock != nil {
-		if err := e.lock.LockWriter(func() (uint64, error) {
-			m, err := e.pickMeta()
-			return m.TxnID, err
-		}); err != nil {
-			e.writerMu.Unlock()
-			return nil, err
-		}
+	if err := e.lock.LockWriter(func() (uint64, error) {
+		m, err := e.pickMeta()
+		return m.TxnID, err
+	}); err != nil {
+		e.writerMu.Unlock()
+		return nil, err
 	}
 	unlock := func() {
-		if e.lock != nil {
-			e.lock.UnlockWriter()
-		}
+		e.lock.UnlockWriter()
 		e.writerMu.Unlock()
 	}
 	var last uint64
 	var meta format.Meta
 	var err error
-	if e.lock != nil {
+	if e.lockFile {
 		last = e.lock.TxnID()
 		if e.writer.hasLastMeta && e.writer.lastMeta.TxnID == last {
 			// This process wrote the newest meta page.
@@ -207,9 +203,7 @@ func (t *Txn) end(keep bool) {
 		e.writer.pgOldest = w.pgOldest
 		e.writer.pbufPad = w.pbufPad
 		t.releaseMap()
-		if e.lock != nil {
-			e.lock.UnlockWriter()
-		}
+		e.lock.UnlockWriter()
 		e.writerMu.Unlock()
 	}
 }
@@ -219,7 +213,7 @@ func (t *Txn) end(keep bool) {
 func (t *Txn) wroteMeta(meta format.Meta) {
 	if t.w.locked {
 		t.env.writer.lastMeta = meta
-		t.env.writer.hasLastMeta = t.env.lock != nil
+		t.env.writer.hasLastMeta = t.env.lockFile
 	}
 }
 

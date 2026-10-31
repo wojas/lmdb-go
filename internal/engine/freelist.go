@@ -247,13 +247,10 @@ func (t *Txn) reclaimRun(num int) (int, bool, error) {
 }
 
 // findOldest is mdb_find_oldest: the oldest snapshot any reader uses, or
-// our txnid minus one if there is none older.
-func (t *Txn) findOldest() uint64 {
-	if t.env.lock != nil {
-		return t.env.lock.FindOldest(t.txnid)
-	}
-	return t.txnid - 1
-}
+// our txnid minus one if there is none older. Without a lock file the
+// in-memory reader table answers (AGENTS.md rule 2a; C and rlmdb return
+// txnid-1 there, leaving reader safety to the caller).
+func (t *Txn) findOldest() uint64 { return t.env.lock.FindOldest(t.txnid) }
 
 // pageLoose is mdb_page_loose: a page mc's tree no longer uses. If it is
 // dirty (allocated in this transaction) and not a free DB page, keep it

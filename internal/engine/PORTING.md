@@ -54,6 +54,23 @@ pinned commit.
 * The environment variable for the default format is rlmdb's
   `RLMDB_DEFAULT_FORMAT` (`engine.DefaultFormatEnv`); stage 2 may rename.
 
+## Ledger: deviations from C and rlmdb
+
+* NoLock (AGENTS.md rule 2a): C's MDB_NOLOCK leaves writer serialisation
+  and reader safety to the caller, and rlmdb's find_oldest returns
+  txnid-1 without a lock region (a soundness bug being fixed in rlmdb,
+  not ported). Here the environment always has a region: without a lock
+  file (NoLock, or OpenLock returning nil on a read-only file system) an
+  unbounded in-memory reader table (MemLock) that FindOldest consults, and
+  write transactions stay serialised by Env.writerMu. Snapshots under
+  NoLock still come from the newest meta page (C's mdb_env_pick_meta), so
+  commits by another process (coordinated by the caller) are seen; the
+  reader's slot is published before the meta is checked again. C's
+  observable outputs are kept: no lock file is created, Info.NumReaders is
+  0, ReaderList is nil (C prints "(no reader locks)"), ReaderCheck is 0,
+  and there is no reader limit. A second open of the same path in one
+  process fails with EBUSY (rlmdb's registry).
+
 ## Open items
 
 (see the end of the stage report)

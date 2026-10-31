@@ -77,7 +77,11 @@ type Env struct {
 
 	metaFile *os.File // me_mfd: O_DSYNC, nil for read-only
 	dataFile *os.File
+	// lock is the reader table and writer lock: the lock file's
+	// (lockFile), or an in-memory one (MemLock) without a lock file
+	// (MDB_NOLOCK, or a read-only file system), see AGENTS.md rule 2a.
 	lock     LockRegion
+	lockFile bool
 
 	dbis dbiRegistry
 
@@ -251,6 +255,14 @@ func Open(path string, opts Options) (env *Env, err error) {
 			return nil, err
 		}
 	}
+	// Without a lock file (MDB_NOLOCK, or OpenLock returned nil for a
+	// read-only file system) readers are tracked in memory: NoLock removes
+	// only the cross-process locking (AGENTS.md rule 2a). The table has no
+	// reader limit, as C's MDB_NOLOCK has none.
+	e.lockFile = e.lock != nil
+	if !e.lockFile {
+		e.lock = NewMemLock(0)
+	}
 
 	// mdb_env_open2
 	meta, meta0, haveHeader, err := readHeader(e.dataFile, layout)
@@ -313,7 +325,7 @@ func Open(path string, opts Options) (env *Env, err error) {
 	}
 
 	e.maxReaders = maxReaders
-	if e.lock != nil {
+	if e.lockFile {
 		e.maxReaders = e.lock.MaxReaders()
 	}
 	e.dbis.init(opts.MaxDBs)
@@ -325,7 +337,7 @@ func Open(path string, opts Options) (env *Env, err error) {
 	e.nodeMax = layout.NodeMax(pageSize)
 	e.maxKey = layout.MaxKeySize(pageSize)
 
-	if e.lock != nil && e.lock.IsExclusive() {
+	if e.lock.IsExclusive() {
 		newest, err := e.pickMeta()
 		if err != nil {
 			return nil, err
@@ -481,7 +493,8 @@ func (e *Env) Info() (Info, error) {
 		LastTxnID:  m.TxnID,
 		MaxReaders: e.maxReaders,
 	}
-	if e.lock != nil {
+	// C: me_numreaders is 0 without a lock file (me_txns == NULL).
+	if e.lockFile {
 		in.NumReaders = e.lock.NumReaders()
 	}
 	return in, nil
@@ -541,8 +554,9 @@ func (e *Env) PageSize() int { return e.pageSize }
 func (e *Env) MapSize() int64 { return e.mapSize.Load() }
 
 // HasLockFile reports whether the environment uses a lock file (false with
-// MDB_NOLOCK or on a read-only file system).
-func (e *Env) HasLockFile() bool { return e.lock != nil }
+// MDB_NOLOCK or on a read-only file system). Without one, C's
+// mdb_reader_list prints "(no reader locks)\n".
+func (e *Env) HasLockFile() bool { return e.lockFile }
 
 // DataFile is the data file (mdb_env_get_fd).
 func (e *Env) DataFile() *os.File { return e.dataFile }
@@ -585,17 +599,20 @@ func (e *Env) SetMapSize(size int64) error {
 	return nil
 }
 
-// ReaderList is mdb_reader_list's entries (empty without a lock file).
+// ReaderList is mdb_reader_list's entries (nil without a lock file, where
+// C prints "(no reader locks)"; the in-memory table of NoLock is not
+// listed, as C has none).
 func (e *Env) ReaderList() []format.ReaderInfo {
-	if e.lock == nil {
+	if !e.lockFile {
 		return nil
 	}
 	return e.lock.ReaderList()
 }
 
-// ReaderCheck is mdb_reader_check: clear slots of dead processes.
+// ReaderCheck is mdb_reader_check: clear slots of dead processes (0
+// without a lock file, as C).
 func (e *Env) ReaderCheck() (int, error) {
-	if e.lock == nil {
+	if !e.lockFile {
 		return 0, nil
 	}
 	return e.lock.ReaderCheck()

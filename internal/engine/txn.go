@@ -114,13 +114,11 @@ func (e *Env) BeginRead(t *Txn) error {
 	t.l = e.layout
 	t.slot = -1
 	t.state = txnDone
-	if e.lock != nil {
-		s, err := e.lock.AcquireSlot()
-		if err != nil {
-			return err
-		}
-		t.slot = s
+	s, err := e.lock.AcquireSlot()
+	if err != nil {
+		return err
 	}
+	t.slot = s
 	if err := t.takeSnapshot(); err != nil {
 		t.Abort()
 		return err
@@ -139,31 +137,46 @@ func (t *Txn) takeSnapshot() error {
 	t.dmap = m
 	var txnid uint64
 	var meta format.Meta
-	if e.lock != nil && t.slot >= 0 {
+	if !e.lockFile {
+		// No lock file: C takes the newest meta page (another process may
+		// have committed under MDB_NOLOCK). The slot of the in-memory table
+		// is published first and the meta checked again, as with the lock
+		// file's mti_txnid, so a writer of this process never reuses pages
+		// of this snapshot.
 		for {
-			txnid = e.lock.PublishCurrentTxnID(t.slot)
-			if txnid == 0 && e.isReadOnly() {
-				if meta, err = e.pickMeta(); err != nil {
-					return err
-				}
-				e.lock.SetSlotTxnID(t.slot, meta.TxnID)
-				txnid = meta.TxnID
-				break
-			}
-			if meta, err = e.readMeta(int(txnid & 1)); err != nil {
+			if meta, err = e.pickMeta(); err != nil {
 				return err
 			}
-			// If no commit happened while we copied the meta page, no
-			// writer can have been rewriting it.
-			if e.lock.TxnID() == txnid {
+			e.lock.SetSlotTxnID(t.slot, meta.TxnID)
+			again, err := e.pickMeta()
+			if err != nil {
+				return err
+			}
+			if again.TxnID == meta.TxnID {
 				break
 			}
 		}
-	} else {
-		if meta, err = e.pickMeta(); err != nil {
+		txnid = meta.TxnID
+		return t.setSnapshot(txnid, &meta)
+	}
+	for {
+		txnid = e.lock.PublishCurrentTxnID(t.slot)
+		if txnid == 0 && e.isReadOnly() {
+			if meta, err = e.pickMeta(); err != nil {
+				return err
+			}
+			e.lock.SetSlotTxnID(t.slot, meta.TxnID)
+			txnid = meta.TxnID
+			break
+		}
+		if meta, err = e.readMeta(int(txnid & 1)); err != nil {
 			return err
 		}
-		txnid = meta.TxnID
+		// If no commit happened while we copied the meta page, no writer
+		// can have been rewriting it.
+		if e.lock.TxnID() == txnid {
+			break
+		}
 	}
 	return t.setSnapshot(txnid, &meta)
 }
@@ -192,7 +205,7 @@ func (t *Txn) Reset() {
 	if t.w != nil || t.state != txnActive {
 		return
 	}
-	if t.env.lock != nil && t.slot >= 0 {
+	if t.slot >= 0 {
 		t.env.lock.ResetSlot(t.slot)
 	}
 	t.releaseMap()
@@ -208,7 +221,7 @@ func (t *Txn) Renew() error {
 	if t.w != nil || t.state != txnReset {
 		return syscall.EINVAL
 	}
-	if t.env.lock != nil && t.slot >= 0 && !t.env.lock.SlotIsIdleAndOurs(t.slot) {
+	if t.slot >= 0 && !t.env.lock.SlotIsIdleAndOurs(t.slot) {
 		// Not ours any more: do not release it at the end.
 		t.slot = -1
 		t.state = txnDone
@@ -239,7 +252,7 @@ func (t *Txn) Abort() {
 	if t.state == txnDone && t.slot < 0 && t.dmap == nil {
 		return
 	}
-	if t.env.lock != nil && t.slot >= 0 {
+	if t.slot >= 0 {
 		t.env.lock.ReleaseSlot(t.slot)
 	}
 	t.slot = -1

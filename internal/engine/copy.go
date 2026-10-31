@@ -102,7 +102,7 @@ func (e *Env) copyPlain(w io.Writer) error {
 	ps := e.pageSize
 	buf := make([]byte, max(plainChunk, 2*ps))
 	txn := new(Txn)
-	if e.lock == nil {
+	if !e.lockFile {
 		if err := e.BeginRead(txn); err != nil {
 			return err
 		}
