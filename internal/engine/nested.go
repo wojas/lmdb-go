@@ -63,6 +63,7 @@ func (t *Txn) beginNested() (*Txn, error) {
 	c.env, c.pageSize, c.l, c.dmap = t.env, t.pageSize, t.l, t.dmap
 	c.txnid, c.nextPgno, c.gen = t.txnid, t.nextPgno, t.gen
 	c.slot, c.state = -1, txnActive
+	c.owner++
 	// Copy parent's mt_dbflags, but clear DB_NEW. Entries the previous
 	// child looked at (below its ndbs) are cleared; the rest are zero.
 	if cap(c.dbs) < len(t.dbs) {
@@ -242,7 +243,8 @@ func (t *Txn) endNested(how int) {
 	w.parent = nil
 	w.flags = txnFinished
 	// The parent's next child reuses this one's memory (beginNested): the
-	// caller must not use t any more (package lmdb drops it).
+	// caller must not use t any more (package lmdb drops it, and Owner
+	// tells a handle that missed the end).
 	if pw.spareChild == nil {
 		pw.spareChild = t
 	}

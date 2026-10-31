@@ -9,6 +9,7 @@ package lmdb
 import (
 	"errors"
 	"os"
+	"runtime"
 	"strings"
 	"syscall"
 
@@ -185,13 +186,38 @@ func (env *Env) readCursor() *engine.Cursor {
 	return new(engine.Cursor)
 }
 
+// ended reports that txn's transaction is over: it was committed or
+// aborted, or ended with its parent (endChildren).  The tok check stands
+// for those ends: should a handle miss one, its _txn may serve another
+// transaction by now, which it must leave alone.
+func (txn *Txn) ended() bool {
+	t := txn._txn
+	return t == nil || t.Owner() != txn.tok
+}
+
+// endChildren, at the end of txn, ends the handles of its active nested
+// transaction and of theirs: the engine ended those with txn, as C's
+// mdb_txn_end does, and reuses their state for later children.  They fail
+// from now on, and their finalizers have nothing left to do.
+func (txn *Txn) endChildren() {
+	c := txn.child
+	txn.child = nil
+	for c != nil && c._txn != nil {
+		c._txn = nil
+		runtime.SetFinalizer(c, nil)
+		next := c.child
+		c.child = nil
+		c = next
+	}
+}
+
 // ready checks that c can run the operation op (a C function name for
 // errors): it is open and its transaction has not ended.  If the
 // transaction was reset and renewed since c was positioned, c starts over
 // unpositioned in the new snapshot (rlmdb's C API; C would keep pointers
 // into pages of the old snapshot).
 func (c *Cursor) ready(op string) error {
-	if c._c == nil || c.txn._txn == nil {
+	if c._c == nil || c.txn.ended() {
 		return errInvalid(op)
 	}
 	if c.gen != c.txn.gen {

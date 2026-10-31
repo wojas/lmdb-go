@@ -113,7 +113,7 @@ type Env struct {
 	nodeMax    int
 	maxKey     int
 	path       string
-	regKey     string
+	regKey     envID
 
 	closeOnce sync.Once
 	// closed is set by Close: no new transactions, no Renew.
@@ -152,43 +152,92 @@ type writerState struct {
 
 // The process-wide registry of open environments: POSIX record locks
 // belong to the process, so a second handle of the same environment would
-// release the first one's locks (rlmdb returns EBUSY, as here).
+// release the first one's locks (rlmdb returns EBUSY, as here). An
+// environment is its data file, whatever path names it: directory or
+// MDB_NOSUBDIR mode, symlinks, hard links. It is registered by the data
+// file's resolved path (it may not exist yet) and by its device and inode
+// once it exists. rlmdb registers the path given, so it takes the two
+// modes, and hard links, for different environments.
 var (
 	registryMu sync.Mutex
-	registry   = map[string]bool{}
+	regPaths   = map[string]bool{}
+	regFiles   = map[sys.FileID]bool{}
 )
 
-func register(path string, noSubdir bool) (string, error) {
-	key, err := canonicalKey(path, noSubdir)
+// envID is what an environment registered.
+type envID struct {
+	path    string
+	file    sys.FileID
+	hasFile bool
+}
+
+// register registers the data file of the environment at path, before
+// anything of the environment is opened: EBUSY if this process has it
+// open already.
+func register(path string, noSubdir bool) (envID, error) {
+	data, _ := fileNames(path, noSubdir)
+	p, err := canonicalPath(data)
 	if err != nil {
-		return "", err
+		return envID{}, err
+	}
+	id := envID{path: p}
+	if f, err := sys.StatFileID(p); err == nil {
+		id.file, id.hasFile = f, true
 	}
 	registryMu.Lock()
 	defer registryMu.Unlock()
-	if registry[key] {
-		return "", syscall.EBUSY
+	if regPaths[id.path] || id.hasFile && regFiles[id.file] {
+		return envID{}, syscall.EBUSY
 	}
-	registry[key] = true
-	return key, nil
+	regPaths[id.path] = true
+	if id.hasFile {
+		regFiles[id.file] = true
+	}
+	return id, nil
 }
 
-func unregister(key string) {
+// registerFile registers the data file f once it is open, if register
+// could not: it did not exist yet, or another file took its name since.
+func registerFile(id *envID, f *os.File) error {
+	file, err := sys.FileIDOf(f)
+	if err != nil {
+		return err
+	}
+	if id.hasFile && id.file == file {
+		return nil
+	}
 	registryMu.Lock()
-	delete(registry, key)
+	defer registryMu.Unlock()
+	if regFiles[file] {
+		return syscall.EBUSY
+	}
+	if id.hasFile {
+		delete(regFiles, id.file)
+	}
+	regFiles[file] = true
+	id.file, id.hasFile = file, true
+	return nil
+}
+
+func unregister(id envID) {
+	registryMu.Lock()
+	delete(regPaths, id.path)
+	if id.hasFile {
+		delete(regFiles, id.file)
+	}
 	registryMu.Unlock()
 }
 
-// canonicalKey is the canonical path identifying an environment: the
-// directory, or with MDB_NOSUBDIR the data file (which may not exist yet).
-func canonicalKey(path string, noSubdir bool) (string, error) {
+// canonicalPath is the absolute form of the data file's path with
+// symlinks resolved: of the file, or of its directory while the file does
+// not exist.
+func canonicalPath(path string) (string, error) {
 	abs, err := filepath.Abs(path)
 	if err != nil {
 		return "", err
 	}
 	if p, err := filepath.EvalSymlinks(abs); err == nil {
 		return p, nil
-	} else if !noSubdir {
-		return "", sys.Errno(err)
 	}
 	dir, err := filepath.EvalSymlinks(filepath.Dir(abs))
 	if err != nil {
@@ -273,6 +322,9 @@ func Open(path string, opts Options) (env *Env, err error) {
 	}
 	if err != nil {
 		return nil, sys.Errno(err)
+	}
+	if err := registerFile(&e.regKey, e.dataFile); err != nil {
+		return nil, err
 	}
 	if readOnly && !noLock {
 		if e.lock, err = opts.OpenLock(lockPath, mode, maxReaders, true, f); err != nil {

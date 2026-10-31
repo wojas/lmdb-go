@@ -79,6 +79,12 @@ type Txn struct {
 
 	// w is the write state of a write transaction (nil for read).
 	w *wstate
+
+	// owner changes at every begin: a Txn serves one transaction after
+	// another (the environment's write Txn, a parent's spare child, read
+	// Txns reused through BeginRead), and a handle remembering Owner from
+	// its begin can tell that its transaction is over.
+	owner uint64
 }
 
 // ReadOnly reports a read-only transaction.
@@ -90,6 +96,10 @@ func (t *Txn) ID() uint64 { return t.txnid }
 
 // Env is the environment of the transaction (mdb_txn_env).
 func (t *Txn) Env() *Env { return t.env }
+
+// Owner identifies the transaction t serves: it changes when t begins
+// another one.
+func (t *Txn) Owner() uint64 { return t.owner }
 
 // BeginTxn is mdb_txn_begin. flags may hold MDB_RDONLY for a read
 // transaction; parent is a write transaction for a nested one (nil for a
@@ -127,6 +137,7 @@ func (e *Env) BeginRead(t *Txn) error {
 	// Field by field: the scratch cursors need no zeroing (they are
 	// initialised before each use), and zeroing them was a measurable
 	// part of a begin.
+	t.owner++
 	t.env = e
 	t.pageSize = e.pageSize
 	t.l = e.layout

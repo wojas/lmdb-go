@@ -1,268 +1,118 @@
-# lmdb-go [![GitHub Release](https://img.shields.io/github/v/release/PowerDNS/lmdb-go)](https://github.com/PowerDNS/lmdb-go/releases) [![C/v0.9.35](https://img.shields.io/badge/C-v0.9.35-555555.svg)](https://github.com/LMDB/lmdb/blob/mdb.RE/0.9/libraries/liblmdb/CHANGES) [![Build Status](https://github.com/PowerDNS/lmdb-go/actions/workflows/go.yml/badge.svg?branch=master)](https://github.com/PowerDNS/lmdb-go/actions/workflows/go.yml?query=branch%3Amaster)
+# lmdb-go with a Go implementation of LMDB
 
-Go bindings to the OpenLDAP Lightning Memory-Mapped Database (LMDB).
+This is a fork of [PowerDNS/lmdb-go](https://github.com/PowerDNS/lmdb-go) v1
+in which the bundled C library is replaced by an implementation of LMDB in
+Go, ported from rlmdb, a Rust rewrite of LMDB. It keeps lmdb-go v1's API and
+module path, so existing programs can switch with a `replace` directive, and
+adds lmdb-go v2's API for the LMDB 1.0 file format. It uses C LMDB's data and
+lock files, so C LMDB 0.9 and 1.0, rlmdb and Go processes can use one
+environment at the same time.
 
-## About this fork
+## Status
 
-This fork was created after the upstream repository [bmatsuo/lmdb-go](https://github.com/bmatsuo/lmdb-go)
-went without updates for 4 years. We would like to express our thanks to
-*bmatsuo* for creating and maintaining this repository until 2017.
+Unreleased and under development. The final module and package name is not
+decided yet; until then the module path stays `github.com/PowerDNS/lmdb-go`.
 
-We decided to rename this repository to allow usage without `replace`
-directives in the `go.mod`, as we do not expect this to be a temporary
-fork. This also makes it clear that new versions released here are
-different from any upstream versions.
+## Trying it
 
-To use this package, update all your import paths from
-`github.com/bmatsuo/lmdb-go` to `github.com/PowerDNS/lmdb-go`.
+Point an existing lmdb-go v1 program at a checkout of this repository:
 
-This affects all versions starting from 1.9.0.
-
-Note that the experimental, never released `exp/lmdbpool` package has
-been removed in this fork.
-
-
-## Packages
-
-Functionality is logically divided into several packages.  Applications will
-usually need to import **lmdb** but may import other packages on an as needed
-basis.
-
-Packages in the `exp/` directory are not stable and may change without warning.
-That said, they are generally usable if application dependencies are managed
-and pinned by tag/commit.
-
-Developers concerned with package stability should consult the documentation.
-
-#### lmdb [![GoDoc](https://godoc.org/github.com/PowerDNS/lmdb-go/lmdb?status.svg)](https://godoc.org/github.com/PowerDNS/lmdb-go/lmdb) [![stable](https://img.shields.io/badge/stability-stable-brightgreen.svg)](#user-content-versioning-and-stability)
-
-```go
-import "github.com/PowerDNS/lmdb-go/lmdb"
+```sh
+go mod edit -replace github.com/PowerDNS/lmdb-go=../lmdb-go
 ```
 
-Core bindings allowing low-level access to LMDB.
+The module declares Go 1.22; development and testing use Go 1.25.
 
-#### lmdbscan [![GoDoc](https://godoc.org/github.com/PowerDNS/lmdb-go/lmdbscan?status.svg)](https://godoc.org/github.com/PowerDNS/lmdb-go/lmdbscan) [![stable](https://img.shields.io/badge/stability-stable-brightgreen.svg)](#user-content-versioning-and-stability)
+cgo is used only for the two locks LMDB shares between processes, the writer
+lock and the reader-table lock: libc pthread mutexes on Linux, POSIX named
+semaphores on macOS. Everything else is Go. A build without cgo
+(`CGO_ENABLED=0`) can only open environments with the `NoLock` flag;
+`Env.Open` without it returns `ErrNoSharedLocking`, and
+`SharedLockingAvailable` reports which kind of build is running. Go turns cgo
+off by default when cross-compiling or when no C compiler is found: such a
+build compiles, but fails at `Env.Open`.
 
-```go
-import "github.com/PowerDNS/lmdb-go/lmdbscan"
-```
+The packages are those of lmdb-go: `lmdb`, `lmdbscan`, `exp/lmdbsync`, and the
+commands in `cmd/` and `exp/cmd/`. Read the API documentation with
+`go doc ./lmdb`; it is lmdb-go v1's, with notes where behaviour changed.
 
-A utility package for scanning database ranges. The API is inspired by
-[bufio.Scanner](https://godoc.org/bufio#Scanner) and the python cursor
-[implementation](https://lmdb.readthedocs.org/en/release/#cursor-class).
+## Compatibility
 
-#### exp/lmdbsync [![GoDoc](https://godoc.org/github.com/PowerDNS/lmdb-go/exp/lmdbsync?status.svg)](https://godoc.org/github.com/PowerDNS/lmdb-go/exp/lmdbsync) [![experimental](https://img.shields.io/badge/stability-experimental-red.svg)](#user-content-versioning-and-stability)
+* **File formats.** Both LMDB 0.9 and LMDB 1.0 data files are read and
+  written, with lmdb-go v2's API (`Env.SetFormat`, `Env.Format`,
+  `SniffFormat`, ...). An existing environment opens in its own format; new
+  ones are 0.9 unless `Env.SetFormat(lmdb.V10)` or `SetDefaultFormat` says
+  otherwise. For the same writes, the data file is byte-identical to C's.
+* **Sharing.** Go processes share environments with C LMDB 0.9 and 1.0 and
+  with rlmdb: writers exclude each other, readers see each other in the
+  reader table, and on Linux a writer that dies holding the lock is
+  recovered from, as between C processes.
+* **Platforms.** Linux (glibc and musl; arm64 and x86-64) and macOS. Windows
+  is planned.
+* **`NoLock`** only removes the locking between processes. Within the
+  process, write transactions are still serialised and pages that a live
+  reader can see are never reused; opening one environment twice in a
+  process fails with `EBUSY`.
+* **Version.** `lmdb.Version()` reports 0.9.85, above every C 0.9 release, so
+  programs can tell this implementation from C.
 
+Differences from lmdb-go v1 on C (a few v1 bugs not kept, ignored flags such
+as `WriteMap`, stricter checks on ended handles) are listed in
+[lmdb/DEVIATIONS.md](lmdb/DEVIATIONS.md).
 
-```go
-import "github.com/PowerDNS/lmdb-go/exp/lmdbsync"
-```
+## Performance
 
-An experimental utility package that provides synchronization necessary to
-change an environment's map size after initialization.  The package provides
-error handlers to automatically manage database size and retry failed
-transactions.
+Compared with lmdb-go v1.9.4 (cgo, C LMDB 0.9.35), including its cgo call
+overhead, both in one process with interleaved runs, 1,000,000 keys. Times
+are medians in ns per operation on macOS (Apple M1 Pro, 16 KiB pages). The
+ratio is this implementation's time divided by v1's: below 1 means this one
+is faster. The last column is the ratio on Linux arm64 (4 KiB pages).
 
-The **lmdbsync** package is usable but the implementation of Handlers are
-unstable and may change in incompatible ways without notice.  The use cases of
-dynamic map sizes and multiprocessing are niche and the package requires much
-more development driven by practical feedback before the Handler API and the
-provided implementations can be considered stable.
+| workload | v1 ns/op | this ns/op | ratio | ratio, Linux |
+|---|---:|---:|---:|---:|
+| random get | 1384 | 1018 | 0.74 | 0.98 |
+| forward cursor scan | 71.8 | 31.2 | 0.43 | 0.57 |
+| random get, 8 concurrent readers | 227 | 141 | 0.62 | 0.83 |
+| random put | 2996 | 2871 | 0.96 | 0.94 |
+| random delete | 3632 | 3813 | 1.05 | 0.79 |
+| commit of one put, no sync | 7858 | 8888 | 1.13 | 1.10 |
+| sequential append | 118 | 194 | 1.64 | 1.39 |
 
-## Key Features
+Synced commits on macOS take about twice as long as v1's: like C LMDB 0.9.36
+and later, a commit flushes the drive cache twice, where 0.9.35 flushes once.
+All workloads, allocation counts, the method and the remaining gaps:
+[tests/bench/RESULTS.md](tests/bench/RESULTS.md).
 
-### Idiomatic API
+## Testing
 
-API inspired by [BoltDB](https://github.com/boltdb/bolt) with automatic
-commit/rollback of transactions.  The goal of lmdb-go is to provide idiomatic
-database interactions without compromising the flexibility of the C API.
+C LMDB is the oracle. lmdb-go v1's test suite and v2's tests of the format
+API run against this implementation. A differential test applies the same
+operations to this engine and to C LMDB 0.9 and 1.0 in lock step and requires
+byte-identical data files. Cross-process tests run C, rlmdb and Go processes
+on one environment through rlmdb's interop harness, with a Go peer
+(`tests/gopeer`), on macOS and on Linux with glibc and musl. The C programs
+come from rlmdb's interop build; the comparisons with lmdb-go v1 live in the
+nested module `tests/`. See [tests/gopeer/README.md](tests/gopeer/README.md),
+[internal/engine/PORTING.md](internal/engine/PORTING.md) and
+[tests/bench/README.md](tests/bench/README.md).
 
-**NOTE:** While the lmdb package tries hard to make LMDB as easy to use as
-possible there are compromises, gotchas, and caveats that application
-developers must be aware of when relying on LMDB to store their data.  All
-users are encouraged to fully read the
-[documentation](https://godoc.org/github.com/PowerDNS/lmdb-go/lmdb) so they are
-aware of these caveats.
+## History and credits
 
-Where the lmdb package and its implementation decisions do not meet the needs
-of application developers in terms of safety or operational use the lmdbsync
-package has been designed to wrap lmdb and safely fill in additional
-functionality.  Consult the
-[documentation](https://godoc.org/github.com/PowerDNS/lmdb-go/exp/lmdbsync) for
-more information about the lmdbsync package.
+LMDB was written by Howard Chu of Symas Corp. The engine is ported from
+rlmdb, a Rust rewrite that follows LMDB function by function.
 
-### API coverage
-
-The lmdb-go project aims for complete coverage of the LMDB C API (within
-reason).  Some notable features and optimizations that are supported:
-
-- Idiomatic subtransactions ("sub-updates") that allow the batching of updates.
-
-- Batch IO on databases utilizing the `MDB_DUPSORT` and `MDB_DUPFIXED` flags.
-
-- Reserved writes than can save in memory copies converting/buffering into
-  `[]byte`.
-
-For tracking purposes a list of unsupported features is kept in an
-[issue](https://github.com/PowerDNS/lmdb-go/issues/1).
-
-### Zero-copy reads
-
-Applications with high performance requirements can opt-in to fast, zero-copy
-reads at the cost of runtime safety.  Zero-copy behavior is specified at the
-transaction level to reduce instrumentation overhead.
-
-```
-err := lmdb.View(func(txn *lmdb.Txn) error {
-    // RawRead enables zero-copy behavior with some serious caveats.
-    // Read the documentation carefully before using.
-    txn.RawRead = true
-
-    val, err := txn.Get(dbi, []byte("largevalue"), 0)
-    // ...
-})
-```
-
-### Documentation
-
-Comprehensive documentation and examples are provided to demonstrate safe usage
-of lmdb.  In addition to [godoc](https://godoc.org/github.com/PowerDNS/lmdb-go)
-documentation, implementations of the standand LMDB commands (`mdb_stat`, etc)
-can be found in the [cmd/](cmd/) directory and some simple experimental
-commands can be found in the [exp/cmd/](exp/cmd) directory.  Aside from
-providing minor utility these programs are provided as examples of lmdb in
-practice.
-
-## LMDB compared to BoltDB
-
-BoltDB is a quality database with a design similar to LMDB.  Both store
-key-value data in a file and provide ACID transactions.  So there are often
-questions of why to use one database or the other.
-
-### Advantages of BoltDB
-
-- Nested databases allow for hierarchical data organization.
-
-- Far more databases can be accessed concurrently.
-
-- Operating systems that do not support sparse files do not use up excessive
-  space due to a large pre-allocation of file space.  The exp/lmdbsync package
-  is intended to resolve this problem with LMDB but it is not ready.
-
-- As a pure Go package bolt can be easily cross-compiled using the `go`
-  toolchain and `GOOS`/`GOARCH` variables.
-
-- Its simpler design and implementation in pure Go mean it is free of many
-  caveats and gotchas which are present using the lmdb package.  For more
-  information about caveats with the lmdb package, consult its
-  [documentation](https://godoc.org/github.com/PowerDNS/lmdb-go/lmdb).
-
-### Advantages of LMDB
-
-- Keys can contain multiple values using the DupSort flag.
-
-- Updates can have sub-updates for atomic batching of changes.
-
-- Databases typically remain open for the application lifetime.  This limits
-  the number of concurrently accessible databases.  But, this minimizes the
-  overhead of database accesses and typically produces cleaner code than
-  an equivalent BoltDB implementation.
-
-- Significantly faster than BoltDB.  The raw speed of LMDB easily surpasses
-  BoltDB.  Additionally, LMDB provides optimizations ranging from safe,
-  feature-specific optimizations to generally unsafe, extremely situational
-  ones.  Applications are free to enable any optimizations that fit their data,
-  access, and reliability models.
-
-- LMDB allows multiple applications to access a database simultaneously.
-  Updates from concurrent processes are synchronized using a database lock
-  file.
-
-- As a C library, applications in any language can interact with LMDB
-  databases.  Mission critical Go applications can use a database while Python
-  scripts perform analysis on the side.
-
-## Build
-
-There is no dependency on shared libraries.  So most users can simply install
-using `go get`.
-
-`go get github.com/PowerDNS/lmdb-go/lmdb`
-
-On FreeBSD 10, you must explicitly set `CC` (otherwise it will fail with a
-cryptic error), for example:
-
-    CC=clang go test -v ./...
-
-Building commands and running tests can be done with `go` or with `make`
-
-    make bin
-    make test
-    make check
-    make all
-
-On Linux, you can specify the `pwritev` build tag to reduce the number of syscalls
-required when committing a transaction. In your own package you can then do
-
-    go build -tags pwritev .
-
-to enable the optimisation.
-
-## Documentation
-
-### Go doc
-
-The `go doc` documentation available on
-[godoc.org](https://godoc.org/github.com/PowerDNS/lmdb-go) is the primary source
-of developer documentation for lmdb-go.  It provides an overview of the API
-with a lot of usage examples.  Where necessary the documentation points out
-differences between the semantics of methods and their C counterparts.
-
-### LMDB
-
-The LMDB [homepage](http://symas.com/mdb/) and mailing list
-([archives](http://www.openldap.org/lists/openldap-technical/)) are the
-official source of documentation regarding low-level LMDB operation and
-internals.
-
-Along with an API reference LMDB provides a high-level
-[summary](http://symas.com/mdb/doc/starting.html) of the library.  While
-lmdb-go abstracts many of the thread and transaction details by default the
-rest of the guide is still useful to compare with `go doc`.
-
-### Versioning and Stability
-
-The lmdb-go project makes regular releases with IDs `X.Y.Z`.  All packages
-outside of the `exp/` directory are considered stable and adhere to the
-guidelines of [semantic versioning](http://semver.org/).
-
-Experimental packages (those packages in `exp/`) are not required to adhere to
-semantic versioning.  However packages specifically declared to merely be
-"unstable" can be relied on more for long term use with less concern.
-
-The API of an unstable package may change in subtle ways between minor release
-versions.  But deprecations will be indicated at least one release in advance
-and all functionality will remain available through some method.
+The Go API and this repository's history start with Ferenc Szalai's gomdb
+(2013), which Bryan Matsuo developed into
+[bmatsuo/lmdb-go](https://github.com/bmatsuo/lmdb-go). PowerDNS forked it
+after that repository went without updates for four years, and thanks
+*bmatsuo* for creating and maintaining it until 2017. The PowerDNS fork was
+renamed so it could be used without `replace` directives; versions from
+1.9.0 on use the import path `github.com/PowerDNS/lmdb-go`.
 
 ## License
 
-Except where otherwise noted files in the lmdb-go project are licensed under
-the BSD 3-clause open source license.
-
-The LMDB C source is licensed under the OpenLDAP Public License.
-
-## Links
-
-#### [github.com/bmatsuo/raft-mdb](https://github.com/bmatsuo/raft-mdb) ([godoc](https://godoc.org/github.com/bmatsuo/raft-mdb))
-
-An experimental backend for
-[github.com/hashicorp/raft](https://github.com/hashicorp/raft) forked from
-[github.com/hashicorp/raft-mdb](https://github.com/hashicorp/raft-mdb).
-
-#### [github.com/bmatsuo/cayley/graph/lmdb](https://github.com/bmatsuo/cayley/tree/master/graph/lmdb) ([godoc](https://godoc.org/github.com/bmatsuo/cayley/graph/lmdb))
-
-Experimental backend quad-store for
-[github.com/google/cayley](https://github.com/google/cayley) based off of the
-BoltDB
-[implementation](https://github.com/google/cayley/tree/master/graph/bolt).
+Except where noted otherwise, files in this repository are licensed under
+the BSD 3-clause license ([LICENSE.md](LICENSE.md)). The engine, a
+derivative of LMDB through rlmdb, and the copy of LMDB's C sources in
+`tests/cgolmdb` are covered by the OpenLDAP Public License
+([LICENSE.mdb.md](LICENSE.mdb.md)).
