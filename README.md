@@ -75,13 +75,14 @@ is faster. The last column is the ratio on Linux arm64 (4 KiB pages).
 
 | workload | v1 ns/op | this ns/op | ratio | ratio, Linux |
 |---|---:|---:|---:|---:|
-| random get | 1384 | 1018 | 0.74 | 0.98 |
-| forward cursor scan | 71.8 | 31.2 | 0.43 | 0.57 |
-| random get, 8 concurrent readers | 227 | 141 | 0.62 | 0.83 |
-| random put | 2996 | 2871 | 0.96 | 0.94 |
-| random delete | 3632 | 3813 | 1.05 | 0.79 |
-| commit of one put, no sync | 7858 | 8888 | 1.13 | 1.10 |
-| sequential append | 118 | 194 | 1.64 | 1.39 |
+| random get | 1341 | 938 | 0.70 | 1.07 |
+| forward cursor scan | 72.3 | 30.2 | 0.42 | 0.58 |
+| random get, 8 concurrent readers | 166 | 124 | 0.75 | 0.99 |
+| read transaction with one get (`View`) | 2456 | 1076 | 0.44 | 0.90 |
+| random put | 2622 | 2656 | 1.01 | 0.97 |
+| random delete | 3593 | 3540 | 0.99 | 0.71 |
+| commit of one put, no sync | 6973 | 8275 | 1.19 | 1.09 |
+| sequential append | 117 | 187 | 1.60 | 1.39 |
 
 Synced commits on macOS take about twice as long as v1's: like C LMDB 0.9.36
 and later, a commit flushes the drive cache twice, where 0.9.35 flushes once.
