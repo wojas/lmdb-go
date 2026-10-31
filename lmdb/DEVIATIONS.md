@@ -65,6 +65,15 @@ differently from C is in `internal/engine/PORTING.md` and in rlmdb's
   leaves both to the caller. Opening one environment twice in a process
   fails with `EBUSY` (rlmdb; C allows it, unsafely: closing one handle
   drops the other's locks).
+* **One open per data file.** The `EBUSY` of a second `Open` in the
+  process, with or without `NoLock`, holds for every name of the data
+  file: the directory, the file itself with `NoSubdir`, symlinks and hard
+  links (rlmdb compares the paths given). Across processes C's file names
+  apply: the lock file of a directory is `lock.mdb` in it, that of a
+  `NoSubdir` file its name plus `-lock`, so processes that open one data
+  file in different modes use two lock files and neither exclude each
+  other's writers nor see each other's readers, in C as here. Open an
+  environment in the same mode everywhere.
 * **Ignored flags.** `FixedMap`, `WriteMap`, `MapAsync` and `NoMemInit` are
   accepted and ignored (`Flags` reports them), as in rlmdb: the map is
   read-only and never at a fixed address.

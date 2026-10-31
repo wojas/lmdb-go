@@ -171,6 +171,14 @@ counts of the API's hot paths are pinned by `lmdb/alloc_test.go`.
   0, ReaderList is nil (C prints "(no reader locks)"), ReaderCheck is 0,
   and there is no reader limit. A second open of the same path in one
   process fails with EBUSY (rlmdb's registry).
+* The registry of open environments (EBUSY for a second open in the
+  process) holds data files, by resolved path and, once the file exists,
+  by device and inode (registered before the lock file is touched, and
+  again from the opened descriptor). rlmdb registers the path given
+  (the directory, or the file with MDB_NOSUBDIR), so the two modes, or a
+  hard link, open one data file twice. Processes that open a data file in
+  different modes use different lock files (`lock.mdb`, `<file>-lock`), in
+  C as here: they do not exclude each other.
 * `MDB_DUPFIXED` items of one byte (stage 2): rlmdb refuses `P_LEAF2`
   keys shorter than 2 bytes (`ksize.checked_sub(2)` in `insert_leaf2`
   and the `P_LEAF2` delete) and fails with `MDB_PAGE_FULL` on the second

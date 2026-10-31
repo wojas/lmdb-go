@@ -35,6 +35,29 @@ func FileSize(f *os.File) (int64, error) {
 	return st.Size, nil
 }
 
+// FileID identifies a file whatever path names it (symlinks, hard
+// links): its device and inode numbers.
+type FileID struct{ Dev, Ino uint64 }
+
+// StatFileID is the FileID of the file path names (stat, following
+// symlinks).
+func StatFileID(path string) (FileID, error) {
+	var st syscall.Stat_t
+	if err := syscall.Stat(path, &st); err != nil {
+		return FileID{}, err
+	}
+	return FileID{uint64(st.Dev), uint64(st.Ino)}, nil
+}
+
+// FileIDOf is the FileID of an open file (fstat).
+func FileIDOf(f *os.File) (FileID, error) {
+	var st syscall.Stat_t
+	if err := syscall.Fstat(int(f.Fd()), &st); err != nil {
+		return FileID{}, err
+	}
+	return FileID{uint64(st.Dev), uint64(st.Ino)}, nil
+}
+
 // OpenDSync opens path for writing with O_DSYNC: the descriptor used for
 // meta-page writes (me_mfd).
 func OpenDSync(path string) (*os.File, error) {
