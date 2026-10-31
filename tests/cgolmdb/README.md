@@ -6,3 +6,7 @@ the reference the tests and benchmarks in this module compare the port
 with. Import it as:
 
     import cgolmdb "github.com/PowerDNS/lmdb-go/tests/cgolmdb"
+
+The Go sources are lmdb-go's (see `LICENSE.md` at the repository root); the
+C sources are LMDB's, under the OpenLDAP Public License (`LICENSE.mdb.md`
+at the repository root; the C files keep their own headers).

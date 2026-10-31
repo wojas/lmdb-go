@@ -124,6 +124,17 @@ messages) until that is established.
    kernel build strings. Hardware specs, "macOS 15", toolchain versions
    and container image names are fine.
 
+8. **History and attribution.** This repository carries lmdb-go's full
+   git history (back to 2013: Ferenc Szalai, Bryan Matsuo and all later
+   contributors) and its tags. Never rewrite, squash or filter it; branches
+   are merged into `main`, not rebased over published history. Keep
+   `LICENSE.md` (lmdb-go, BSD), `LICENSE.mdb.md` (OpenLDAP Public License,
+   which also covers the engine, a derivative of LMDB through rlmdb), the
+   README's credits for the fork's history, and any copyright notices in
+   files you replace or port. New docs credit rlmdb and LMDB (Howard Chu,
+   Symas) as the sources of the engine. The pinned copy in
+   `tests/cgolmdb` keeps the license headers of the C sources.
+
 ## Testing
 
 * `go vet ./...`, `gofmt -l` clean, `staticcheck` if available.
