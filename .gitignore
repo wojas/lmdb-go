@@ -5,8 +5,10 @@
 /bin/
 /tmp/
 
-# Test databases and benchmark data
-testdata/
+# Test databases and benchmark data, but not the fuzz inputs under
+# testdata/fuzz: they are regression tests of every go test (FUZZING.md)
+**/testdata/*
+!**/testdata/fuzz/
 
 # Compiled Object files, Static and Dynamic libs (Shared Objects)
 *.o

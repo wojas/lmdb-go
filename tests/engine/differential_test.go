@@ -58,10 +58,19 @@ func unhex(s string) []byte {
 	return b
 }
 
-// rng is the xorshift generator of the Rust harness.
-type rng struct{ s uint64 }
+// rng is the xorshift generator of the Rust harness. With src set (the
+// fuzz target) it hands out src two bytes at a time first.
+type rng struct {
+	s   uint64
+	src []byte
+}
 
 func (r *rng) next() uint64 {
+	if len(r.src) >= 2 {
+		x := uint64(r.src[0]) | uint64(r.src[1])<<8
+		r.src = r.src[2:]
+		return x
+	}
 	x := r.s
 	x ^= x >> 12
 	x ^= x << 25
@@ -877,7 +886,7 @@ func normDump(s string) string {
 // runProfile runs rounds rounds of n random ops (half a prefill of puts);
 // at least half must agree in full.
 func runProfile(t *testing.T, o *oracle, p profile, seed uint64, rounds, n int) {
-	r := &rng{seed | 1}
+	r := &rng{s: seed | 1}
 	full := 0
 	for round := 0; round < rounds; round++ {
 		ncur := 1 + r.below(4)
