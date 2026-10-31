@@ -5,7 +5,10 @@ package engine
 
 import (
 	"fmt"
+	"io"
+	"os"
 	"sync"
+	"syscall"
 	"testing"
 
 	"github.com/PowerDNS/lmdb-go/internal/format"
@@ -76,6 +79,94 @@ func TestWriterEndLeavesNextWriterAlone(t *testing.T) {
 				// tears the environment down, and the path opens again.
 				env.Close()
 				env2, err := Open(dir, Options{Flags: flags | format.NoSync, OpenLock: OpenMemLock})
+				if err != nil {
+					t.Fatalf("reopen: %v", err)
+				}
+				env2.Close()
+			})
+		}
+	}
+}
+
+// deadOwnerRegion is the in-memory lock-file stand-in with a writer lock
+// whose owner dies while a goroutine waits for it (Linux robust mutexes:
+// EOWNERDEAD): once armed, the next LockWriter reports that it waits,
+// blocks until release, and then runs the repair as lockfile.Region does
+// (mdb_mutex_failed): a failed repair leaves the lock unrecoverable.
+type deadOwnerRegion struct {
+	*MemLock
+	waiting, release chan struct{}
+	repairTxnID      uint64
+	repairErr        error
+	repaired         bool
+}
+
+func (r *deadOwnerRegion) LockWriter(repair func() (uint64, error)) error {
+	if r.release != nil {
+		close(r.waiting)
+		<-r.release
+		r.release = nil
+		r.repaired = true
+		r.repairTxnID, r.repairErr = repair()
+		if r.repairErr != nil {
+			return r.repairErr
+		}
+		r.SetTxnID(r.repairTxnID)
+	}
+	return r.MemLock.LockWriter(repair)
+}
+
+// A writer, or a plain copy, waits for the writer lock; the environment is
+// closed; the lock's owner dies. The waiting goroutine must repair the
+// lock (with the newest txnid, read through the map it pinned) before it
+// fails with EINVAL for the closed environment, or the lock is lost for
+// every process (review finding, round 2, P1-3: the repair read the meta
+// pages through the current map, which Close had cleared, failed with
+// EINVAL, and left the mutex ENOTRECOVERABLE). The multi-process version
+// with real robust mutexes is lmdb's TestCloseDuringOwnerDeathRecovery
+// (Linux).
+func TestOwnerDeathRepairAfterClose(t *testing.T) {
+	for _, f := range []format.Format{format.V09, format.V10} {
+		for _, copying := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%v/copy=%v", f, copying), func(t *testing.T) {
+				r := &deadOwnerRegion{}
+				open := func(_ string, _ os.FileMode, n uint32, _ bool, _ format.Format) (LockRegion, error) {
+					r.MemLock = NewMemLock(n)
+					return r, nil
+				}
+				env, dir := openTest(t, f, Options{OpenLock: open})
+				putKV(t, env, "a", "1")
+				putKV(t, env, "b", "2")
+				newest := env.lock.TxnID()
+				r.waiting, r.release = make(chan struct{}), make(chan struct{})
+				done := make(chan error, 1)
+				go func() {
+					if copying {
+						done <- env.CopyTo(io.Discard, 0)
+						return
+					}
+					w, err := env.BeginTxn(nil, 0)
+					if err == nil {
+						w.Abort()
+					}
+					done <- err
+				}()
+				<-r.waiting
+				env.Close()
+				close(r.release)
+				if err := <-done; err != syscall.EINVAL {
+					t.Fatalf("after Close: %v, want EINVAL", err)
+				}
+				if !r.repaired || r.repairErr != nil || r.repairTxnID != newest {
+					t.Fatalf("repair ran %v: txnid %d, %v; want %d", r.repaired, r.repairTxnID, r.repairErr, newest)
+				}
+				select {
+				case r.MemLock.writer <- struct{}{}:
+					<-r.MemLock.writer
+				default:
+					t.Fatal("the writer lock is still held")
+				}
+				env2, err := Open(dir, Options{Flags: format.NoSync, OpenLock: OpenMemLock})
 				if err != nil {
 					t.Fatalf("reopen: %v", err)
 				}

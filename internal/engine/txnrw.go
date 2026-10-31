@@ -23,6 +23,7 @@ import (
 	"syscall"
 
 	"github.com/PowerDNS/lmdb-go/internal/format"
+	"github.com/PowerDNS/lmdb-go/internal/sys"
 )
 
 // mt_flags of a write transaction.
@@ -149,13 +150,7 @@ func (e *Env) beginWrite() (*Txn, error) {
 	}
 	defer pin.Release()
 	e.writerMu.Lock()
-	if e.writer.newestTxnID == nil {
-		e.writer.newestTxnID = func() (uint64, error) {
-			m, err := e.pickMeta()
-			return m.TxnID, err
-		}
-	}
-	if err := e.lock.LockWriter(e.writer.newestTxnID); err != nil {
+	if err := e.lockWriter(pin); err != nil {
 		e.writerMu.Unlock()
 		return nil, err
 	}
@@ -222,6 +217,27 @@ func (e *Env) beginWrite() (*Txn, error) {
 	w.parents, w.parent, w.child, w.cursorBackup = nil, nil, nil, nil
 	w.locked = true
 	return t, nil
+}
+
+// lockWriter takes the shared writer lock (LockRegion.LockWriter) for a
+// goroutine that holds writerMu; m is a map it pinned before it began to
+// wait. If the lock's owner died, the repair (mdb_mutex_failed) publishes
+// the newest meta page's txnid, read through m: Close may have cleared the
+// current map while we waited, and the repair must complete all the same,
+// or the mutex is left unrecoverable for every process (C repairs it
+// before it refuses this process's transaction, as here: the caller fails
+// with EINVAL after Close once it holds the lock).
+func (e *Env) lockWriter(m *sys.DataMap) error {
+	if e.writer.newestTxnID == nil {
+		e.writer.newestTxnID = func() (uint64, error) {
+			meta, err := e.pickMetaIn(e.writer.waitMap)
+			return meta.TxnID, err
+		}
+	}
+	e.writer.waitMap = m
+	err := e.lock.LockWriter(e.writer.newestTxnID)
+	e.writer.waitMap = nil
+	return err
 }
 
 // end is mdb_txn_end for a top-level write transaction: export (keep) or

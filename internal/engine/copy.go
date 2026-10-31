@@ -124,10 +124,8 @@ func (e *Env) copyPlain(w io.Writer) error {
 	// them (rlmdb locks its NO_LOCK writers out the same way).
 	runtime.LockOSThread()
 	e.writerMu.Lock()
-	err := e.lock.LockWriter(func() (uint64, error) {
-		m, err := e.pickMeta()
-		return m.TxnID, err
-	})
+	// A reset transaction keeps its map.
+	err := e.lockWriter(txn.dmap)
 	if err == nil {
 		if !e.lockFile {
 			// Commits of other processes: the transaction cannot adopt
