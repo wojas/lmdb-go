@@ -159,27 +159,27 @@ func (e *Env) beginWrite() (*Txn, error) {
 		_ = e.lock.UnlockWriter() // same goroutine as LockWriter: cannot fail
 		e.writerMu.Unlock()
 	}
+	m, err := e.acquireMap()
+	if err != nil {
+		unlock()
+		return nil, err
+	}
 	var last uint64
 	var meta format.Meta
-	var err error
 	if e.lockFile {
 		last = e.lock.TxnID()
 		if e.writer.hasLastMeta && e.writer.lastMeta.TxnID == last {
 			// This process wrote the newest meta page.
 			meta = e.writer.lastMeta
-		} else if meta, err = e.readMeta(int(last & 1)); err != nil {
-			unlock()
-			return nil, err
+		} else {
+			meta, err = e.readMetaIn(m, int(last&1))
 		}
 	} else {
-		if meta, err = e.pickMeta(); err != nil {
-			unlock()
-			return nil, err
-		}
+		meta, err = e.pickMetaIn(m)
 		last = meta.TxnID
 	}
-	m, err := e.acquireMap()
 	if err != nil {
+		m.Release()
 		unlock()
 		return nil, err
 	}

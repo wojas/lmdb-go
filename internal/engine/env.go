@@ -402,12 +402,29 @@ func (e *Env) Close() error {
 
 // --- meta pages --------------------------------------------------------------
 
-// readMeta reads meta page i (0 or 1) into a private copy. Other processes
-// may be rewriting it; the caller decides whether the copy is consistent.
+// The meta pages are read through a data map the reader holds a
+// reference on: a transaction through its own map, anything else through
+// the current map with a reference taken for the read (readMeta,
+// pickMeta). Loading Env.dmap without a reference would race with
+// SetMapSize and Close, which release the map and unmap it once its last
+// reference goes.
+
+// readMeta reads meta page i (0 or 1) into a private copy, through the
+// current map. Other processes may be rewriting it; the caller decides
+// whether the copy is consistent.
 func (e *Env) readMeta(i int) (format.Meta, error) {
+	m, err := e.acquireMap()
+	if err != nil {
+		return format.Meta{}, err
+	}
+	defer m.Release()
+	return e.readMetaIn(m, i)
+}
+
+// readMetaIn is readMeta through m, on which the caller holds a reference.
+func (e *Env) readMetaIn(m *sys.DataMap, i int) (format.Meta, error) {
 	var buf [format.MetaSize]byte
-	m := e.dmap.Load()
-	if m == nil || !m.ReadMeta(i*e.pageSize+e.layout.MetaOffset(), buf[:]) {
+	if !m.ReadMeta(i*e.pageSize+e.layout.MetaOffset(), buf[:]) {
 		return format.Meta{}, format.Corrupted
 	}
 	meta, ok := format.ReadMeta(buf[:])
@@ -417,13 +434,13 @@ func (e *Env) readMeta(i int) (format.Meta, error) {
 	return meta, nil
 }
 
-// metaIDs is mm_last_pg and mm_txnid of meta page i, not validated: what
+// metaIDsIn is mm_last_pg and mm_txnid of meta page i, read through m (on
+// which the caller holds a reference), not validated: what
 // mdb_env_write_meta keeps of the page it overwrites (to restore it if the
 // write fails).
-func (e *Env) metaIDs(i int) (lastPgno, txnid uint64, ok bool) {
+func (e *Env) metaIDsIn(m *sys.DataMap, i int) (lastPgno, txnid uint64, ok bool) {
 	var buf [16]byte
-	m := e.dmap.Load()
-	if m == nil || !m.ReadMeta(i*e.pageSize+e.layout.MetaOffset()+format.MetaLastPgno, buf[:]) {
+	if !m.ReadMeta(i*e.pageSize+e.layout.MetaOffset()+format.MetaLastPgno, buf[:]) {
 		return 0, 0, false
 	}
 	a, _ := format.Get64(buf[:], 0)
@@ -431,14 +448,25 @@ func (e *Env) metaIDs(i int) (lastPgno, txnid uint64, ok bool) {
 	return a, b, true
 }
 
-// pickMeta is mdb_env_pick_meta: the newer of the two meta pages.
+// pickMeta is mdb_env_pick_meta: the newer of the two meta pages, through
+// the current map.
 func (e *Env) pickMeta() (format.Meta, error) {
-	var metas [2]format.Meta
-	var err error
-	if metas[0], err = e.readMeta(0); err != nil {
+	m, err := e.acquireMap()
+	if err != nil {
 		return format.Meta{}, err
 	}
-	if metas[1], err = e.readMeta(1); err != nil {
+	defer m.Release()
+	return e.pickMetaIn(m)
+}
+
+// pickMetaIn is pickMeta through m, on which the caller holds a reference.
+func (e *Env) pickMetaIn(m *sys.DataMap) (format.Meta, error) {
+	var metas [2]format.Meta
+	var err error
+	if metas[0], err = e.readMetaIn(m, 0); err != nil {
+		return format.Meta{}, err
+	}
+	if metas[1], err = e.readMetaIn(m, 1); err != nil {
 		return format.Meta{}, err
 	}
 	return metas[format.PickNewest(&metas)], nil

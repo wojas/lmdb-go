@@ -170,11 +170,11 @@ func (t *Txn) takeSnapshot() error {
 		// file's mti_txnid, so a writer of this process never reuses pages
 		// of this snapshot.
 		for {
-			if meta, err = e.pickMeta(); err != nil {
+			if meta, err = e.pickMetaIn(m); err != nil {
 				return err
 			}
 			e.lock.SetSlotTxnID(t.slot, meta.TxnID)
-			again, err := e.pickMeta()
+			again, err := e.pickMetaIn(m)
 			if err != nil {
 				return err
 			}
@@ -188,14 +188,14 @@ func (t *Txn) takeSnapshot() error {
 	for {
 		txnid = e.lock.PublishCurrentTxnID(t.slot)
 		if txnid == 0 && e.isReadOnly() {
-			if meta, err = e.pickMeta(); err != nil {
+			if meta, err = e.pickMetaIn(m); err != nil {
 				return err
 			}
 			e.lock.SetSlotTxnID(t.slot, meta.TxnID)
 			txnid = meta.TxnID
 			break
 		}
-		if meta, err = e.readMeta(int(txnid & 1)); err != nil {
+		if meta, err = e.readMetaIn(m, int(txnid&1)); err != nil {
 			return err
 		}
 		// If no commit happened while we copied the meta page, no writer

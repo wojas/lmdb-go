@@ -464,3 +464,41 @@ func TestEnv_View_concurrentSlots(t *testing.T) {
 		t.Fatalf("reader table after the run: %d idle slots, %v", idle, err)
 	}
 }
+
+// Views run while SetMapSize replaces the map (review finding: the meta
+// pages were read through the current map without a reference, racing
+// with its unmap). Run with -race.
+func TestEnv_SetMapSize_concurrentViews(t *testing.T) {
+	for _, flags := range []uint{0, NoLock} {
+		t.Run(fmt.Sprint(flags), func(t *testing.T) {
+			if flags == 0 {
+				requireLockFile(t)
+			}
+			env := setupFlags(t, flags)
+			defer clean(env, t)
+			iters := 10000
+			if testing.Short() || raceEnabled {
+				iters = 1000
+			}
+			var wg sync.WaitGroup
+			for g := 0; g < 4; g++ {
+				wg.Add(1)
+				go func() {
+					defer wg.Done()
+					for i := 0; i < iters; i++ {
+						if err := env.View(func(*Txn) error { return nil }); err != nil {
+							t.Error(err)
+							return
+						}
+					}
+				}()
+			}
+			for i := 0; i < iters/3; i++ {
+				if err := env.SetMapSize(16 << 20); err != nil {
+					t.Fatal(err)
+				}
+			}
+			wg.Wait()
+		})
+	}
+}

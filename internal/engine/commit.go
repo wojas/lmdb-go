@@ -227,7 +227,7 @@ func (t *Txn) writeMeta() error {
 	// one this transaction began from.
 	mapsize := max(t.w.baseMapsize, uint64(e.mapSize.Load()))
 	// metab: what to write back if the write fails.
-	oldLast, oldTxnid, haveOld := e.metaIDs(toggle)
+	oldLast, oldTxnid, haveOld := e.metaIDsIn(t.dmap, toggle)
 	meta := format.Meta{
 		Magic:    format.Magic,
 		Version:  t.l.DataVersion,
