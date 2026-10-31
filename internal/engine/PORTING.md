@@ -174,12 +174,14 @@ counts of the API's hot paths are pinned by `lmdb/alloc_test.go`.
   unbounded in-memory reader table (MemLock) that FindOldest consults, and
   write transactions stay serialised by Env.writerMu. Snapshots under
   NoLock still come from the newest meta page (C's mdb_env_pick_meta), so
-  commits by another process (coordinated by the caller) are seen. With
-  no mti_txnid to order against, this process's meta writes are bracketed
-  by a sequence word (Env.metaSeq, a seqlock): a reader accepts a meta copy
-  only if no meta write of this process began or ended around it, reads
-  the other page while one is in progress, and publishes its txnid in the
-  slot before the final check (stage 4, review finding P1-1: comparing the
+  commits by another process (coordinated by the caller) are seen. Readers
+  use the lock-file protocol with an in-process stand-in for mti_txnid
+  (the in-memory region's TxnID: set by this process's writers after the
+  meta write, and to the snapshot they began from before it), plus a
+  catch-up with other processes' commits while no writer of this process
+  holds writerMu (TryLock); a plain copy adopts the newest txnid under the
+  writer lock before its transaction renews (noLockSnapshot; rlmdb's
+  design, commit ade31f0; stage 4, review finding P1-1: comparing the
   txnids of two copies accepted a torn copy, N's roots with N+2's txnid).
   C's observable outputs are kept: no lock file is created, Info.NumReaders is
   0, ReaderList is nil (C prints "(no reader locks)"), ReaderCheck is 0,

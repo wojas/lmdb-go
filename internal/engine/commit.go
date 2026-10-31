@@ -213,9 +213,8 @@ func (t *Txn) writeBatch(f *os.File, bufs [][]byte, pos uint64) error {
 	return sys.WriteAt(f, b, int64(pos))
 }
 
-// testHookMetaWrite, if set (tests only), runs in writeMeta after the
-// write of meta page page was marked as begun and before the page is
-// written.
+// testHookMetaWrite, if set (tests only), runs in writeMeta just before
+// meta page page is written.
 var testHookMetaWrite func(e *Env, page int)
 
 // writeMeta is mdb_env_write_meta: write the new meta page (txnid % 2)
@@ -244,11 +243,13 @@ func (t *Txn) writeMeta() error {
 	var buf [format.MetaSize]byte
 	meta.Write(buf[:])
 	off := int64(toggle*ps + t.l.MetaOffset() + format.MetaMapSize)
-	// Readers without a lock file must not take a copy of the page while
-	// it is written (noLockSnapshot); the end is marked after the txnid is
-	// published, or after the failure.
-	e.beginMetaWrite(toggle)
-	defer e.endMetaWrite()
+	if !e.lockFile {
+		// The in-process stand-in for mti_txnid must not name the page
+		// being rewritten while we write it (noLockSnapshot): the snapshot
+		// this transaction began from, on the other page. It is that
+		// already unless another process committed since our last commit.
+		e.lock.SetTxnID(txnid - 1)
+	}
 	if testHookMetaWrite != nil {
 		testHookMetaWrite(e, toggle)
 	}

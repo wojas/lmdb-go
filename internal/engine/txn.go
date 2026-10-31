@@ -206,72 +206,99 @@ func (t *Txn) takeSnapshot() error {
 }
 
 // noLockSnapshot selects the snapshot of a read transaction without a
-// lock file (MDB_NOLOCK, or a read-only file system) and publishes its
-// txnid in slot of the in-memory reader table.
+// lock file (MDB_NOLOCK, or a read-only file system) through the
+// transaction's map m, and publishes its txnid in slot of the in-memory
+// reader table. rlmdb's RoTxn::take_snapshot (NO_LOCK), as of its
+// commit ade31f0.
 //
-// C takes the newest meta page (mdb_env_pick_meta): another process may
-// have committed, under MDB_NOLOCK coordinated by the caller. But this
-// process's own writer rewrites meta pages concurrently, and a copy taken
-// during that write can be torn: the roots of txn N with the txnid of
-// N+2, which the reader would publish while reading N's pages, letting
-// the next writer reuse pages N still uses (a re-read cannot tell: it
-// may find the finished N+2). There is no mti_txnid to order against, so
-// the writer brackets its meta write with Env.metaSeq (beginMetaWrite,
-// endMetaWrite), and a copy counts only if metaSeq did not change around
-// it, a seqlock:
+// C takes the newest meta page (mdb_env_pick_meta), and may copy a page
+// a writer of the process is rewriting: the roots of txn N with the txnid
+// of N+2, which the reader would publish while reading N's pages, so that
+// later writers reuse them. Here the protocol of the lock file
+// (mdb_txn_renew0, see takeSnapshot) runs with an in-process stand-in for
+// mti_txnid, the in-memory region's TxnID: this process's writers set it
+// where they set mti_txnid (writeMeta), and before rewriting a meta page
+// they set it to the snapshot they began from, on the other page, so it
+// never names the page being rewritten. The reader publishes it in its
+// slot, copies its meta page and re-reads it: if it did not move, no
+// writer of this process touched the page during the copy, and every
+// writer that may reuse the snapshot's pages (from txnid+3 on, see
+// FindOldest) begins after the re-check and sees the slot.
 //
-//   - With no meta write in progress, both pages are read and the newer
-//     taken. An unchanged metaSeq afterwards means no meta write of this
-//     process overlapped the copy, so it is not torn by this process.
-//   - With a write of page p in progress (txn W), page p^1 is read: it
-//     holds W-1, the meta W began from, which this process does not touch
-//     until W+1 commits. W itself only reuses pages freed before W-1, so
-//     W-1 is safe to read.
-//
-// The txnid is published in the slot before metaSeq is read again. If it
-// is unchanged, the next meta write of this process (W+1's, or the end of
-// W's) comes after the publication in the order of atomic operations, and
-// so does the FindOldest of any writer that could reuse this snapshot's
-// pages (a transaction that began from the published meta or a newer
-// one): it sees the slot. A writer already running when the slot was
-// published began from this meta at the latest and reuses only pages
-// freed before it. Concurrent writes by other processes remain the
-// caller's job under MDB_NOLOCK, as in C.
+// Commits of other processes are not published to us (MDB_NOLOCK leaves
+// keeping processes apart to the caller, as in C), but a reader must see
+// the ones made while this process had no transaction, as C's does. So a
+// reader that finds a newer meta page on the file adopts its txnid if no
+// writer of this process holds the writer lock (TryLock: readers never
+// wait) and starts over. With a writer, the snapshot it has is kept: the
+// copy is consistent, and the writer publishes its commit, which builds
+// on the newest one, when it is done. A plain copy holds the writer lock
+// while its transaction renews, so it adopts the newest txnid first
+// (copyPlain).
 func (e *Env) noLockSnapshot(m *sys.DataMap, slot int) (format.Meta, error) {
 	for {
-		s := e.metaSeq.Load()
-		var meta format.Meta
-		var err error
-		if s&metaWriting == 0 {
-			meta, err = e.pickMetaIn(m)
-		} else {
-			meta, err = e.readMetaIn(m, int(s&1)^1)
+		txnid := e.lock.PublishCurrentTxnID(slot)
+		meta, err := e.readMetaIn(m, int(txnid&1))
+		if e.lock.TxnID() != txnid {
+			// A commit of ours meanwhile (a failed read may have been a
+			// torn page): again.
+			continue
 		}
-		if err == nil {
-			e.lock.SetSlotTxnID(slot, meta.TxnID)
-		}
-		if e.metaSeq.Load() == s {
+		if err != nil {
 			return meta, err
 		}
-		// A meta write began or ended meanwhile (a failed read may have
-		// been a torn page): again.
+		if !e.newerCommitOnFile(m, txnid, &meta) || !e.writerMu.TryLock() {
+			return meta, nil
+		}
+		adopted, err := e.adoptNewestTxnID(m)
+		e.writerMu.Unlock()
+		if err != nil {
+			return meta, err
+		}
+		if !adopted {
+			return meta, nil
+		}
 	}
 }
 
-// metaWriting is set in Env.metaSeq while this process writes a meta
-// page; the low bit is then the page.
-const metaWriting = 2
-
-// beginMetaWrite marks the start of this process's write of meta page
-// page (see noLockSnapshot). The writer lock is held.
-func (e *Env) beginMetaWrite(page int) {
-	n := e.metaSeq.Load()>>2 + 1
-	e.metaSeq.Store(n<<2 | metaWriting | uint64(page))
+// newerCommitOnFile reports whether the data file holds a commit newer
+// than snapshot txnid, whose meta page was copied into meta: that page
+// holds another one, or the other meta page a newer one. Only possible
+// without a lock file, where other processes do not publish their commits
+// to us. rlmdb's newer_commit_on_file.
+func (e *Env) newerCommitOnFile(m *sys.DataMap, txnid uint64, meta *format.Meta) bool {
+	if meta.TxnID != txnid {
+		return true
+	}
+	_, other, ok := e.metaIDsIn(m, int(txnid&1)^1)
+	return ok && other > txnid
 }
 
-// endMetaWrite marks its end, after the txnid was published.
-func (e *Env) endMetaWrite() {
-	e.metaSeq.Store(e.metaSeq.Load() &^ 3)
+// adoptNewestTxnIDPinned is adoptNewestTxnID through the current map.
+func (e *Env) adoptNewestTxnIDPinned() error {
+	m, err := e.pin()
+	if err != nil {
+		return err
+	}
+	defer m.Release()
+	_, err = e.adoptNewestTxnID(m)
+	return err
+}
+
+// adoptNewestTxnID makes the newest meta page's txnid the in-process
+// committed txnid if it is newer (commits of other processes, without a
+// lock file). The caller holds writerMu, so no writer of this process
+// rewrites a meta page meanwhile.
+func (e *Env) adoptNewestTxnID(m *sys.DataMap) (bool, error) {
+	newest, err := e.pickMetaIn(m)
+	if err != nil {
+		return false, err
+	}
+	if newest.TxnID <= e.lock.TxnID() {
+		return false, nil
+	}
+	e.lock.SetTxnID(newest.TxnID)
+	return true, nil
 }
 
 // setSnapshot installs the snapshot described by meta (the tail of

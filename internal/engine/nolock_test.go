@@ -264,8 +264,10 @@ func TestEndAfterClose(t *testing.T) {
 // replaces; the reader published the new txnid while reading old pages,
 // and the next writers reused them). The torn page is made on purpose:
 // during the write of W's meta page the test hook writes W-2's meta with
-// W's txnid there, then begins a reader. It must read W-1 from the other
-// page, and keep reading it after W and later commits.
+// W's txnid there, then begins a reader. It must read W-1, the
+// in-process committed txnid, from the other page (and not adopt the
+// "newer" page while the writer holds the lock), and keep reading it
+// after W and later commits.
 func TestNoLockTornMeta(t *testing.T) {
 	forFormats(t, func(t *testing.T, fm format.Format) {
 		env, _ := openTest(t, fm, Options{Flags: format.NoLock})
