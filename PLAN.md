@@ -14,7 +14,7 @@ The initial port maps rlmdb's modules onto Go packages roughly like this
 | Go package | rlmdb source | contents |
 |---|---|---|
 | `internal/format` | `rlmdb/src/format/*` (minus lock file), `consts.rs`, `flags.rs`, `cmp.rs`, `idl.rs` | page, node, meta, DB record layouts for 0.9 and 1.0 (`Layout`), constants, comparators, ID lists |
-| `internal/lockfile` | `format/lockfile.rs`, `os/shared_lock.rs`, `core/reader.rs`, the lock-file parts of `os/unix.rs` (`LockMap`, `fcntl` record locks) | lock-file layouts (both versions, per platform), the lock-file map, open / first-opener protocol, record locks, reader table, writer and reader mutexes shared with C (the cgo pair `shared_cgo.go` / `shared_nocgo.go`) |
+| `internal/lockfile` | `format/lockfile.rs`, `os/shared_lock.rs`, `core/reader.rs`, the lock-file parts of `os/unix.rs` (`LockMap`, `fcntl` record locks) | lock-file layouts (both versions, per platform), the lock-file map, open / first-opener protocol, record locks, reader table, writer and reader mutexes shared with C (Linux: the cgo pair `shared_cgo.go` / `shared_nocgo.go`; macOS: `sem_darwin.go`, through cgo or, without cgo, libSystem stubs) |
 | `internal/sys` | `os/unix.rs`, `os/mod.rs` | mmap, file I/O, fsync, the data map (`DataMap`), page-size and platform queries (the record locks are the lock file's, in `internal/lockfile`) |
 | `internal/engine` | `rlmdb/src/core/*` minus `reader.rs` | env, read and write txns, cursors, put/del, split, rebalance, spill, free list, commit, nested txns, copy, audit |
 | `lmdb` | lmdb-go's `lmdb` (API), rlmdb-capi's behaviour | the public API on top of `engine` |
@@ -178,15 +178,24 @@ in the lock file) and `LockFileEx` on the lock file, all reachable from
 
 ## Deferred decisions (owner, revisit before a release)
 
-* **Builds without cgo.** Go disables cgo by default when
+* **Linux builds without cgo.** Go disables cgo by default when
   cross-compiling or when no C compiler is found, so a plain
   `GOOS=linux go build` from a Mac silently gets the `NoLock`-only build,
-  which fails only at `Env.Open`. Option: make `!cgo` builds fail to
+  which fails only at `Env.Open`. Option: make Linux `!cgo` builds fail to
   compile unless they opt in with a tag (e.g. `lmdb_nocgo`). Today: runtime
-  error at `Open` without `NoLock`.
-* **macOS locks without cgo.** Go binaries on macOS always link
-  libSystem, even with `CGO_ENABLED=0`, so the semaphore calls could use
-  libSystem trampolines (as `x/sys/unix` does) instead of cgo, making
-  macOS builds without cgo fully functional. Today: cgo, as on Linux.
+  error at `Open` without `NoLock`. (macOS builds without cgo have shared
+  locks, see below.)
+* **macOS locks without cgo: resolved (owner).** cgo stays the default on
+  macOS (`darwin && cgo`: `sem_cgo_darwin.go`); a build without cgo
+  (`darwin && !cgo`) calls the semaphores in libSystem directly
+  (`sem_libsystem_darwin.go`, arm64 and amd64 trampolines, the mechanism
+  of `x/sys/unix`, no third-party package), so `CGO_ENABLED=0` macOS
+  builds and cross-compiles to macOS share locks with C fully. Both sit
+  behind one set of calls (`sem_darwin.go`) and pass the same unit tests
+  and the `tests/lockfile` suite against C 0.9 and 1.0, on arm64 and on
+  amd64 under Rosetta. `sem_open` is variadic: Apple's arm64 ABI passes
+  its mode and value on the stack, which its trampoline handles (and
+  tests prove). The cgo path is the fallback if a Go release ever breaks
+  the `syscall.syscall` linkname.
 * Cross-compiling cgo builds: `zig cc` as `CC` (bundled glibc, musl and
   macOS headers) is the suggested toolchain; document and test it.

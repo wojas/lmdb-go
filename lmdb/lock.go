@@ -17,20 +17,22 @@ import (
 var _ engine.LockRegion = (*lockfile.Region)(nil)
 
 // ErrNoSharedLocking is returned by Env.Open for an environment without the
-// NoLock flag in a program built without cgo (CGO_ENABLED=0).  The writer
-// lock and the reader-table lock that LMDB shares between processes are libc
-// objects (pthread mutexes on Linux, POSIX semaphores on macOS), which this
-// package reaches through cgo; without cgo only environments opened with
-// NoLock, which have no lock file, can be used.
-var ErrNoSharedLocking = errors.New("lmdb: shared locking needs a cgo build (CGO_ENABLED=1); open the environment with NoLock or build with cgo")
+// NoLock flag in a Linux program built without cgo (CGO_ENABLED=0).  The
+// writer lock and the reader-table lock that LMDB shares between processes
+// are libc objects: on Linux pthread mutexes, which this package reaches
+// through cgo, so that without cgo only environments opened with NoLock,
+// which have no lock file, can be used.  On macOS they are POSIX semaphores,
+// reached through cgo in a cgo build and through libSystem directly in a
+// build without cgo, so macOS builds never return this error.
+var ErrNoSharedLocking = errors.New("lmdb: shared locking on Linux needs a cgo build (CGO_ENABLED=1); open the environment with NoLock or build with cgo")
 
 // errNoSharedLocks is what the lock file returns for ErrNoSharedLocking.
 var errNoSharedLocks = lockfile.ErrNoSharedLocks
 
 // SharedLockingAvailable reports whether this program can open environments
-// with a lock file, i.e. without the NoLock flag: true if it was built with
-// cgo.  Without cgo Env.Open returns ErrNoSharedLocking unless NoLock is
-// given.
+// with a lock file, i.e. without the NoLock flag: true on macOS, and on
+// Linux if it was built with cgo.  Otherwise Env.Open returns
+// ErrNoSharedLocking unless NoLock is given.
 func SharedLockingAvailable() bool {
 	return lockfile.SharedLocksAvailable()
 }

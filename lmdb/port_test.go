@@ -267,11 +267,11 @@ func TestEnv_ReaderList_lines(t *testing.T) {
 	}
 }
 
-// Without cgo, Open without NoLock fails with ErrNoSharedLocking before it
-// touches the file system.
+// Without shared locking (Linux without cgo), Open without NoLock fails
+// with ErrNoSharedLocking before it touches the file system.
 func TestEnv_Open_noSharedLocking(t *testing.T) {
 	if SharedLockingAvailable() {
-		t.Skip("a cgo build has shared locking")
+		t.Skip("this build has shared locking")
 	}
 	env, err := NewEnv()
 	if err != nil {
