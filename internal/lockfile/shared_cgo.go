@@ -58,11 +58,11 @@ static int lmdbgo_mutex_lock(void *p) { return pthread_mutex_lock(p); }
 static int lmdbgo_mutex_unlock(void *p) { return pthread_mutex_unlock(p); }
 static int lmdbgo_mutex_consistent(void *p) { return pthread_mutex_consistent(p); }
 
-static void *lmdbgo_sem_create(const char *name, unsigned int mode) { errno = ENOTSUP; return NULL; }
-static void *lmdbgo_sem_open(const char *name) { errno = ENOTSUP; return NULL; }
-static int lmdbgo_sem_wait(void *s) { return ENOTSUP; }
-static int lmdbgo_sem_post(void *s) { return ENOTSUP; }
-static int lmdbgo_sem_close(void *s) { return ENOTSUP; }
+static uintptr_t lmdbgo_sem_create(const char *name, unsigned int mode) { errno = ENOTSUP; return 0; }
+static uintptr_t lmdbgo_sem_open(const char *name) { errno = ENOTSUP; return 0; }
+static int lmdbgo_sem_wait(uintptr_t s) { return ENOTSUP; }
+static int lmdbgo_sem_post(uintptr_t s) { return ENOTSUP; }
+static int lmdbgo_sem_close(uintptr_t s) { return ENOTSUP; }
 static int lmdbgo_sem_unlink(const char *name) { return ENOTSUP; }
 #else
 // macOS has neither robust nor process-shared mutexes that LMDB uses.
@@ -71,23 +71,28 @@ static int lmdbgo_mutex_lock(void *p) { return ENOTSUP; }
 static int lmdbgo_mutex_unlock(void *p) { return ENOTSUP; }
 static int lmdbgo_mutex_consistent(void *p) { return ENOTSUP; }
 
+// Semaphore handles cross to Go as integers, never as pointers: macOS's
+// sem_t * values are small numbers (3, 4, ...), which the Go runtime
+// rejects as invalid pointers when it finds them on a stack. 0 is failure
+// (sem_open never returns NULL; it returns SEM_FAILED).
+//
 // sem_open is variadic, which cgo cannot call directly.
-static void *lmdbgo_sem_create(const char *name, unsigned int mode) {
+static uintptr_t lmdbgo_sem_create(const char *name, unsigned int mode) {
 	sem_t *s = sem_open(name, O_CREAT|O_EXCL, (mode_t)mode, 1u);
-	return s == SEM_FAILED ? NULL : s;
+	return s == SEM_FAILED ? 0 : (uintptr_t)s;
 }
-static void *lmdbgo_sem_open(const char *name) {
+static uintptr_t lmdbgo_sem_open(const char *name) {
 	sem_t *s = sem_open(name, 0);
-	return s == SEM_FAILED ? NULL : s;
+	return s == SEM_FAILED ? 0 : (uintptr_t)s;
 }
 // mdb_sem_wait.
-static int lmdbgo_sem_wait(void *s) {
+static int lmdbgo_sem_wait(uintptr_t s) {
 	int rc;
-	while ((rc = sem_wait(s)) && (rc = errno) == EINTR) ;
+	while ((rc = sem_wait((sem_t *)s)) && (rc = errno) == EINTR) ;
 	return rc;
 }
-static int lmdbgo_sem_post(void *s) { return sem_post(s) ? errno : 0; }
-static int lmdbgo_sem_close(void *s) { return sem_close(s) ? errno : 0; }
+static int lmdbgo_sem_post(uintptr_t s) { return sem_post((sem_t *)s) ? errno : 0; }
+static int lmdbgo_sem_close(uintptr_t s) { return sem_close((sem_t *)s) ? errno : 0; }
 static int lmdbgo_sem_unlink(const char *name) { return sem_unlink(name) ? errno : 0; }
 #endif
 */
@@ -111,7 +116,8 @@ const (
 // sharedMutex is one of the two shared locks: a pthread_mutex_t in the lock
 // file or a named semaphore.
 type sharedMutex struct {
-	p    unsafe.Pointer // the pthread_mutex_t in the lock map, or the sem_t *
+	p    unsafe.Pointer // the pthread_mutex_t in the lock map (mutexes)
+	h    C.uintptr_t    // the sem_t * handle, as an integer (semaphores)
 	sem  bool
 	name string // the semaphore's name
 }
@@ -150,22 +156,22 @@ func attachMutex(m *lockMap, off int) (*sharedMutex, error) {
 func createSemaphore(name string, mode uint32) (*sharedMutex, error) {
 	cname := C.CString(name)
 	defer C.free(unsafe.Pointer(cname))
-	p, err := C.lmdbgo_sem_create(cname, C.uint(mode))
-	if p == nil {
+	h, err := C.lmdbgo_sem_create(cname, C.uint(mode))
+	if h == 0 {
 		return nil, errnoOr(0, err)
 	}
-	return &sharedMutex{p: p, sem: true, name: name}, nil
+	return &sharedMutex{h: h, sem: true, name: name}, nil
 }
 
 // openSemaphore opens the existing semaphore name (sem_open(name, 0)).
 func openSemaphore(name string) (*sharedMutex, error) {
 	cname := C.CString(name)
 	defer C.free(unsafe.Pointer(cname))
-	p, err := C.lmdbgo_sem_open(cname)
-	if p == nil {
+	h, err := C.lmdbgo_sem_open(cname)
+	if h == 0 {
 		return nil, errnoOr(0, err)
 	}
-	return &sharedMutex{p: p, sem: true, name: name}, nil
+	return &sharedMutex{h: h, sem: true, name: name}, nil
 }
 
 // unlinkSemaphore removes the name (sem_unlink); open handles stay valid.
@@ -184,7 +190,7 @@ func unlinkSemaphore(name string) error {
 func (s *sharedMutex) lock() (lockStatus, error) {
 	var rc C.int
 	if s.sem {
-		rc = C.lmdbgo_sem_wait(s.p)
+		rc = C.lmdbgo_sem_wait(s.h)
 	} else {
 		rc = C.lmdbgo_mutex_lock(s.p)
 	}
@@ -202,7 +208,7 @@ func (s *sharedMutex) lock() (lockStatus, error) {
 func (s *sharedMutex) unlock() error {
 	var rc C.int
 	if s.sem {
-		rc = C.lmdbgo_sem_post(s.p)
+		rc = C.lmdbgo_sem_post(s.h)
 	} else {
 		rc = C.lmdbgo_mutex_unlock(s.p)
 	}
@@ -228,11 +234,11 @@ func (s *sharedMutex) consistent() error {
 // with unlink, sem_unlink of its name. Process-shared mutexes need nothing
 // (C does not destroy them either).
 func (s *sharedMutex) close(unlink bool) {
-	if !s.sem || s.p == nil {
+	if !s.sem || s.h == 0 {
 		return
 	}
-	C.lmdbgo_sem_close(s.p)
-	s.p = nil
+	C.lmdbgo_sem_close(s.h)
+	s.h = 0
 	if unlink {
 		_ = unlinkSemaphore(s.name)
 	}
