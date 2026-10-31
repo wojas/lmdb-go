@@ -31,14 +31,13 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"runtime/debug"
 	"slices"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
 	"github.com/PowerDNS/lmdb-go/internal/format"
+	"github.com/PowerDNS/lmdb-go/internal/fuzzwatch"
 )
 
 // Kinds of keys and values of a model database.
@@ -1581,24 +1580,7 @@ func FuzzWriteModel(f *testing.F) {
 	})
 }
 
-// fuzzWatchdog crashes the process if fn runs longer than a minute (with
-// every goroutine's stack), so that the fuzzer keeps a hanging input.
-func fuzzWatchdog(fn func()) {
-	done := make(chan struct{})
-	var wg sync.WaitGroup
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		select {
-		case <-done:
-		case <-time.After(time.Minute):
-			debug.SetTraceback("all")
-			panic("fuzz input still running after a minute (hang)")
-		}
-	}()
-	defer func() {
-		close(done)
-		wg.Wait()
-	}()
-	fn()
-}
+// fuzzWatchdog crashes the process if fn runs longer than a minute while
+// fuzzing (with every goroutine's stack), so that the fuzzer keeps a
+// hanging input (internal/fuzzwatch).
+func fuzzWatchdog(fn func()) { fuzzwatch.Run(time.Minute, 0, fn) }

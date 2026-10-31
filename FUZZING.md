@@ -18,7 +18,7 @@ itself is started by hand.
 | `internal/engine` | `FuzzPageOps` | one page and an edit | the engine's node search and in-place page edits (`pageops.go`, the DUPSORT sub-page builder) on damaged pages, called as their callers call them |
 | `internal/engine` | `FuzzWriteModel` | an environment shape and a script of operations | the write path against an in-memory model: every put flag, cursor writes, `MDB_CURRENT`, `MDB_MULTIPLE`, deletes, range deletes, bulk loads, cursor moves, nested transactions, commits, aborts, drops, reopens; return codes, values, cursor positions and counts after every step, contents and `Env.Audit` after every commit, plain and compacting copies at the end |
 | `internal/lockfile` | `FuzzLockFile` | the content of a lock file | header and reader-slot decoding of both lock-file versions for every platform's layout, and the reader-table walks of a `Region` over that table (in memory: no file, locks or semaphores) |
-| `lmdb` | `FuzzEnvFile` | a whole data file | the public API end to end with `NoLock`: open, bounded reads of every named database (walks both ways, gets, duplicate and multiple-value operations), plain and compacting copy, one write transaction with a nested one, reading again; panics, hangs (an input running for 10 s) and heap growth past 2 GiB fail |
+| `lmdb` | `FuzzEnvFile` | a whole data file | the public API end to end with `NoLock`: open, bounded reads of every named database (walks both ways, gets, duplicate and multiple-value operations), plain and compacting copy, one write transaction with a nested one, reading again; panics, hangs (an input running for 10 s while fuzzing) and heap growth past 2 GiB fail |
 | `lmdb` | `FuzzAPI` | a script of API calls with arbitrary arguments | every write flag combination, cursor operation codes 0-255, nil, empty and oversized keys and values, `PutMulti` strides, unpositioned cursors, nested transactions, databases opened with any flags: no panic, and the committed file passes `Env.Audit` and reads back |
 | `tests/engine` (nested module) | `FuzzWriteDifferential` | an oracle, a profile and a script | the lock-step write differential against C 0.9.36 (`writeops`) and C 1.0 (`writeops10`, 1 and 4 KiB pages): cursors after every step, then `mdb_dump`, C's page audit and the pages themselves; skips without the C oracles |
 
@@ -67,6 +67,15 @@ next to the target and prints how to rerun it
 then a regression test of every `go test`. A hang or runaway memory
 crashes the worker with every goroutine's stack (a stuck goroutine cannot
 be stopped), which the fuzzer records like a panic.
+
+The watchdog (`internal/fuzzwatch`, used by `FuzzEnvFile`, `FuzzAPI` and
+`FuzzWriteModel`) measures the input, not the process: the heap limit
+applies to the heap's growth since the input began, and the hang limit
+only in a fuzzing worker, which runs nothing but inputs. In a normal
+`go test` the seeds run after the package's other tests in the same
+process, whose heap may still hold gigabytes of their garbage, on a
+machine that may be busy with other packages' tests; a hang there is
+caught by `go test`'s `-timeout`, also with every goroutine's stack.
 
 ## Findings
 
