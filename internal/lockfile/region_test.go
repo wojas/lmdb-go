@@ -35,7 +35,7 @@ func TestMain(m *testing.M) {
 func needLocks(t *testing.T) {
 	t.Helper()
 	if !sharedLocksAvailable {
-		t.Skip("shared locks need cgo")
+		t.Skip("shared locks need cgo on Linux")
 	}
 }
 
@@ -55,7 +55,7 @@ func openRegion(t *testing.T, path string, l *Layout) *Region {
 
 func TestOpenWithoutCgo(t *testing.T) {
 	if sharedLocksAvailable {
-		t.Skip("cgo build")
+		t.Skip("this build has shared locks")
 	}
 	l := &Layout{}
 	if _, err := Open(filepath.Join(t.TempDir(), "lock.mdb"), 0o644, 4, false, l); err != ErrNoSharedLocks {

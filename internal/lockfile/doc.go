@@ -36,13 +36,17 @@
 //     whose names are stored in the file (version 1) or derived from a hash
 //     stored there (version 2), and read, never recomputed.
 //
-// The two locks are libc objects and are taken through cgo, in one file
-// pair (shared_cgo.go, shared_nocgo.go). Built without cgo, the package
-// compiles but Open returns ErrNoSharedLocks; everything else here (the
-// mapping, the record locks, the table) is Go. The size of pthread_mutex_t,
-// which decides the Linux layouts, also comes from cgo, so glibc and musl
-// builds each get their libc's layout: interoperation is with C processes
-// of the same libc (on aarch64, glibc and musl lock files differ).
+// The two locks are libc objects; everything else here (the mapping, the
+// record locks, the table) is Go. On Linux they are taken through cgo, in
+// one file pair (shared_cgo.go, shared_nocgo.go); built without cgo, the
+// package compiles but Open returns ErrNoSharedLocks. The size of
+// pthread_mutex_t, which decides the Linux layouts, also comes from cgo, so
+// glibc and musl builds each get their libc's layout: interoperation is
+// with C processes of the same libc (on aarch64, glibc and musl lock files
+// differ). On macOS (sem_darwin.go) the semaphore calls go through cgo in a
+// cgo build (sem_cgo_darwin.go, the default) and through libSystem
+// directly, with assembly trampolines, in a build without cgo
+// (sem_libsystem_darwin.go), so macOS builds have shared locks either way.
 //
 // A process must not open one environment twice, in C or here: closing any
 // descriptor of the lock file drops all of the process's record locks on
