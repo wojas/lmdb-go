@@ -109,6 +109,17 @@ type wstate struct {
 	// reclaimKey and saveKey hold the free DB keys of reclaimRun and
 	// freelistSave (see txnidBytes).
 	reclaimKey, saveKey [8]byte
+	// splitPtrs are the node offsets of pageSplit, by recursion depth
+	// (splitDepth: one level per tree level).
+	splitPtrs  [format.CursorStack][]int
+	splitDepth int
+	// scratch holds the temporary page copies of splits and merges.
+	scratch scratchStack
+	// Key and data scratch of the rebalancing code: lowestKeyBelow's
+	// result, nodeMove's moved key and data and its new separators. Each
+	// holds one value at a time (nodeMove does not recurse, and a key is
+	// used before the next one is read).
+	lowKey, moveKey, moveData, sepKey []byte
 	// unlock releases the writer locks (top-level transactions).
 	locked bool
 }

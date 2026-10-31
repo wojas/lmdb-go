@@ -111,6 +111,33 @@ func (p *pagePool) trim() {
 	p.used = 0
 }
 
+// scratchStack is the page-sized scratch space of the write path's
+// temporary page copies (split, merge), which nest as the operations
+// recurse up the tree: take returns the next buffer, release gives back
+// everything taken since mark. The buffers stay for later transactions.
+type scratchStack struct {
+	bufs [][]byte
+	n    int
+}
+
+func (s *scratchStack) mark() int { return s.n }
+
+func (s *scratchStack) release(mark int) { s.n = mark }
+
+// take is a scratch buffer of size bytes (not zeroed).
+func (s *scratchStack) take(size int) []byte {
+	if s.n == len(s.bufs) {
+		s.bufs = append(s.bufs, nil)
+	}
+	b := s.bufs[s.n]
+	if cap(b) < size {
+		b = make([]byte, size)
+		s.bufs[s.n] = b
+	}
+	s.n++
+	return b[:size]
+}
+
 // pageSlot is where a dirty page's buffer is in its list's slab; only a
 // hint.
 type pageSlot uint32

@@ -105,17 +105,24 @@ func TestAllocs(t *testing.T) {
 	}
 }
 
+// BenchmarkAllocs reports allocs/op (whole allocations per operation,
+// rounded down like TestAllocs's counts) and mallocs/op, the exact mean,
+// which shows allocations made only every so many operations.
 func BenchmarkAllocs(b *testing.B) {
 	for _, c := range allocCases {
 		b.Run(c.name, func(b *testing.B) {
 			env := allocEnv(b)
 			op, done := c.setup(b, env)
+			var before, after runtime.MemStats
 			b.ReportAllocs()
 			b.ResetTimer()
+			runtime.ReadMemStats(&before)
 			for i := 0; i < b.N; i++ {
 				op()
 			}
+			runtime.ReadMemStats(&after)
 			b.StopTimer()
+			b.ReportMetric(float64(after.Mallocs-before.Mallocs)/float64(b.N), "mallocs/op")
 			done()
 		})
 	}
