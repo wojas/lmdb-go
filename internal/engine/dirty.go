@@ -27,7 +27,11 @@
 
 package engine
 
-import "sort"
+import (
+	"sort"
+
+	"github.com/PowerDNS/lmdb-go/internal/format"
+)
 
 // spillSet is mt_spill_pgs: page numbers this transaction wrote to the
 // data file before commit.
@@ -318,6 +322,17 @@ func (d *dirtyPages) allocCopy(src []byte) []byte {
 		b = make([]byte, len(src))
 	}
 	copy(b, src)
+	return b
+}
+
+// allocPageCopy is allocCopy of one page, copied as mdb_page_copy does
+// (copyPage).
+func (d *dirtyPages) allocPageCopy(l *format.Layout, src []byte) []byte {
+	b := d.pool.take(len(src))
+	if b == nil {
+		b = make([]byte, len(src))
+	}
+	copyPage(l, b, src)
 	return b
 }
 

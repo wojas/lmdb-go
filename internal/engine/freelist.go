@@ -100,7 +100,11 @@ func (t *Txn) pageAllocWith(num int, init pageInit) (uint64, pageSlot, error) {
 		if at+len(init.src) > len(page) {
 			return 0, noSlot, format.Corrupted
 		}
-		copy(page[at:], init.src)
+		if init.kind == initCopy && len(init.src) == len(page) {
+			copyPage(t.l, page, init.src)
+		} else {
+			copy(page[at:], init.src)
+		}
 		return pgno, slot, nil
 	}
 	// If our dirty list is already full, we can't do anything.
@@ -131,7 +135,7 @@ func (t *Txn) pageAllocWith(num int, init pageInit) (uint64, pageSlot, error) {
 	case initZeroed:
 		buf = w.dirty.allocZeroed(n)
 	case initCopy:
-		buf = w.dirty.allocCopy(init.src)
+		buf = w.dirty.allocPageCopy(t.l, init.src)
 	case initData:
 		if buf = w.dirty.allocData(n, t.l.PageHdr, init.src); buf == nil {
 			w.flags |= txnError

@@ -25,6 +25,27 @@ func hdr16(p []byte, off int) uint16 {
 	return v
 }
 
+// copyPage is mdb_page_copy: copy page src to dst (both one page), not
+// copying the free space between mp_lower and mp_upper (rounded inwards to
+// 8 bytes, as C does), which is zeroed instead (C leaves it as the buffer
+// was); no reader looks at it. P_LEAF2 pages and pages whose bounds are
+// out of range are copied whole.
+func copyPage(l *format.Layout, dst, src []byte) {
+	const align = 8
+	ps := len(src)
+	lo, up := pLower(l, src), pUpper(l, src)
+	if pFlags(l, src)&format.PLeaf2 == 0 && l.PageHdr <= lo && lo <= up && up <= ps && len(dst) == ps {
+		a, b := (lo+align-1)&^(align-1), up&^(align-1)
+		if a < b {
+			copy(dst[:a], src[:a])
+			clear(dst[a:b])
+			copy(dst[b:], src[b:])
+			return
+		}
+	}
+	copy(dst, src)
+}
+
 // pLower is mp_lower + PAGEBASE: the end of the pointer array.
 func pLower(l *format.Layout, p []byte) int { return int(hdr16(p, l.LowerOffset())) + l.PtrBase }
 
