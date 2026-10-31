@@ -82,6 +82,9 @@ type Env struct {
 	// (MDB_NOLOCK, or a read-only file system), see AGENTS.md rule 2a.
 	lock     LockRegion
 	lockFile bool
+	// slots are the idle reader slots this process keeps for its next
+	// read transactions (slotpool.go).
+	slots slotPool
 
 	dbis dbiRegistry
 
@@ -341,6 +344,7 @@ func Open(path string, opts Options) (env *Env, err error) {
 	if e.lockFile {
 		e.maxReaders = e.lock.MaxReaders()
 	}
+	e.slots.init(e.maxReaders, e.lock.MaxReaders())
 	e.dbis.init(opts.MaxDBs)
 	e.flags.Store(flags)
 	e.pageSize = pageSize
@@ -376,6 +380,9 @@ func (e *Env) release() {
 		e.dataFile.Close()
 	}
 	if e.lock != nil {
+		// The pooled slots first (the lock file's Close would clear them
+		// too, the in-memory table's would not).
+		e.slots.drain(e.lock.ReleaseSlot)
 		e.lock.Close()
 	}
 	unregister(e.regKey)

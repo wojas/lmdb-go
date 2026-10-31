@@ -11,6 +11,7 @@ Status of the stage-1 engine port (PLAN.md, agent E). rlmdb sources:
 | `internal/sys/*` | `os/unix.rs`, `os/mod.rs` minus shared locks | done (data map, pread/pwrite, fdatasync) |
 | `lockregion.go` | `core/reader.rs` (interface only) | done |
 | `memlock.go` | (none) | in-memory region: NoLock reader table, test stand-in |
+| `slotpool.go` | (none; C's TLS-mode slot reuse) | idle reader slots kept for the next read transaction |
 | `env.go` | `core/env.rs` | done |
 | `dbi.go` | `core/dbi.rs` | done |
 | `txn.go` | `core/txn.rs` | done |
@@ -168,6 +169,19 @@ counts of the API's hot paths are pinned by `lmdb/alloc_test.go`.
   0, ReaderList is nil (C prints "(no reader locks)"), ReaderCheck is 0,
   and there is no reader limit. A second open of the same path in one
   process fails with EBUSY (rlmdb's registry).
+* Reader slots (stage 4, `slotpool.go`): C with `MDB_NOTLS` (lmdb-go's
+  mode) and rlmdb claim a slot under the reader mutex at every read
+  transaction's begin and free it (`mr_pid = 0`) at the end. Here the end
+  leaves the slot idle and owned (`mr_txnid = (txnid_t)-1`, as C's TLS
+  mode leaves a thread's slot) in a bounded per-`Env` pool, and the next
+  read transaction takes it without the mutex (no cgo call on the read
+  path, AGENTS.md rule 1); C's `MDB_BAD_RSLOT` check (`mr_pid` ours and
+  idle) runs before reuse, and a slot that fails it is dropped. Bound:
+  `min(MaxReaders/4, 64)`; a claim at index `MaxReaders*3/4` or above, or
+  `MDB_READERS_FULL`, turns pooling off until a claim lands lower. Other
+  processes see the idle slots (`mdb_stat -r`: txnid `-`) and count them
+  in `mti_numreaders`, as for a C process in TLS mode; `Env.Close`
+  releases them. Not in rlmdb (to be proposed there).
 * `MDB_DUPFIXED` items of one byte (stage 2): rlmdb refuses `P_LEAF2`
   keys shorter than 2 bytes (`ksize.checked_sub(2)` in `insert_leaf2`
   and the `P_LEAF2` delete) and fails with `MDB_PAGE_FULL` on the second

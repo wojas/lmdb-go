@@ -4,8 +4,11 @@
 //
 // Beginning a read transaction (mdb_txn_renew0, mdb.c line 2758):
 //
-//  1. Claim a reader slot (LockRegion.AcquireSlot). As with MDB_NOTLS,
-//     every transaction owns its slot; Reset keeps it for Renew.
+//  1. Take a reader slot: an idle one this process owns from the pool
+//     (slotpool.go), else claim one (LockRegion.AcquireSlot). As with
+//     MDB_NOTLS, every transaction has its own slot; Reset keeps it for
+//     Renew, the end makes it idle and pools it (C's MDB_NOTLS releases
+//     it).
 //  2. Publish the last committed txnid (mti_txnid) in the slot, re-reading
 //     until stable. From then on writers do not reuse pages this snapshot
 //     needs.
@@ -64,6 +67,9 @@ type Txn struct {
 	// Read transactions: the reader slot (-1: none) and the state.
 	slot  int
 	state int
+	// poolCell is the cell of Env.slots this transaction object used
+	// last (see slotPool.get); kept when the object is reused.
+	poolCell int
 
 	// nameCur is the scratch cursor of findNamedDB, getCur and getX those
 	// of Get.
@@ -133,7 +139,8 @@ func (e *Env) BeginRead(t *Txn) error {
 	if e.closed.Load() {
 		return syscall.EINVAL
 	}
-	s, err := e.lock.AcquireSlot()
+	s, cell, err := e.acquireSlot(t.poolCell)
+	t.poolCell = cell
 	if err != nil {
 		return err
 	}
@@ -272,7 +279,7 @@ func (t *Txn) Abort() {
 		return
 	}
 	if t.slot >= 0 && !t.env.closed.Load() {
-		t.env.lock.ReleaseSlot(t.slot)
+		t.poolCell = t.env.releaseSlot(t.slot, t.poolCell)
 	}
 	t.slot = -1
 	t.releaseMap()

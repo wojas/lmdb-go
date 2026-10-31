@@ -5,9 +5,14 @@ package lmdb
 
 import (
 	"bytes"
+	"encoding/binary"
 	"errors"
+	"fmt"
 	"os"
+	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"syscall"
 	"testing"
 )
@@ -329,5 +334,133 @@ func TestCursor_Get_copies(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatal(err)
+	}
+}
+
+// A read transaction that ends leaves its reader slot idle and owned by
+// the process, as C's default (TLS) mode leaves a thread's slot, and the
+// next one reuses it (slot pool, DEVIATIONS.md): ReaderList shows the idle
+// slot as C's mdb_reader_list does ("-"), and no second slot appears.
+func TestEnv_ReaderList_idleSlot(t *testing.T) {
+	requireLockFile(t)
+	env := setup(t)
+	defer clean(env, t)
+	var lines []string
+	collect := func(s string) error { lines = append(lines, s); return nil }
+	for i := 0; i < 3; i++ {
+		if err := env.View(func(*Txn) error { return nil }); err != nil {
+			t.Fatal(err)
+		}
+		lines = nil
+		if err := env.ReaderList(collect); err != nil {
+			t.Fatal(err)
+		}
+		if len(lines) != 2 || !strings.HasSuffix(lines[1], " -\n") ||
+			strings.Fields(lines[1])[0] != strconv.Itoa(os.Getpid()) {
+			t.Fatalf("after View %d: %q", i, lines)
+		}
+	}
+	info, err := env.Info()
+	if err != nil || info.NumReaders != 1 {
+		t.Fatalf("Info: %+v, %v", info, err)
+	}
+}
+
+// Many goroutines run View while a writer runs Update: every snapshot is
+// consistent, and the reader table ends with idle slots only, at most the
+// pool's bound (MaxReaders/4). Run with -race.
+func TestEnv_View_concurrentSlots(t *testing.T) {
+	env := setup(t)
+	defer clean(env, t)
+	var db DBI
+	val := func(n uint64, k byte) []byte {
+		v := make([]byte, 200)
+		binary.BigEndian.PutUint64(v, n)
+		for i := 8; i < len(v); i++ {
+			v[i] = byte(n) ^ byte(i) ^ k
+		}
+		return v
+	}
+	if err := env.View(func(txn *Txn) (err error) { db, err = txn.OpenRoot(0); return err }); err != nil {
+		t.Fatal(err)
+	}
+	update := func(n uint64) error {
+		return env.Update(func(txn *Txn) (err error) {
+			if err := txn.Put(db, []byte("a"), val(n, 'a'), 0); err != nil {
+				return err
+			}
+			return txn.Put(db, []byte("b"), val(n, 'b'), 0)
+		})
+	}
+	if err := update(0); err != nil {
+		t.Fatal(err)
+	}
+	iters := 5000
+	if testing.Short() || raceEnabled {
+		iters = 500
+	}
+	var stop atomic.Bool
+	errs := make(chan error, 17)
+	var wg, rw sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for n := uint64(1); !stop.Load(); n++ {
+			if err := update(n); err != nil {
+				errs <- err
+				return
+			}
+		}
+	}()
+	for g := 0; g < 16; g++ {
+		rw.Add(1)
+		go func() {
+			defer rw.Done()
+			for i := 0; i < iters; i++ {
+				err := env.View(func(txn *Txn) error {
+					txn.RawRead = true
+					a, err := txn.Get(db, []byte("a"))
+					if err != nil {
+						return err
+					}
+					b, err := txn.Get(db, []byte("b"))
+					if err != nil {
+						return err
+					}
+					n := binary.BigEndian.Uint64(a)
+					if !bytes.Equal(a, val(n, 'a')) || !bytes.Equal(b, val(n, 'b')) {
+						return fmt.Errorf("inconsistent snapshot %d: a=%d b=%d", txn.ID(), n, binary.BigEndian.Uint64(b))
+					}
+					return nil
+				})
+				if err != nil {
+					errs <- err
+					return
+				}
+			}
+		}()
+	}
+	rw.Wait()
+	stop.Store(true)
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Fatal(err)
+	}
+	if testFlags(0)&NoLock != 0 {
+		return
+	}
+	idle := 0
+	err := env.ReaderList(func(s string) error {
+		if f := strings.Fields(s); len(f) == 3 && f[0] != "pid" {
+			if f[2] != "-" {
+				return fmt.Errorf("a reader is still in a transaction: %q", s)
+			}
+			idle++
+		}
+		return nil
+	})
+	if err != nil || idle > 126/4 {
+		t.Fatalf("reader table after the run: %d idle slots, %v", idle, err)
 	}
 }
