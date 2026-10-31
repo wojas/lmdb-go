@@ -91,6 +91,11 @@ func (p *pagePool) merge(o *pagePool) {
 		p.pageSize, p.max = o.pageSize, o.max
 	}
 	p.used += o.used
+	if len(p.free) == 0 {
+		// A nested transaction borrowing its parent's spares, or giving
+		// them back: take the list itself.
+		p.free, o.free = o.free, nil
+	}
 	for _, b := range o.free {
 		p.put(b)
 	}

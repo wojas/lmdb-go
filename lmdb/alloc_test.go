@@ -42,15 +42,15 @@ const (
 
 	// Write path. lmdb-go v1 makes one allocation (the *Txn) for Update
 	// and BeginTxn+Commit, none for the operations inside a transaction.
-	allocsUpdatePut    = 30
-	allocsCommit       = 30
+	allocsUpdatePut    = 5
+	allocsCommit       = 5
 	allocsPut          = 0
 	allocsOverwrite    = 0
 	allocsDelete       = 0
 	allocsPutReserve   = 0
 	allocsPutDup       = 2
-	allocsSub          = 18
-	allocsUpdateBigPut = 31
+	allocsSub          = 14
+	allocsUpdateBigPut = 6
 )
 
 // allocKeys is how many keys the cases' databases hold.

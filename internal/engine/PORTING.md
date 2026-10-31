@@ -107,6 +107,20 @@ Status of the stage-1 engine port (PLAN.md, agent E). rlmdb sources:
   lock is released anyway, so the next writer recovers the mutex once the
   owning thread ends.
 
+### Stage 3: performance (divergences from rlmdb's structure)
+
+* One `Txn` per environment for top-level write transactions
+  (`writerState.txn`), reused by each as C reuses `me_txn0`, with its DB
+  table, dirty list and page pool (C's `me_dpages`; it keeps as many spare
+  pages as the last transaction used, at most 256 MiB), cursor arena,
+  spill set and page lists. A `Txn` must not be used after its `Commit` or
+  `Abort` once another write transaction began (package `lmdb` drops its
+  reference at the end, as lmdb-go did with C's); cursors of an ended
+  transaction still fail cleanly (arena generations). rlmdb allocates
+  these per transaction: in Rust that is cheap, in Go the garbage (a few
+  16 KiB pages per commit on a small heap) made the collector run every
+  few commits.
+
 ## Ledger: deviations from C and rlmdb
 
 * NoLock (AGENTS.md rule 2a): C's MDB_NOLOCK leaves writer serialisation

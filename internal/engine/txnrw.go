@@ -102,7 +102,11 @@ type wstate struct {
 	locked bool
 }
 
-// beginWrite is mdb_txn_begin(env, NULL, 0).
+// beginWrite is mdb_txn_begin(env, NULL, 0). The transaction is the
+// environment's writerState.txn, reused by every top-level write
+// transaction as C reuses me_txn0: callers must not use a Txn after its
+// Commit or Abort (package lmdb drops its reference then, as lmdb-go did
+// with C's).
 func (e *Env) beginWrite() (*Txn, error) {
 	if e.isReadOnly() {
 		return nil, syscall.EACCES
@@ -111,10 +115,13 @@ func (e *Env) beginWrite() (*Txn, error) {
 		return nil, syscall.EINVAL
 	}
 	e.writerMu.Lock()
-	if err := e.lock.LockWriter(func() (uint64, error) {
-		m, err := e.pickMeta()
-		return m.TxnID, err
-	}); err != nil {
+	if e.writer.newestTxnID == nil {
+		e.writer.newestTxnID = func() (uint64, error) {
+			m, err := e.pickMeta()
+			return m.TxnID, err
+		}
+	}
+	if err := e.lock.LockWriter(e.writer.newestTxnID); err != nil {
 		e.writerMu.Unlock()
 		return nil, err
 	}
@@ -146,26 +153,37 @@ func (e *Env) beginWrite() (*Txn, error) {
 		unlock()
 		return nil, err
 	}
-	t := &Txn{env: e, pageSize: e.pageSize, l: e.layout, dmap: m, slot: -1,
-		dbs: e.writer.dbs, gen: e.writer.gen}
-	e.writer.dbs = nil
+	t := e.writer.txn
+	if t == nil {
+		t = &Txn{w: &wstate{cursors: &arena{}, dirty: newDirtyPages(e.pageSize), spilled: spillSet{}}}
+		e.writer.txn = t
+	}
+	// Field by field: dbs and gen are reused, the scratch cursors are
+	// initialised before each use.
+	t.env, t.pageSize, t.l, t.dmap = e, e.pageSize, e.layout, m
+	t.slot, t.state = -1, txnActive
 	if err := t.setSnapshot(last+1, &meta); err != nil {
 		t.releaseMap()
 		unlock()
 		return nil, err
 	}
-	t.w = &wstate{
-		dirtyRoom:   int(e.dirtyLimit.Load()),
-		pgOldest:    e.writer.pgOldest,
-		pbufPad:     e.writer.pbufPad,
-		cursors:     &arena{},
-		baseMain:    meta.DBs[format.MainDBI],
-		hasBaseMain: true,
-		baseMapsize: meta.MapSize,
-		dirty:       newDirtyPages(e.pageSize),
-		spilled:     spillSet{},
-		locked:      true,
-	}
+	// The arena, dirty list and spill set were emptied by the previous
+	// transaction's end.
+	w := t.w
+	w.flags = 0
+	w.freePgs = w.freePgs[:0]
+	w.loose = w.loose[:0]
+	w.dirtyRoom = int(e.dirtyLimit.Load())
+	w.pghead, w.pglast = nil, 0
+	w.pgOldest = e.writer.pgOldest
+	w.pbufPad = e.writer.pbufPad
+	w.baseMain = meta.DBs[format.MainDBI]
+	w.hasBaseMain = true
+	w.baseMapsize = meta.MapSize
+	clear(w.dropped)
+	w.dropped = w.dropped[:0]
+	w.parents, w.parent, w.child, w.cursorBackup = nil, nil, nil, nil
+	w.locked = true
 	return t, nil
 }
 
@@ -199,14 +217,15 @@ func (t *Txn) end(keep bool) error {
 			r.finishNew(i, keep, e.db.Flags)
 		}
 	}
-	w.cursors.clear()
-	w.dirty.clear()
+	w.cursors.reset()
+	// The pool keeps as many spare pages as this transaction used.
+	w.dirty.recycle()
 	clear(w.spilled)
 	if !keep && w.hasBaseMain {
 		t.closeVanishedHandles(w.baseMain)
 	}
-	w.freePgs = nil
-	w.loose = nil
+	w.freePgs = w.freePgs[:0]
+	w.loose = w.loose[:0]
 	w.pghead = nil
 	w.pglast = 0
 	w.flags = txnFinished
@@ -215,10 +234,9 @@ func (t *Txn) end(keep bool) error {
 		e := t.env
 		e.writer.pgOldest = w.pgOldest
 		e.writer.pbufPad = w.pbufPad
-		// The next write transaction reuses the table; this one can no
-		// longer reach it (its handles fail with EINVAL).
-		e.writer.dbs, e.writer.gen = t.dbs, t.gen
-		t.dbs, t.ndbs = nil, 0
+		// Handles fail with EINVAL until the next write transaction takes
+		// the table up again (initDBs).
+		t.dbs, t.ndbs = t.dbs[:0], 0
 		t.releaseMap()
 		var err error
 		if !e.closed.Load() {

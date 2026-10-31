@@ -261,6 +261,19 @@ func (a *arena) clear() {
 	}
 }
 
+// reset frees every slot for the next transaction, which then gets the
+// slots in the order a new arena would hand them out (0, 1, ...). The
+// generation numbers stay: a cursor handle of an ended transaction never
+// matches a slot again.
+func (a *arena) reset() {
+	a.clear()
+	a.free = a.free[:0]
+	for i := len(a.slots) - 1; i >= 0; i-- {
+		a.free = append(a.free, i)
+	}
+	a.depth = 0
+}
+
 // slot is slot i if it is live.
 func (a *arena) slot(i int) *aslot {
 	if i < len(a.slots) && a.slots[i].live {
