@@ -3,7 +3,7 @@
 Benchmarks of the Go implementation of LMDB (the port) against its
 baseline, lmdb-go v1.9.4 (cgo, C LMDB 0.9.35, including the cost of the
 cgo calls; the pinned copy in `../cgolmdb`), with the workloads and the
-data of rlmdb's benchmark (rlmdb's `rust/bench`: `src/workloads.rs`,
+data of rlmdb's benchmark (rlmdb's `bench`: `src/workloads.rs`,
 `c/cbench.c`, `src/data.rs`), plus a group of lmdb-go-specific costs
 (`goapi`). Both implementations run in one process.
 
@@ -109,7 +109,7 @@ with theirs:
 
 ```sh
 go run ./bench/cmd/lmdb-bench -check-data -n 100000 \
-    -rlmdb-bench <rlmdb>/rust/target/release/rlmdb-bench   # and/or -cbench <path to cbench>
+    -rlmdb-bench <rlmdb>/target/release/rlmdb-bench   # and/or -cbench <path to cbench>
 ```
 
 It exits with status 1 if they differ. `go test ./bench/data` pins the
@@ -147,7 +147,7 @@ which locks it to its OS thread as lmdb-go requires. `n` is `-n`.
 | `goapi` | see below | lmdb-go's own costs (Go only) |
 
 The `ls` group loosely simulates [Lightning Stream](https://github.com/PowerDNS/lightningstream)
-syncing a PowerDNS Authoritative database; rlmdb's `rust/bench/README.md`
+syncing a PowerDNS Authoritative database; rlmdb's `bench/README.md`
 describes its data set. Its database is built once per group (untimed);
 `ls_scan` runs first, then `ls_update`, and an untimed scan afterwards
 checks that exactly the updated records are above the last sync.

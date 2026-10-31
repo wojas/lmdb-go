@@ -4,7 +4,7 @@
 // group (one warm-up and -reps timed repetitions of each workload, in a
 // fresh environment), the one that goes first alternating; the samples of
 // all rounds are pooled and printed as a markdown table with the ratio
-// port/cgo. It is the Go form of rlmdb-bench's driver (rust/bench/src/
+// port/cgo. It is the Go form of rlmdb-bench's driver (bench/src/
 // main.rs). See ../../README.md.
 //
 //	lmdb-bench [-n N] [-reps R] [-rounds K] [-only g1,g2] [-impl both|cgo|port] [-dir D]

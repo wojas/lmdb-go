@@ -1,5 +1,5 @@
 // check-freelist: audit the page usage of a snapshot (rlmdb
-// rust/interop/c/cpeer_pagewalk.c, and rpeer's pagewalk.rs for choosing
+// interop/c/cpeer_pagewalk.c, and rpeer's pagewalk.rs for choosing
 // the format).
 //
 // Every page 0..last_pg of a committed snapshot is used exactly once (see

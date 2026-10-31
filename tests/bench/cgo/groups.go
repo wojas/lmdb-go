@@ -1,5 +1,5 @@
 // The workload groups of rlmdb's benchmark: line-by-line twins of the
-// groups in rust/bench/c/cbench.c and rust/bench/src/workloads.rs, on
+// groups in bench/c/cbench.c and bench/src/workloads.rs, on
 // lmdb-go's API. Same data, same operations in the same order, same
 // transaction sizes; each group runs one warm-up iteration and c.p.Reps
 // timed ones per workload.

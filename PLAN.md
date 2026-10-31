@@ -158,8 +158,8 @@ first and are then ported here. To keep that cheap:
   better served, and note larger divergences in `PORTING.md` so later
   ports know where to look.
 * `internal/engine/PORTING.md` records the rlmdb commit the port is synced
-  to (currently `9ea2373`) and, per later sync, the rlmdb commits ported,
-  skipped (with the reason) or replaced by a Go-specific solution.
+  to and, per sync, the rlmdb commits ported, skipped (with the reason) or
+  replaced by a Go-specific solution.
 * Go-side fixes that also apply to rlmdb (bugs found here, like the
   `NoLock` reader tracking) are reported to the rlmdb side, so the two
   stay in step.

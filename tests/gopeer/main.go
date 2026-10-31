@@ -1,5 +1,5 @@
 // Command gopeer is the Go peer of rlmdb's interop harness (rlmdb
-// rust/interop/README.md, "The peer command protocol"):
+// interop/README.md, "The peer command protocol"):
 //
 //	gopeer <command> <args...> [options...] [--impl cgo|port]
 //

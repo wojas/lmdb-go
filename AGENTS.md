@@ -15,9 +15,9 @@ messages) until that is established.
 
 ## Sources of truth
 
-* **rlmdb**, a checkout pinned at commit `9ea2373` (`$RLMDB_DIR`; its
-  Rust workspace is `$RLMDB_DIR/rust`, called `$RLMDB` below). Where it is
-  on this machine is in `AGENTS.local.md` (git-ignored; ask the
+* **rlmdb**, a checkout pinned at the commit `internal/engine/PORTING.md`
+  names (`$RLMDB_DIR`; its repository root is the Cargo workspace). Where
+  it is on this machine is in `AGENTS.local.md` (git-ignored; ask the
   coordinator if it is missing). Read-only for you: do not
   commit there, do not edit sources there. Building in it is fine (its
   `target/` is already built in release mode, see below). Its documents are
@@ -46,13 +46,16 @@ messages) until that is established.
   `version.go`): `Format`, `V09`, `V10`, `Env.SetFormat`, `Env.Format`,
   `SniffFormat`, `ErrFormatConflict`, the `LMDB_DEFAULT_FORMAT`-style
   default (use rlmdb's `RLMDB_DEFAULT_FORMAT` semantics, experimental).
-* **C is the oracle.** C LMDB 0.9.36 and the pinned LMDB 1.0 are built by
-  rlmdb's interop crate; the binaries are in
-  `$RLMDB/target/release/build/rlmdb-interop-*/out/bin/` (`cpeer`, `cpeer10`,
-  `writeops`, `writeops10`, `mdb_stat`, `mdb_dump`, `mdb_load`, `mdb_copy`,
-  their `*10` versions, `layout_dump`, `mtest*`), plus `rpeer` and `rtools`
-  in `$RLMDB/target/release/`. These are macOS binaries; for Linux build
-  them in the container (see "Linux" below). lmdb-go v1 itself (cgo, C
+* **C is the oracle.** C LMDB 0.9.36 and the pinned LMDB 1.0, whose
+  sources rlmdb vendors (`tests/lmdb-c/0.9`, `tests/lmdb-c/1.0`), are built
+  by rlmdb's interop crate; the binaries are in
+  `$RLMDB_DIR/target/release/build/rlmdb-interop-*/out/bin/` (`cpeer`,
+  `cpeer10`, `writeops`, `writeops10`, `writeops10_ndebug`, `mdb_stat`,
+  `mdb_dump`, `mdb_load`, `mdb_copy`, their `*10` versions, `layout_dump`,
+  `mtest*`), plus `rpeer` and `rtools` in `$RLMDB_DIR/target/release/`.
+  These are binaries of the host's architecture; for Linux build them in
+  the container from the same sources (`scripts/build-c-oracles.sh`,
+  `scripts/build-c-writeops.sh`; see "Testing"). lmdb-go v1 itself (cgo, C
   0.9.35, `github.com/PowerDNS/lmdb-go v1.9.4`) is the API oracle and the
   benchmark baseline.
 
@@ -187,8 +190,8 @@ messages) until that is established.
   (arm64 native; `LINUX_TEST_PLATFORM=linux/amd64` for x86-64 under
   emulation, slow but it checks the x86-64 `pthread_mutex_t` layout).
   `RLMDB_DIR=<rlmdb checkout>` mounts rlmdb read-only at `/rlmdb`; build
-  the Linux C oracles there into a directory under `/tmp` (the container's
-  tmpfs), never into the mounted checkout.
+  the Linux C oracles from its vendored sources into a directory under
+  `/tmp` (the container's tmpfs), never into the mounted checkout.
 * Environments for tests and benchmarks live on local file systems only:
   `$TMPDIR` / `t.TempDir()` on macOS, `/tmp` (tmpfs) in the container.
   Never on bind mounts.

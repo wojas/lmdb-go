@@ -1,5 +1,5 @@
 // fill, verify, delete and dump of the deterministic data set, and drop of
-// a whole DB (rlmdb rust/interop/c/cpeer_data.c).
+// a whole DB (rlmdb interop/c/cpeer_data.c).
 //
 // fill and delete write; verify proves that a DB holds exactly the data set
 // (as modified by a prior delete), using every read path a peer must get

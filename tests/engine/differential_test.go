@@ -39,8 +39,12 @@ type oracle struct {
 	dirtyLimit int
 }
 
+// oracle09 is C 0.9.36. It skips t where C's pages are not this process's
+// (requireSamePageSize): 0.9 takes the OS page size.
 func oracle09(t testing.TB) *oracle {
-	return &oracle{writeops: tool(t, "writeops"), dump: "mdb_dump", peer: "cpeer", f: format.V09}
+	o := &oracle{writeops: tool(t, "writeops"), dump: "mdb_dump", peer: "cpeer", f: format.V09}
+	requireSamePageSize(t)
+	return o
 }
 
 func oracle10(t testing.TB, ps int) *oracle {

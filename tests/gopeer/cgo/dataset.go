@@ -1,5 +1,5 @@
 // The deterministic data set shared by fill, verify and delete (rlmdb
-// rust/interop/c/dataset.c, README.md "Deterministic data set").
+// interop/c/dataset.c, README.md "Deterministic data set").
 //
 // Everything here is a pure function of (seed, i, d), so that any peer, in
 // any process, can regenerate the exact bytes another peer wrote. All
