@@ -108,10 +108,16 @@ func (e *Env) BeginTxn(parent *Txn, flags uint32) (*Txn, error) {
 // a zero Txn or one that ended). It is mdb_txn_begin(MDB_RDONLY) without
 // allocation once t has been used.
 func (e *Env) BeginRead(t *Txn) error {
-	*t = Txn{dbs: t.dbs[:0], gen: t.gen}
+	// Field by field: the scratch cursors need no zeroing (they are
+	// initialised before each use), and zeroing them was a measurable
+	// part of a begin.
 	t.env = e
 	t.pageSize = e.pageSize
 	t.l = e.layout
+	t.dmap = nil
+	t.txnid, t.nextPgno = 0, 0
+	t.dbs = t.dbs[:0]
+	t.w = nil
 	t.slot = -1
 	t.state = txnDone
 	s, err := e.lock.AcquireSlot()

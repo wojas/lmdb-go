@@ -264,6 +264,11 @@ func (t *Txn) initDBs(coreDBs *[2]format.DB) {
 	}
 	t.dbs = t.dbs[:r.capacity()]
 	t.gen++
+	if t.gen == 0 {
+		// The generation wrapped: forget every view for real.
+		clear(t.dbs)
+		t.gen = 1
+	}
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	for i := 0; i < format.CoreDBs; i++ {

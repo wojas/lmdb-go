@@ -30,6 +30,7 @@ package engine
 
 import (
 	"bytes"
+	"encoding/binary"
 	"syscall"
 
 	"github.com/PowerDNS/lmdb-go/internal/format"
@@ -349,13 +350,25 @@ func searchPage(mp format.Page, cmp format.Comparator, ksize int, key []byte) (i
 	}
 	i, rc := 0, 0
 	if !mp.IsLeaf2() && cmp.Kind == format.CmpMemn {
+		// The default order gets its own loop, reading node i's key as
+		// Page.NodeKey does (the same checks, NUMKEYS read once).
+		b, base, pb := mp.B, mp.L.PageHdr, mp.L.PtrBase
 		for low <= high {
 			i = (low + high) >> 1
-			k, ok := mp.NodeKey(i)
-			if !ok {
+			p := base + 2*i
+			if p+2 > len(b) {
 				return 0, false, false, format.Corrupted
 			}
-			rc = bytes.Compare(key, k)
+			off := int(binary.NativeEndian.Uint16(b[p:])) + pb
+			if off+format.NodeSize > len(b) {
+				return 0, false, false, format.Corrupted
+			}
+			s := off + format.NodeSize
+			ks := int(binary.NativeEndian.Uint16(b[off+6:]))
+			if ks > len(b)-s {
+				return 0, false, false, format.Corrupted
+			}
+			rc = bytes.Compare(key, b[s:s+ks])
 			if rc == 0 {
 				break
 			}
