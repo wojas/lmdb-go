@@ -827,6 +827,10 @@ func runRound(t testing.TB, o *oracle, p *profile, ncur int, g *gen, nops int, l
 	if err := compareDataFiles(filepath.Join(cdir, "data.mdb"), filepath.Join(gdir, "data.mdb")); err != nil {
 		t.Fatalf("%s: %v", tag, err)
 	}
+	// The Go engine reads C's environment as its own.
+	if strings.Join(goDump(t, cdir, []byte("t")), "\n") != strings.Join(goDump(t, gdir, []byte("t")), "\n") {
+		t.Fatalf("%s: Go reads C's environment differently", tag)
+	}
 	return true
 }
 
