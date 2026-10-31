@@ -172,6 +172,8 @@ do `n/10` operations, the others `n`.
 | `cursor_set` | `Cursor.Get(key, nil, Set)` through one cursor | `get_raw` |
 | `cursor_open_set` | `OpenCursor` + `Set` + `Close` per lookup | `cursor_set` |
 | `view_get` | one lookup per `Env.View` (managed read txn, closure) | `txn_get` |
+| `view_empty` | an `Env.View` that does nothing: the read transaction's own cost | `view_get` |
+| `view8_get` | `view_get` on 8 goroutines at once, `n/10` lookups each (wall time per lookup over all of them): concurrent begins and ends of read transactions | `view_get` |
 | `txn_get` | one lookup per `BeginTxn(nil, Readonly)` + `Abort` | `renew_get` |
 | `renew_get` | one lookup per `Reset` + `Renew` of one read txn | `txn_get` |
 | `cursor_renew_set` | `Reset` + `Renew` + `Cursor.Renew` + `Set` per lookup: a read txn and a cursor reused | `renew_get` |
