@@ -12,8 +12,8 @@ other:
 | Go package | rlmdb source | contents |
 |---|---|---|
 | `internal/format` | `rlmdb/src/format/*` (minus lock file), `consts.rs`, `flags.rs`, `cmp.rs`, `idl.rs` | page, node, meta, DB record layouts for 0.9 and 1.0 (`Layout`), constants, comparators, ID lists |
-| `internal/lockfile` | `format/lockfile.rs`, `os/shared_lock.rs`, `core/reader.rs` | lock-file layouts (both versions, per platform), open / first-opener protocol, reader table, writer and reader mutexes shared with C |
-| `internal/sys` | `os/unix.rs`, `os/mod.rs` | mmap, file I/O, fsync, `fcntl` record locks, the data map (`DataMap`), page-size and platform queries |
+| `internal/lockfile` | `format/lockfile.rs`, `os/shared_lock.rs`, `core/reader.rs`, the lock-file parts of `os/unix.rs` (`LockMap`, `fcntl` record locks) | lock-file layouts (both versions, per platform), the lock-file map, open / first-opener protocol, record locks, reader table, writer and reader mutexes shared with C (the cgo pair `shared_cgo.go` / `shared_nocgo.go`) |
+| `internal/sys` | `os/unix.rs`, `os/mod.rs` | mmap, file I/O, fsync, the data map (`DataMap`), page-size and platform queries (the record locks are the lock file's, in `internal/lockfile`) |
 | `internal/engine` | `rlmdb/src/core/*` minus `reader.rs` | env, read and write txns, cursors, put/del, split, rebalance, spill, free list, commit, nested txns, copy, audit |
 | `lmdb` | lmdb-go's `lmdb` (API), rlmdb-capi's behaviour | the public API on top of `engine` |
 | `lmdbscan`, `exp/lmdbsync`, `cmd/*` | lmdb-go | kept, ported to the new `lmdb` |
@@ -35,35 +35,53 @@ each Rust method exactly.
 ```go
 // In package lockfile:
 func Open(path string, mode os.FileMode, maxReaders uint32, readOnly bool,
-	layout *Layout) (*Region, error) // nil, nil: read-only env on a read-only FS
-func LayoutFor(f format.Format) *Layout // this platform's lock layout for a data format
+	layout *Layout) (*Region, error) // nil, nil: read-only env on a read-only FS;
+	                                 // ErrNoSharedLocks in a build without cgo
+func LayoutFor(f format.Format) *Layout // this platform's lock layout for a data
+	                                     // format; nil where unknown (Linux without cgo)
+var ErrNoSharedLocks error
 
 // The engine's view (package engine), implemented by *lockfile.Region:
 type LockRegion interface {
 	IsExclusive() bool
 	Downgrade(txnid uint64) error   // mdb_env_share_locks
 	MaxReaders() uint32
-	// LockWriter blocks until this process owns the writer mutex. On Linux
-	// the calling goroutine must be locked to its OS thread
-	// (runtime.LockOSThread) until UnlockWriter. newestTxnid repairs the
-	// state after a dead owner (mdb_mutex_failed).
+	NumReaders() uint32             // mti_numreaders as stored (mdb_env_info)
+	// LockWriter blocks until this process owns the writer mutex. It pins
+	// the calling goroutine to its OS thread (runtime.LockOSThread, nests)
+	// until UnlockWriter, which must be called by the same goroutine (a
+	// robust pthread mutex belongs to its thread; another thread gets
+	// EPERM). newestTxnid repairs the state after a dead owner
+	// (mdb_mutex_failed); if it or the repair fails, the mutex is left not
+	// recoverable.
 	LockWriter(newestTxnid func() (uint64, error)) error
-	UnlockWriter()
+	UnlockWriter() error
 	TxnID() uint64                  // mti_txnid
 	SetTxnID(uint64)
-	AcquireSlot() (int, error)      // reader slot, under the reader mutex
-	SlotIsIdleAndOurs(i int) bool
+	AcquireSlot() (int, error)      // new reader slot, under the reader mutex
+	SlotIsIdleAndOurs(i int) bool   // owned slots are reused without the mutex
 	PublishCurrentTxnID(i int) uint64
 	SlotTxnID(i int) uint64
 	SetSlotTxnID(i int, txnid uint64)
 	ResetSlot(i int)
 	ReleaseSlot(i int)
 	FindOldest(txnid uint64) uint64 // mdb_find_oldest
-	ReaderList() []ReaderInfo
+	ReaderList() []format.ReaderInfo
 	ReaderCheck() (int, error)
 	Close() error
 }
 ```
+
+Errors are `format.Errno` (LMDB's codes: `Invalid`, `VersionMismatch`,
+`ReadersFull`), `syscall.Errno` (possibly wrapped in `*os.PathError`;
+`ENOTRECOVERABLE`, `EPERM`, ...) or `lockfile.ErrNoSharedLocks`.
+`*lockfile.Region` also has `Layout()` and `Header()` (a decoded copy of
+the header) for diagnostics and tests. Changes from the first draft
+(stage 1 L): `UnlockWriter` returns an error (misuse from another thread
+is reported instead of leaving a silent deadlock); `NumReaders` added (rlmdb's
+engine uses `raw_num_readers` for env info); `ReaderInfo` and the error
+codes are `internal/format`'s, which the engine defines; `LockWriter` pins
+the thread itself rather than requiring the caller to.
 
 If the Rust code shows that a method is missing or needs a different
 shape, the lockfile agent owns the change and documents it here; the
@@ -107,3 +125,7 @@ uses a test fake of the interface (in-process only).
   sources removed; this plan; `scripts/linux-test.sh`. The module path
   stays `github.com/PowerDNS/lmdb-go` (owner: drop-in `replace`). The nested `tests/` module holds the
   pinned cgo reference `tests/cgolmdb` (`scripts/update-cgolmdb.sh`).
+* Stage 1 L: `internal/lockfile` with the interface above; Linux C
+  oracles for any libc with `scripts/build-c-oracles.sh` (in the
+  container; `RLMDB_DIR` set); cross-process tests against C 0.9 and 1.0
+  in `tests/lockfile` (macOS, glibc arm64 and x86-64, musl).
