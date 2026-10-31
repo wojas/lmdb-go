@@ -210,6 +210,15 @@ targets. Therefore:
 * Measure allocations per operation (`-benchmem`, `testing.AllocsPerRun`)
   for every hot path, read and write; the target is zero steady-state
   allocations per operation wherever C has none.
+* Allocation counts are guarded by tests that fail on regression: an
+  `AllocsPerRun` test per hot path of the public API (read and write:
+  View/Get/cursor ops/Renew/Reset, Update with one put, puts, deletes,
+  commits, nested txns, big values) with the expected count as a
+  constant (the measured value, never a loose margin), and benchmarks
+  that report allocs/op. They run in the normal `go test` (skipped under
+  `-race`, which changes allocation counts). A change that lowers a count
+  lowers the constant in the same commit; raising one needs a reason in
+  the commit message.
 
 ## Style
 
