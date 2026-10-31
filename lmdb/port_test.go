@@ -576,7 +576,7 @@ func TestEnv_Close_racesWithTxns(t *testing.T) {
 		rounds = 10
 	}
 	for i := 0; i < rounds; i++ {
-		env := setup(t)
+		env := setupMaxDBs(t, 0)
 		var wg sync.WaitGroup
 		start := make(chan struct{})
 		for j := 0; j < 64; j++ {
@@ -605,6 +605,31 @@ func TestEnv_Close_racesWithTxns(t *testing.T) {
 		clean(env, t)
 		wg.Wait()
 	}
+}
+
+// setupMaxDBs is setup with maxDBs named databases instead of setup's
+// 65536. A transaction's table of databases has an entry per possible
+// database (C's mt_dbs and mt_dbflags have me_maxdbs entries too), about
+// 90 bytes each: with setup's MaxDBs the 1280 read transactions of
+// TestEnv_Close_racesWithTxns took 7 GiB of heap, which the collector
+// then let the next tests' garbage grow to.
+func setupMaxDBs(t *testing.T, maxDBs int) *Env {
+	t.Helper()
+	env, err := NewEnv()
+	if err != nil {
+		t.Fatal(err)
+	}
+	path, err := os.MkdirTemp("", "mdb_test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := env.SetMaxDBs(maxDBs); err != nil {
+		t.Fatal(err)
+	}
+	if err := env.Open(path, testFlags(0), 0o664); err != nil {
+		t.Fatal(err)
+	}
+	return env
 }
 
 // A read transaction that outlives Close keeps its snapshot (review
