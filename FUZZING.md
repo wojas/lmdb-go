@@ -98,7 +98,11 @@ machine shared with other work):
   overflow run leaks and the DB record still counts it (C's page audit
   and `Env.Audit` report both). Reachable in LMDB 1.0 files with any page
   size (a 103-byte key and a 1978-byte item with 4 KiB pages); not in 0.9
-  files with 4 KiB or larger pages. Not fixed: what to write instead is a
-  decision for rlmdb (`KNOWN_C_BUGS.md`), and the fix belongs in the
-  DUPSORT put path. `TestDupsortCurrentTooBigForNode` (skipped) is the
-  reproducer; `FuzzWriteModel` does not generate the case until then.
+  files with 4 KiB or larger pages. Fixed as rlmdb decided
+  (`KNOWN_C_BUGS.md` #38): the writer never creates an `F_BIGDATA` node in
+  a DUPSORT database (such a replacement deletes the item and puts the new
+  one as a fresh put would, into a sub-DB), and a lone `F_BIGDATA` item in
+  a file C 1.0 wrote is read through its overflow pages, which are freed,
+  when the key gets a duplicate. `TestDupsortCurrentTooBigForNode` and
+  `tests/engine` `TestRepairCBigDataDupsort` cover it; `FuzzWriteModel`
+  generates the case again (no failure in 4 minutes after the fix).
