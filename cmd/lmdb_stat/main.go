@@ -9,17 +9,15 @@ about, run lmdb_stat with the -h flag.
 */
 package main
 
-import "C"
-
 import (
 	"bufio"
+	"encoding/binary"
 	"flag"
 	"fmt"
 	"io"
 	"log"
 	"os"
 	"strings"
-	"unsafe"
 
 	"github.com/PowerDNS/lmdb-go/internal/lmdbcmd"
 	"github.com/PowerDNS/lmdb-go/lmdb"
@@ -225,25 +223,24 @@ func doPrintFree(env *lmdb.Env, opt *Options) error {
 		}
 		printStat(stat, opt)
 
-		var numpages int64
+		var numpages uint64
 		s := lmdbscan.New(txn, 0)
 		defer s.Close()
 		for s.Scan() {
 			key := s.Key()
 			data := s.Val()
-			txid := *(*C.size_t)(unsafe.Pointer(&key[0]))
-			ipages := int64(*(*C.size_t)(unsafe.Pointer(&data[0])))
-			numpages += ipages
+			txid := sizeT(key)
+			count := sizeT(data)
+			numpages += count
 			if opt.PrintFreeSummary || opt.PrintFreeFull {
 				bad := ""
-				datap := (*C.size_t)(unsafe.Pointer(&data[0]))
-				pages := unsafe.Slice(datap, ipages+1)
-				pages = pages[1:]
-				var span C.size_t
-				prev := C.size_t(1)
+				pages := freePages(data)
+				ipages := int64(len(pages))
+				var span uint64
+				prev := uint64(1)
 				for i := ipages - 1; i >= 0; i-- {
 					pg := pages[i]
-					if pg < prev {
+					if pg <= prev {
 						bad = " [bad sequence]"
 					}
 					prev = pg
@@ -253,13 +250,13 @@ func doPrintFree(env *lmdb.Env, opt *Options) error {
 						pg++
 					}
 				}
-				fmt.Printf("    Transaction %d, %d pages, maxspan %d%s\n", txid, ipages, span, bad)
+				fmt.Printf("    Transaction %d, %d pages, maxspan %d%s\n", txid, int64(count), span, bad)
 
 				if opt.PrintFreeFull {
 					for j := ipages - 1; j >= 0; {
 						pg := pages[j]
 						j--
-						span := C.size_t(1)
+						span := uint64(1)
 						for j >= 0 && pages[j] == pg+span {
 							j--
 							span++
@@ -282,6 +279,31 @@ func doPrintFree(env *lmdb.Env, opt *Options) error {
 
 		return nil
 	})
+}
+
+// sizeT is the size_t at the start of b, as mdb_stat reads the key and the
+// page count of a free-list record: 8 bytes in native byte order on the
+// 64-bit platforms this module supports. Bytes missing from a damaged
+// record read as zero (C reads past it).
+func sizeT(b []byte) uint64 {
+	var w [8]byte
+	copy(w[:], b)
+	return binary.NativeEndian.Uint64(w[:])
+}
+
+// freePages is the page numbers of a free-list record (its count, then
+// that many size_t page numbers), as many as the record holds if it is
+// shorter than its count says.
+func freePages(data []byte) []uint64 {
+	if len(data) < 8 {
+		return nil
+	}
+	n := min(sizeT(data), uint64(len(data)-8)/8)
+	pages := make([]uint64, n)
+	for i := range pages {
+		pages[i] = binary.NativeEndian.Uint64(data[8+8*i:])
+	}
+	return pages
 }
 
 func doPrintStatRoot(env *lmdb.Env, opt *Options) error {
