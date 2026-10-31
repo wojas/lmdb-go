@@ -1,13 +1,15 @@
 # Plan: an LMDB implementation in Go behind the lmdb-go API
 
 Read `AGENTS.md` first. rlmdb (Rust) is the starting point: port its
-structure, its decisions and its tests, not `mdb.c` directly. Where the
-two differ, rlmdb wins unless it documents a reason specific to Rust.
+behaviour, its decisions and its tests, not `mdb.c` directly. Where the
+two differ in behaviour, rlmdb wins unless it documents a reason specific
+to Rust. Its structure is a starting point only: write idiomatic Go and
+diverge where Go is better served (see "Following rlmdb").
 
 ## Package layout
 
-Go packages mirror rlmdb's modules, so a reader can go from one to the
-other:
+The initial port maps rlmdb's modules onto Go packages roughly like this
+(a starting point, not a constraint):
 
 | Go package | rlmdb source | contents |
 |---|---|---|
@@ -137,11 +139,13 @@ uses a test fake of the interface (in-process only).
 New features and improvements, Windows support included, land in rlmdb
 first and are then ported here. To keep that cheap:
 
-* The Go packages stay structurally parallel to rlmdb's modules (same
-  split into files, same function boundaries and names in Go style), so
-  an rlmdb diff maps onto Go files one to one. Do not restructure the Go
-  engine away from rlmdb without a measured reason, and note any such
-  divergence in `internal/engine/PORTING.md`.
+* rlmdb is the reference for behaviour, not a template for structure.
+  Write idiomatic Go: Go has different costs (GC, escape analysis,
+  interfaces, bounds checks, no lifetimes) and abstractions that pay off in
+  Rust may not in Go, and the reverse. Staying close to rlmdb's structure is
+  a convenience for porting where it costs nothing; diverge whenever Go is
+  better served, and note larger divergences in `PORTING.md` so later
+  ports know where to look.
 * `internal/engine/PORTING.md` records the rlmdb commit the port is synced
   to (currently `9ea2373`) and, per later sync, the rlmdb commits ported,
   skipped (with the reason) or replaced by a Go-specific solution.
