@@ -6,8 +6,7 @@
 // README.md.
 //
 // The workloads are written once, in ./cgo against the cgo reference;
-// ./port is generated from it for the port by tests/gen-port.sh and is
-// built with -tags port until the port compiles (stage 2).
+// ./port is generated from it for the port by tests/gen-port.sh.
 package bench
 
 //go:generate sh ../gen-port.sh .

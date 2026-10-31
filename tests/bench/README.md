@@ -13,7 +13,7 @@ data of rlmdb's benchmark (rlmdb's `rust/bench`: `src/workloads.rs`,
 |---|---|---|
 | `data/` | the data generator, line by line, with its pinning tests | `src/data.rs`, top of `c/cbench.c` |
 | `cgo/` | every workload group on the cgo lmdb-go (`package workloads`, `Run(group, params)`); `goapi.go` is the `goapi` group | `c/cbench.c`, `src/workloads.rs` |
-| `port/` | the same workloads on the port: generated from `cgo/` by `../gen-port.sh` (`go generate ./bench`), except the hand-written `impl.go`; build tag `port` until the port compiles (stage 2) | |
+| `port/` | the same workloads on the port: generated from `cgo/` by `../gen-port.sh` (`go generate ./bench`), except the hand-written `impl.go` | |
 | `run/` | what both share: parameters, samples, results, statistics, the table | `src/main.rs` |
 | `bench_test.go` | standard Go benchmarks, `BenchmarkX/impl=cgo` and `/impl=port` | |
 | `cmd/lmdb-bench/` | rlmdb-bench's interleaved table, check-data, A/B of two builds | `src/main.rs` |
@@ -24,10 +24,7 @@ workloads are written once against the cgo package (imported as `lmdb`, in
 an import group of its own) and `../gen-port.sh` writes the copy for the
 port, which only rewrites that import; `../twins_test.go` fails when the
 copy is out of date. Each implementation is compiled against its own
-package directly, without interfaces in the measured paths. Until the
-port's `lmdb` package compiles, the copy and the files that use it
-(`port_test.go`, `cmd/lmdb-bench/port.go`) carry the build tag `port`:
-without it only the cgo side exists; stage 2 removes the tag.
+package directly, without interfaces in the measured paths.
 
 ## Running
 
@@ -40,7 +37,6 @@ bind-mounted checkout. Run from `tests/`:
 go run ./bench/cmd/lmdb-bench                        # every group, both implementations (n = 1 000 000)
 go run ./bench/cmd/lmdb-bench -only read,ls -reps 9 -rounds 3
 go run ./bench/cmd/lmdb-bench -impl cgo -n 100000    # one implementation
-go run -tags port ./bench/cmd/lmdb-bench             # with the port (once it compiles)
 go run ./bench/cmd/lmdb-bench -h
 # Linux (4 KiB pages) in the Debian container, environments in its /tmp:
 scripts/linux-test.sh sh -c 'cd tests && go run ./bench/cmd/lmdb-bench -dir /tmp/lmdb-bench -n 100000'
@@ -79,7 +75,7 @@ repetition including its setup and warm-up. The size comes from
 ```sh
 go test ./bench -run '^$' -bench . -benchtime 5x -count 6 -args -lmdb.n 100000 | tee new.txt
 benchstat -col /impl new.txt                         # cgo against port, per metric
-go test -tags port ./bench -run '^$' -bench 'Read|LS' -benchtime 5x -count 6
+go test ./bench -run '^$' -bench 'Read|LS' -benchtime 5x -count 6
 ```
 
 ### A/B of two builds of the port
@@ -90,9 +86,9 @@ it and compare, interleaved; both run as worker subprocesses
 cbench's protocol), `base` the old build and `new` this one:
 
 ```sh
-go build -tags port -o /tmp/lmdb-bench-old ./bench/cmd/lmdb-bench
+go build -o /tmp/lmdb-bench-old ./bench/cmd/lmdb-bench
 # ... change the port ...
-go build -tags port -o /tmp/lmdb-bench ./bench/cmd/lmdb-bench
+go build -o /tmp/lmdb-bench ./bench/cmd/lmdb-bench
 /tmp/lmdb-bench -ab /tmp/lmdb-bench-old -rounds 3 -reps 3   # -impl port is the default with -ab
 ```
 

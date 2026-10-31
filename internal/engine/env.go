@@ -108,6 +108,10 @@ type Env struct {
 	regKey     string
 
 	closeOnce sync.Once
+	// closed is set by Close before anything is released. Transactions
+	// that end afterwards leave the (closed) lock region alone; see
+	// Close.
+	closed atomic.Bool
 }
 
 // writerState is the per-environment state of the single write
@@ -124,6 +128,11 @@ type writerState struct {
 	// and the next write transaction begins from it without reading it.
 	lastMeta    format.Meta
 	hasLastMeta bool
+	// dbs and gen are the DB table of the last write transaction, which
+	// the next one reuses (C reuses me_txn0): the table is me_maxdbs long,
+	// and its generation makes reuse O(1).
+	dbs []txnDB
+	gen uint32
 }
 
 // The process-wide registry of open environments: POSIX record locks
@@ -370,8 +379,12 @@ func (e *Env) release() {
 
 // Close closes the environment (mdb_env_close). Transactions still alive
 // keep their data map until they end; using them after Close is an error,
-// as in C.
+// as in C. Ending them (Abort, Reset) is allowed: it releases their data
+// map and leaves the lock region alone, whose slots Close cleared. The
+// caller must not run Close concurrently with transactions ending (the
+// lmdb package serialises the two); C has the same rule.
 func (e *Env) Close() error {
+	e.closed.Store(true)
 	e.closeOnce.Do(e.release)
 	return nil
 }
@@ -712,11 +725,24 @@ func chooseFormat(found format.Format, hasFound bool, requested format.Format) (
 }
 
 // DefaultFormatEnv is the environment variable that sets the format of new
-// environments that do not ask for one: "0.9" or "1.0". Experimental, as
-// rlmdb's RLMDB_DEFAULT_FORMAT: a stray variable silently creates 1.0
-// files that C LMDB 0.9 cannot open; prefer SetDefaultFormat. Read at
-// every open of a new environment; other values are ignored.
-const DefaultFormatEnv = "RLMDB_DEFAULT_FORMAT"
+// environments that do not ask for one: lmdb-go v2's LMDBGO_DEFAULT_FORMAT,
+// with v2's values ("0.9", "09" or "9"; "1.0" or "10"). Experimental, as
+// v2's and rlmdb's RLMDB_DEFAULT_FORMAT, whose semantics it has: a stray
+// variable silently creates 1.0 files that C LMDB 0.9 cannot open; prefer
+// SetDefaultFormat. Read at every open of a new environment; other values
+// are ignored.
+const DefaultFormatEnv = "LMDBGO_DEFAULT_FORMAT"
+
+// formatFromEnv parses a value of DefaultFormatEnv as lmdb-go v2 does.
+func formatFromEnv(v string) (format.Format, bool) {
+	switch v {
+	case "0.9", "09", "9":
+		return format.V09, true
+	case "1.0", "10":
+		return format.V10, true
+	}
+	return 0, false
+}
 
 var processDefaultFormat atomic.Uint32
 
@@ -735,7 +761,7 @@ func DefaultFormat() format.Format {
 	if f := ProcessDefaultFormat(); f != 0 {
 		return f
 	}
-	if f, ok := format.FormatFromName(os.Getenv(DefaultFormatEnv)); ok {
+	if f, ok := formatFromEnv(os.Getenv(DefaultFormatEnv)); ok {
 		return f
 	}
 	return format.V09

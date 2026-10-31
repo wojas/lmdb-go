@@ -1,5 +1,3 @@
-//go:build port
-
 // What differs between the implementations, the port side. Hand-written,
 // next to the files tests/gen-port.sh generates from ../cgo.
 

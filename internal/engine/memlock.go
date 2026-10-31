@@ -83,8 +83,12 @@ func (m *MemLock) LockWriter(func() (uint64, error)) error {
 	return nil
 }
 
-// UnlockWriter implements LockRegion.
-func (m *MemLock) UnlockWriter() { <-m.writer }
+// UnlockWriter implements LockRegion. The in-process lock belongs to no
+// thread, so it cannot fail.
+func (m *MemLock) UnlockWriter() error {
+	<-m.writer
+	return nil
+}
 
 // TxnID implements LockRegion.
 func (m *MemLock) TxnID() uint64 { return m.txnid.Load() }

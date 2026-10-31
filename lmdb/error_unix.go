@@ -3,17 +3,13 @@
 
 package lmdb
 
-/*
-#include "lmdb.h"
-*/
-import "C"
 import "syscall"
 
-func operrno(op string, ret C.int) error {
-	if ret == C.MDB_SUCCESS {
+func operrno(op string, ret int) error {
+	if ret == success {
 		return nil
 	}
-	if minErrno <= ret && ret <= maxErrno {
+	if minErrno <= int32(ret) && int32(ret) <= maxErrno {
 		return &OpError{Op: op, Errno: Errno(ret)}
 	}
 	return &OpError{Op: op, Errno: syscall.Errno(ret)}

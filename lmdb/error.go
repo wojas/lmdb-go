@@ -1,16 +1,13 @@
 package lmdb
 
-/*
-#include "lmdb.h"
-*/
-import "C"
-
 import (
 	"os"
 	"syscall"
+
+	"github.com/PowerDNS/lmdb-go/internal/format"
 )
 
-// OpError is an error returned by the C API.  Not all errors returned by
+// OpError is an error returned by the LMDB API.  Not all errors returned by
 // lmdb-go have type OpError but typically they do.  The Errno field will
 // either have type Errno or syscall.Errno.
 type OpError struct {
@@ -33,26 +30,43 @@ const (
 	//
 	//		http://symas.com/mdb/doc/group__errors.html
 
-	KeyExist        Errno = C.MDB_KEYEXIST
-	NotFound        Errno = C.MDB_NOTFOUND
-	PageNotFound    Errno = C.MDB_PAGE_NOTFOUND
-	Corrupted       Errno = C.MDB_CORRUPTED
-	Panic           Errno = C.MDB_PANIC
-	VersionMismatch Errno = C.MDB_VERSION_MISMATCH
-	Invalid         Errno = C.MDB_INVALID
-	MapFull         Errno = C.MDB_MAP_FULL
-	DBsFull         Errno = C.MDB_DBS_FULL
-	ReadersFull     Errno = C.MDB_READERS_FULL
-	TLSFull         Errno = C.MDB_TLS_FULL
-	TxnFull         Errno = C.MDB_TXN_FULL
-	CursorFull      Errno = C.MDB_CURSOR_FULL
-	PageFull        Errno = C.MDB_PAGE_FULL
-	MapResized      Errno = C.MDB_MAP_RESIZED
-	Incompatible    Errno = C.MDB_INCOMPATIBLE
-	BadRSlot        Errno = C.MDB_BAD_RSLOT
-	BadTxn          Errno = C.MDB_BAD_TXN
-	BadValSize      Errno = C.MDB_BAD_VALSIZE
-	BadDBI          Errno = C.MDB_BAD_DBI
+	KeyExist        Errno = Errno(format.KeyExist)
+	NotFound        Errno = Errno(format.NotFound)
+	PageNotFound    Errno = Errno(format.PageNotFound)
+	Corrupted       Errno = Errno(format.Corrupted)
+	Panic           Errno = Errno(format.Panic)
+	VersionMismatch Errno = Errno(format.VersionMismatch)
+	Invalid         Errno = Errno(format.Invalid)
+	MapFull         Errno = Errno(format.MapFull)
+	DBsFull         Errno = Errno(format.DBsFull)
+	ReadersFull     Errno = Errno(format.ReadersFull)
+	TLSFull         Errno = Errno(format.TLSFull)
+	TxnFull         Errno = Errno(format.TxnFull)
+	CursorFull      Errno = Errno(format.CursorFull)
+	PageFull        Errno = Errno(format.PageFull)
+	MapResized      Errno = Errno(format.MapResized)
+	Incompatible    Errno = Errno(format.Incompatible)
+	BadRSlot        Errno = Errno(format.BadRSlot)
+	BadTxn          Errno = Errno(format.BadTxn)
+	BadValSize      Errno = Errno(format.BadValSize)
+	BadDBI          Errno = Errno(format.BadDBI)
+
+	// Error codes introduced by LMDB 1.0 (as in lmdb-go v2).  They are
+	// always defined; this implementation returns EnvEncryption and
+	// BadChecksum for LMDB 1.0 environments that use encryption or page
+	// checksums (not implemented), DBIsBusy from Txn.Drop of the root
+	// database of a 1.0 environment, and none of the others.
+	Problem       Errno = Errno(format.Problem)
+	BadChecksum   Errno = Errno(format.BadChecksum)
+	CryptoFail    Errno = Errno(format.CryptoFail)
+	EnvEncryption Errno = Errno(format.EnvEncryption)
+	TxnPending    Errno = Errno(format.TxnPending)
+	CantRollback  Errno = Errno(format.CantRollback)
+	DBIsBusy      Errno = Errno(format.DBIsBusy)
+	ShortWrite    Errno = Errno(format.ShortWrite)
+	EnvBusy       Errno = Errno(format.EnvBusy)
+	IsReadonly    Errno = Errno(format.IsReadonly)
+	AddrBusy      Errno = Errno(format.AddrBusy)
 )
 
 // Errno is an error type that represents the (unique) errno values defined by
@@ -67,19 +81,19 @@ const (
 //	lmdb.IsErrno(err, lmdb.TxnFull)
 //	lmdb.IsErrnoSys(err, syscall.EINVAL)
 //	lmdb.IsErrnoFn(err, os.IsPermission)
-type Errno C.int
+type Errno int32
 
 // minimum and maximum values produced for the Errno type. syscall.Errnos of
 // other values may still be produced.
-const minErrno, maxErrno C.int = C.MDB_KEYEXIST, C.MDB_LAST_ERRCODE
+const minErrno, maxErrno int32 = int32(KeyExist), int32(AddrBusy)
 
 func (e Errno) Error() string {
-	return C.GoString(C.mdb_strerror(C.int(e)))
+	return format.Strerror(int(e))
 }
 
 // _operrno is for use by tests that can't import C
 func _operrno(op string, ret int) error {
-	return operrno(op, C.int(ret))
+	return operrno(op, ret)
 }
 
 // IsNotFound returns true if the key requested in Txn.Get or Cursor.Get does

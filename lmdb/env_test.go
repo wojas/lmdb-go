@@ -41,7 +41,7 @@ func TestEnv_Path(t *testing.T) {
 	}
 	defer os.RemoveAll(dir)
 
-	err = env.Open(dir, 0, 0644)
+	err = env.Open(dir, testFlags(0), 0644)
 	defer env.Close()
 	if err != nil {
 		t.Errorf("open: %v", err)
@@ -63,7 +63,7 @@ func TestEnv_Open_notExist(t *testing.T) {
 	defer env.Close()
 
 	// ensure that opening a non-existent path fails.
-	err = env.Open("/path/does/not/exist/aoeu", 0, 0664)
+	err = env.Open("/path/does/not/exist/aoeu", testFlags(0), 0664)
 	if !IsNotExist(err) {
 		t.Errorf("open: %v", err)
 	}
@@ -88,7 +88,7 @@ func TestEnv_Open(t *testing.T) {
 		t.Fatalf("tempdir: %v", err)
 	}
 	defer os.RemoveAll(path)
-	err = env.Open(path, 0, 0664)
+	err = env.Open(path, testFlags(0), 0664)
 	if err != nil {
 		t.Errorf("open: %s", err)
 	}
@@ -118,7 +118,7 @@ func TestEnv_FD(t *testing.T) {
 		t.Fatalf("tempdir: %v", err)
 	}
 	defer os.RemoveAll(path)
-	err = env.Open(path, 0, 0664)
+	err = env.Open(path, testFlags(0), 0664)
 	if err != nil {
 		t.Errorf("open: %s", err)
 	}
@@ -201,7 +201,7 @@ func TestEnv_SetMaxReader(t *testing.T) {
 		t.Errorf("unexpected MaxReaders: %v (!= %v)", _maxreaders, maxreaders)
 	}
 
-	err = env.Open(dir, 0, 0644)
+	err = env.Open(dir, testFlags(0), 0644)
 	defer env.Close()
 	if err != nil {
 		env.Close()
@@ -247,6 +247,7 @@ func TestEnv_SetMapSize(t *testing.T) {
 }
 
 func TestEnv_ReaderList(t *testing.T) {
+	requireLockFile(t)
 	env := setup(t)
 	defer clean(env, t)
 
@@ -458,7 +459,7 @@ func testEnvCopy(t *testing.T, flags uint, useflags bool, usefd bool) {
 	if err != nil {
 		t.Error(err)
 	}
-	err = envcp.Open(dircp, 0, 0644)
+	err = envcp.Open(dircp, testFlags(0), 0644)
 	defer envcp.Close()
 	if err != nil {
 		t.Error(err)
@@ -528,7 +529,7 @@ func setupFlags(t T, flags uint) *Env {
 	if err != nil {
 		t.Fatalf("setmaxdbs: %v", err)
 	}
-	err = env.Open(path, flags, 0664)
+	err = env.Open(path, testFlags(flags), 0664)
 	if err != nil {
 		t.Fatalf("open: %s", err)
 	}

@@ -64,7 +64,7 @@ func (t *Txn) commit0() error {
 // changed into the main DB. The cursor is tracked (C's is not,
 // KNOWN_C_BUGS.md #11).
 func (t *Txn) updateDBRecords() error {
-	n := len(t.dbs)
+	n := t.ndbs
 	if n <= format.CoreDBs {
 		return nil
 	}

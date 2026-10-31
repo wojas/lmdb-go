@@ -84,8 +84,28 @@ Status of the stage-1 engine port (PLAN.md, agent E). rlmdb sources:
   `Env.Info`). `ReaderInfo` lives in `internal/format` so that lockfile can
   implement the interface without importing engine. `OpenLockFunc` must
   return a nil interface (not a typed nil pointer) for "no lock file".
-* The environment variable for the default format is rlmdb's
-  `RLMDB_DEFAULT_FORMAT` (`engine.DefaultFormatEnv`); stage 2 may rename.
+* The environment variable for the default format is lmdb-go v2's
+  `LMDBGO_DEFAULT_FORMAT` (`engine.DefaultFormatEnv`, v2's values `0.9`,
+  `09`, `9`, `1.0`, `10`) with the semantics of rlmdb's
+  `RLMDB_DEFAULT_FORMAT` (experimental; read at every open of a new
+  environment).
+
+* The transaction's DB table is `me_maxdbs` long; `Txn.ndbs` (C's
+  `mt_numdbs`) bounds every loop over it, and the top-level write
+  transaction reuses its predecessor's table (C reuses `me_txn0`), so a
+  write transaction costs O(DBs in use), not O(`MaxDBs`) (stage 2:
+  lmdb-go's tests set `MaxDBs` to 65536).
+* `Env.Close` with transactions still alive (stage 2, for lmdb-go's
+  finalizers): they keep their data map, may still `Reset` and `Abort`
+  (without touching the closed lock region, whose slots `Close` cleared),
+  and `BeginRead`, `Renew` and write `BeginTxn` fail with `EINVAL`. The
+  caller serialises `Close` with transactions ending (package `lmdb` does,
+  with its `closeLock`).
+* `LockRegion.UnlockWriter` returns an error (the Linux mutex refuses an
+  unlock from another thread, EPERM): `Commit` reports it if the commit
+  itself succeeded, `Abort` ignores it as C does; the in-process writer
+  lock is released anyway, so the next writer recovers the mutex once the
+  owning thread ends.
 
 ## Ledger: deviations from C and rlmdb
 
@@ -103,6 +123,12 @@ Status of the stage-1 engine port (PLAN.md, agent E). rlmdb sources:
   0, ReaderList is nil (C prints "(no reader locks)"), ReaderCheck is 0,
   and there is no reader limit. A second open of the same path in one
   process fails with EBUSY (rlmdb's registry).
+* `MDB_DUPFIXED` items of one byte (stage 2): rlmdb refuses `P_LEAF2`
+  keys shorter than 2 bytes (`ksize.checked_sub(2)` in `insert_leaf2`
+  and the `P_LEAF2` delete) and fails with `MDB_PAGE_FULL` on the second
+  duplicate; C adds 1 to `mp_upper` per item there (indx_t arithmetic).
+  The port does what C does, byte for byte (`tests/engine` profile
+  `dupfixed1`). To be fixed in rlmdb.
 * Every KNOWN_C_BUGS.md decision of rlmdb is kept as rlmdb implements it
   (the differential test exercises the cursor-state ones with rlmdb's
   repairs of C's side).

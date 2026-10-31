@@ -30,6 +30,10 @@ func setFormat(env *lmdb.Env, v10 bool) error { return nil }
 // isFormat10 tells whether an open env is an LMDB 1.0 environment.
 func isFormat10(env *lmdb.Env) bool { return false }
 
+// delNullData tells whether Txn.Del(dbi, key, nil) is mdb_del with NULL
+// data. lmdb-go v1 passes an empty value instead.
+const delNullData = false
+
 // setPageSize sets the page size of a new LMDB 1.0 environment; never
 // called here (parseArgs refuses --pagesize without LMDB 1.0).
 func setPageSize(env *lmdb.Env, size int) error { return nil }

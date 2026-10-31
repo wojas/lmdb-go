@@ -222,3 +222,38 @@ func fileExists(p string) bool {
 	_, err := os.Stat(p)
 	return err == nil
 }
+
+// TestEndAfterClose: transactions that outlive Close may still end (Reset,
+// Abort) without touching the closed lock region (whose slots Close
+// cleared); beginning or renewing one fails.
+func TestEndAfterClose(t *testing.T) {
+	env, _ := openTest(t, format.V09, Options{OpenLock: OpenMemLock})
+	r1, err := env.BeginTxn(nil, format.ReadOnly)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r2, err := env.BeginTxn(nil, format.ReadOnly)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r2.Reset()
+	if err := env.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r1.Get(MainDBI, []byte("k")); err != format.NotFound {
+		t.Errorf("Get on the snapshot after Close: %v", err)
+	}
+	r1.Reset()
+	r1.Abort()
+	if err := r2.Renew(); err != syscall.EINVAL {
+		t.Errorf("Renew after Close: %v", err)
+	}
+	r2.Abort()
+	var t3 Txn
+	if err := env.BeginRead(&t3); err != syscall.EINVAL {
+		t.Errorf("BeginRead after Close: %v", err)
+	}
+	if _, err := env.BeginTxn(nil, 0); err != syscall.EINVAL {
+		t.Errorf("write BeginTxn after Close: %v", err)
+	}
+}

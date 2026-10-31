@@ -28,6 +28,11 @@ import (
 // lock file (MDB_NOLOCK) can be used.
 var ErrNoSharedLocks = errors.New("lockfile: shared locking needs a cgo build (CGO_ENABLED=1); without cgo use NoLock")
 
+// SharedLocksAvailable reports whether this build can take the shared
+// locks, i.e. whether Open can succeed: true in a cgo build, false
+// otherwise.
+func SharedLocksAvailable() bool { return sharedLocksAvailable }
+
 // Region is an open lock file: its mapping, the two shared locks and this
 // process's bookkeeping (mdb.c's me_lfd, me_txns, me_rmutex, me_wmutex,
 // me_live_reader, me_close_readers). Its methods may be called from any

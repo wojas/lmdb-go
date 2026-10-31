@@ -131,7 +131,9 @@ func (e *Env) copyPlain(w io.Writer) error {
 			if err == nil {
 				err = readExactAt(e.dataFile, buf[:2*ps], 0)
 			}
-			e.lock.UnlockWriter()
+			if uerr := e.lock.UnlockWriter(); err == nil {
+				err = uerr
+			}
 		}
 		e.writerMu.Unlock()
 		runtime.UnlockOSThread()

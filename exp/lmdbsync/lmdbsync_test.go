@@ -14,7 +14,21 @@ import (
 
 var optNoLock = &lmdbtest.EnvOptions{Flags: lmdb.NoLock}
 
-func newEnv(opt *lmdbtest.EnvOptions) (*Env, error) {
+// requireLockFile skips a test that opens an environment with a lock file
+// in a build without cgo, which cannot (lmdb.ErrNoSharedLocking).
+func requireLockFile(t *testing.T) {
+	t.Helper()
+	if !lmdb.SharedLockingAvailable() {
+		t.Skip("needs a lock file: a cgo build")
+	}
+}
+
+func newEnv(t *testing.T, opt *lmdbtest.EnvOptions) (*Env, error) {
+	if opt == nil || opt.Flags&lmdb.NoLock == 0 {
+		// Without a lock file, Env serialises its own transactions, which
+		// changes what the test checks.
+		requireLockFile(t)
+	}
 	env, err := lmdbtest.NewEnv(opt)
 	if err != nil {
 		return nil, err
@@ -23,6 +37,7 @@ func newEnv(opt *lmdbtest.EnvOptions) (*Env, error) {
 }
 
 func TestNewEnv(t *testing.T) {
+	requireLockFile(t)
 	dir, err := ioutil.TempDir("", "lmdbsync-test-")
 	if err != nil {
 		t.Fatal(err)
@@ -55,6 +70,7 @@ func TestNewEnv(t *testing.T) {
 }
 
 func TestEnv_Open(t *testing.T) {
+	requireLockFile(t)
 	dir, err := ioutil.TempDir("", "lmdbsync-test-")
 	if err != nil {
 		t.Fatal(err)
@@ -122,7 +138,7 @@ func TestNewEnv_noLock(t *testing.T) {
 }
 
 func TestNewEnv_noLock2(t *testing.T) {
-	env, err := newEnv(optNoLock)
+	env, err := newEnv(t, optNoLock)
 	if err != nil {
 		t.Error(err)
 		return
@@ -223,7 +239,7 @@ func TestNewEnv_noLock_arg(t *testing.T) {
 }
 
 func TestEnv_SetMapSize(t *testing.T) {
-	env, err := newEnv(nil)
+	env, err := newEnv(t, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -258,7 +274,7 @@ func TestEnv_SetMapSize(t *testing.T) {
 }
 
 func TestEnv_BeginTxn(t *testing.T) {
-	env, err := newEnv(nil)
+	env, err := newEnv(t, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -390,7 +406,7 @@ func testRunTxn(t *testing.T, env TxnRunner) {
 }
 
 func TestEnv_View(t *testing.T) {
-	env, err := newEnv(nil)
+	env, err := newEnv(t, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -400,7 +416,7 @@ func TestEnv_View(t *testing.T) {
 }
 
 func TestEnv_Update(t *testing.T) {
-	env, err := newEnv(nil)
+	env, err := newEnv(t, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -410,7 +426,7 @@ func TestEnv_Update(t *testing.T) {
 }
 
 func TestEnv_UpdateLocked(t *testing.T) {
-	env, err := newEnv(nil)
+	env, err := newEnv(t, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -420,7 +436,7 @@ func TestEnv_UpdateLocked(t *testing.T) {
 }
 
 func TestEnv_RunTxn(t *testing.T) {
-	env, err := newEnv(nil)
+	env, err := newEnv(t, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -430,7 +446,7 @@ func TestEnv_RunTxn(t *testing.T) {
 }
 
 func TestEnv_View_NoLock(t *testing.T) {
-	env, err := newEnv(optNoLock)
+	env, err := newEnv(t, optNoLock)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -440,7 +456,7 @@ func TestEnv_View_NoLock(t *testing.T) {
 }
 
 func TestEnv_Update_NoLock(t *testing.T) {
-	env, err := newEnv(optNoLock)
+	env, err := newEnv(t, optNoLock)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -450,7 +466,7 @@ func TestEnv_Update_NoLock(t *testing.T) {
 }
 
 func TestEnv_UpdateLocked_NoLock(t *testing.T) {
-	env, err := newEnv(optNoLock)
+	env, err := newEnv(t, optNoLock)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -460,7 +476,7 @@ func TestEnv_UpdateLocked_NoLock(t *testing.T) {
 }
 
 func TestEnv_RunTxn_NoLock(t *testing.T) {
-	env, err := newEnv(optNoLock)
+	env, err := newEnv(t, optNoLock)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -470,7 +486,7 @@ func TestEnv_RunTxn_NoLock(t *testing.T) {
 }
 
 func TestEnv_WithHandler_View(t *testing.T) {
-	env, err := newEnv(nil)
+	env, err := newEnv(t, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -490,7 +506,7 @@ func TestEnv_WithHandler_View(t *testing.T) {
 }
 
 func TestEnv_WithHandler_Update(t *testing.T) {
-	env, err := newEnv(nil)
+	env, err := newEnv(t, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -510,7 +526,7 @@ func TestEnv_WithHandler_Update(t *testing.T) {
 }
 
 func TestEnv_WithHandler_UpdateLocked(t *testing.T) {
-	env, err := newEnv(nil)
+	env, err := newEnv(t, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -530,7 +546,7 @@ func TestEnv_WithHandler_UpdateLocked(t *testing.T) {
 }
 
 func TestEnv_WithHandler_RunTxn(t *testing.T) {
-	env, err := newEnv(nil)
+	env, err := newEnv(t, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

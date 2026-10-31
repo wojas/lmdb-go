@@ -1,24 +1,20 @@
 package lmdb
 
-/*
-#include <stdlib.h>
-#include <stdio.h>
-#include "lmdb.h"
-#include "lmdbgo.h"
-*/
-import "C"
-
 import (
 	"errors"
 	"os"
 	"runtime"
 	"sync"
-	"unsafe"
+	"sync/atomic"
+	"syscall"
+
+	"github.com/PowerDNS/lmdb-go/internal/engine"
+	"github.com/PowerDNS/lmdb-go/internal/format"
 )
 
 // success is a value returned from the LMDB API to indicate a successful call.
 // The functions in this API this behavior and its use is not required.
-const success = C.MDB_SUCCESS
+const success = 0
 
 // These flags are used exclusively for Env types and are set with Env.Open.
 // Some flags may be set/unset later using Env.Set/.Unset methods.  Others will
@@ -29,17 +25,17 @@ const (
 	//
 	// See mdb_env_open
 
-	FixedMap    = C.MDB_FIXEDMAP   // Danger zone. Map memory at a fixed address.
-	NoSubdir    = C.MDB_NOSUBDIR   // Argument to Open is a file, not a directory.
-	Readonly    = C.MDB_RDONLY     // Used in several functions to denote an object as readonly.
-	WriteMap    = C.MDB_WRITEMAP   // Use a writable memory map.
-	NoMetaSync  = C.MDB_NOMETASYNC // Don't fsync metapage after commit.
-	NoSync      = C.MDB_NOSYNC     // Don't fsync after commit.
-	MapAsync    = C.MDB_MAPASYNC   // Flush asynchronously when using the WriteMap flag.
-	NoTLS       = C.MDB_NOTLS      // Danger zone. When unset reader locktable slots are tied to their thread.
-	NoLock      = C.MDB_NOLOCK     // Danger zone. LMDB does not use any locks.
-	NoReadahead = C.MDB_NORDAHEAD  // Disable readahead. Requires OS support.
-	NoMemInit   = C.MDB_NOMEMINIT  // Disable LMDB memory initialization.
+	FixedMap    = 0x01      // Danger zone. Map memory at a fixed address.
+	NoSubdir    = 0x4000    // Argument to Open is a file, not a directory.
+	Readonly    = 0x20000   // Used in several functions to denote an object as readonly.
+	WriteMap    = 0x80000   // Use a writable memory map.
+	NoMetaSync  = 0x40000   // Don't fsync metapage after commit.
+	NoSync      = 0x10000   // Don't fsync after commit.
+	MapAsync    = 0x100000  // Flush asynchronously when using the WriteMap flag.
+	NoTLS       = 0x200000  // Danger zone. When unset reader locktable slots are tied to their thread.
+	NoLock      = 0x400000  // Danger zone. LMDB does not use any locks.
+	NoReadahead = 0x800000  // Disable readahead. Requires OS support.
+	NoMemInit   = 0x1000000 // Disable LMDB memory initialization.
 )
 
 // These flags are exclusively used in the Env.CopyFlags and Env.CopyFDFlags
@@ -49,40 +45,54 @@ const (
 	//
 	// See mdb_env_copy2
 
-	CopyCompact = C.MDB_CP_COMPACT // Perform compaction while copying
+	CopyCompact = 0x01 // Perform compaction while copying
 )
 
 // DBI is a handle for a database in an Env.
 //
 // See MDB_dbi
-type DBI C.MDB_dbi
+type DBI uint32
 
 // Env is opaque structure for a database environment.  A DB environment
 // supports multiple databases, all residing in the same shared-memory map.
 //
 // See MDB_env.
 type Env struct {
-	_env *C.MDB_env
+	// eng is the open environment: nil before Open and after Close.
+	eng atomic.Pointer[engine.Env]
 
 	// closeLock is used to allow the Txn finalizer to check if the Env has
 	// been closed, so that it may know if it must abort.
 	closeLock sync.RWMutex
 
-	ckey *C.MDB_val
-	cval *C.MDB_val
+	// The state below is guarded by closeLock.
+	created bool // made by NewEnv (C: mdb_env_create), not a zero Env
+	opened  bool // Open succeeded
+	closed  bool // Close was called
+
+	// The settings of mdb_env_set_* made before Open (C keeps them in the
+	// MDB_env that mdb_env_create returns; here Open hands them to the
+	// engine): map size, readers, DBs, page size and the flags of
+	// SetFlags.  reqFormat is the format requested with SetFormat.
+	opts      engine.Options
+	reqFormat Format
+
+	// txns are the engine states of ended read transactions, cursors those
+	// of closed read cursors: their memory is reused
+	// (engine.Env.BeginRead, engine.Txn.OpenCursorInto), so that a read
+	// transaction or cursor costs one small allocation, for its handle.
+	txns    sync.Pool
+	cursors sync.Pool
 }
 
 // NewEnv allocates and initializes a new Env.
 //
 // See mdb_env_create.
 func NewEnv() (*Env, error) {
-	env := new(Env)
-	ret := C.mdb_env_create(&env._env)
-	if ret != success {
-		return nil, operrno("mdb_env_create", ret)
-	}
-	env.ckey = (*C.MDB_val)(C.malloc(C.size_t(unsafe.Sizeof(C.MDB_val{}))))
-	env.cval = (*C.MDB_val)(C.malloc(C.size_t(unsafe.Sizeof(C.MDB_val{}))))
+	// The environment itself is made by Open, with the settings made before
+	// it (SetMapSize, SetMaxDBs, SetMaxReaders, SetFlags, SetFormat,
+	// SetPageSize).
+	env := &Env{created: true}
 
 	runtime.SetFinalizer(env, (*Env).Close)
 	return env, nil
@@ -91,12 +101,20 @@ func NewEnv() (*Env, error) {
 // Open an environment handle. If this function fails Close() must be called to
 // discard the Env handle.  Open passes flags|NoTLS to mdb_env_open.
 //
+// Open decides the on-disk format of the environment: an existing database
+// is opened in its format (see SniffFormat); a new database uses the format
+// requested with SetFormat, or the process-wide default (V09 unless changed).
+// If the on-disk format conflicts with an explicitly requested format, Open
+// fails with ErrFormatConflict.  Without the NoLock flag Open uses the
+// environment's lock file, which a program built without cgo cannot: Open
+// returns ErrNoSharedLocking then (see SharedLockingAvailable).  A failed
+// Open may be retried.
+//
 // See mdb_env_open.
 func (env *Env) Open(path string, flags uint, mode os.FileMode) error {
-	cpath := C.CString(path)
-	defer C.free(unsafe.Pointer(cpath))
-	ret := C.mdb_env_open(env._env, cpath, C.uint(NoTLS|flags), C.mdb_mode_t(mode))
-	return operrno("mdb_env_open", ret)
+	env.closeLock.Lock()
+	defer env.closeLock.Unlock()
+	return env.open(path, NoTLS|flags, mode)
 }
 
 var errNotOpen = errors.New("enivornment is not open")
@@ -113,13 +131,12 @@ func (env *Env) FD() (uintptr, error) {
 	// to avoid constant value overflow errors at compile time.
 	const fdInvalid = ^uintptr(0)
 
-	var mf C.mdb_filehandle_t
-	ret := C.mdb_env_get_fd(env._env, &mf)
-	err := operrno("mdb_env_get_fd", ret)
-	if err != nil {
-		return 0, err
+	env.closeLock.RLock()
+	defer env.closeLock.RUnlock()
+	fd := fdInvalid
+	if e := env.eng.Load(); e != nil {
+		fd = e.DataFile().Fd()
 	}
-	fd := uintptr(mf)
 
 	if fd == fdInvalid {
 		return 0, errNotOpen
@@ -133,23 +150,12 @@ func (env *Env) FD() (uintptr, error) {
 //
 // See mdb_reader_list.
 func (env *Env) ReaderList(fn func(string) error) error {
-	ctx, done := newMsgFunc(fn)
-	defer done()
 	if fn == nil {
-		ctx = 0
+		return &OpError{Op: "mdb_reader_list", Errno: syscall.EINVAL}
 	}
-
-	ret := C.lmdbgo_mdb_reader_list(env._env, C.size_t(ctx))
-	if ret >= 0 {
-		return nil
-	}
-	if ret < 0 && ctx != 0 {
-		err := ctx.get().err
-		if err != nil {
-			return err
-		}
-	}
-	return operrno("mdb_reader_list", ret)
+	env.closeLock.RLock()
+	defer env.closeLock.RUnlock()
+	return env.readerList(fn)
 }
 
 // ReaderCheck clears stale entries from the reader lock table and returns the
@@ -157,25 +163,27 @@ func (env *Env) ReaderList(fn func(string) error) error {
 //
 // See mdb_reader_check()
 func (env *Env) ReaderCheck() (int, error) {
-	var _dead C.int
-	ret := C.mdb_reader_check(env._env, &_dead)
-	return int(_dead), operrno("mdb_reader_check", ret)
+	env.closeLock.RLock()
+	defer env.closeLock.RUnlock()
+	e, err := env.engine()
+	if err != nil {
+		return 0, err
+	}
+	dead, err := e.ReaderCheck()
+	return dead, operr("mdb_reader_check", err)
 }
 
 func (env *Env) close() bool {
-	if env._env == nil {
+	env.closeLock.Lock()
+	defer env.closeLock.Unlock()
+	if env.closed {
 		return false
 	}
-
-	env.closeLock.Lock()
-	C.mdb_env_close(env._env)
-	env._env = nil
-	env.closeLock.Unlock()
-
-	C.free(unsafe.Pointer(env.ckey))
-	C.free(unsafe.Pointer(env.cval))
-	env.ckey = nil
-	env.cval = nil
+	env.closed = true
+	env.opened = false
+	if e := env.eng.Swap(nil); e != nil {
+		e.Close()
+	}
 	return true
 }
 
@@ -188,43 +196,35 @@ func (env *Env) Close() error {
 		runtime.SetFinalizer(env, nil)
 		return nil
 	}
-	return errors.New("environment is already closed")
+	return errClosed
 }
 
 // CopyFD copies env to the the file descriptor fd.
 //
 // See mdb_env_copyfd.
 func (env *Env) CopyFD(fd uintptr) error {
-	ret := C.mdb_env_copyfd(env._env, C.mdb_filehandle_t(fd))
-	return operrno("mdb_env_copyfd", ret)
+	return env.copyFD("mdb_env_copyfd", fd, 0)
 }
 
 // CopyFDFlag copies env to the file descriptor fd, with options.
 //
 // See mdb_env_copyfd2.
 func (env *Env) CopyFDFlag(fd uintptr, flags uint) error {
-	ret := C.mdb_env_copyfd2(env._env, C.mdb_filehandle_t(fd), C.uint(flags))
-	return operrno("mdb_env_copyfd2", ret)
+	return env.copyFD("mdb_env_copyfd2", fd, flags)
 }
 
 // Copy copies the data in env to an environment at path.
 //
 // See mdb_env_copy.
 func (env *Env) Copy(path string) error {
-	cpath := C.CString(path)
-	defer C.free(unsafe.Pointer(cpath))
-	ret := C.mdb_env_copy(env._env, cpath)
-	return operrno("mdb_env_copy", ret)
+	return env.copy("mdb_env_copy", path, 0)
 }
 
 // CopyFlag copies the data in env to an environment at path created with flags.
 //
 // See mdb_env_copy2.
 func (env *Env) CopyFlag(path string, flags uint) error {
-	cpath := C.CString(path)
-	defer C.free(unsafe.Pointer(cpath))
-	ret := C.mdb_env_copy2(env._env, cpath, C.uint(flags))
-	return operrno("mdb_env_copy2", ret)
+	return env.copy("mdb_env_copy2", path, flags)
 }
 
 // Stat contains database status information.
@@ -243,17 +243,22 @@ type Stat struct {
 //
 // See mdb_env_stat.
 func (env *Env) Stat() (*Stat, error) {
-	var _stat C.MDB_stat
-	ret := C.mdb_env_stat(env._env, &_stat)
-	if ret != success {
-		return nil, operrno("mdb_env_stat", ret)
+	env.closeLock.RLock()
+	defer env.closeLock.RUnlock()
+	e, err := env.engine()
+	if err != nil {
+		return nil, err
 	}
-	stat := Stat{PSize: uint(_stat.ms_psize),
-		Depth:         uint(_stat.ms_depth),
-		BranchPages:   uint64(_stat.ms_branch_pages),
-		LeafPages:     uint64(_stat.ms_leaf_pages),
-		OverflowPages: uint64(_stat.ms_overflow_pages),
-		Entries:       uint64(_stat.ms_entries)}
+	_stat, err := e.Stat()
+	if err != nil {
+		return nil, operr("mdb_env_stat", err)
+	}
+	stat := Stat{PSize: uint(_stat.PageSize),
+		Depth:         uint(_stat.Depth),
+		BranchPages:   _stat.BranchPages,
+		LeafPages:     _stat.LeafPages,
+		OverflowPages: _stat.OverflowPages,
+		Entries:       _stat.Entries}
 	return &stat, nil
 }
 
@@ -272,17 +277,22 @@ type EnvInfo struct {
 //
 // See mdb_env_info.
 func (env *Env) Info() (*EnvInfo, error) {
-	var _info C.MDB_envinfo
-	ret := C.mdb_env_info(env._env, &_info)
-	if ret != success {
-		return nil, operrno("mdb_env_info", ret)
+	env.closeLock.RLock()
+	defer env.closeLock.RUnlock()
+	e, err := env.engine()
+	if err != nil {
+		return nil, err
+	}
+	_info, err := e.Info()
+	if err != nil {
+		return nil, operr("mdb_env_info", err)
 	}
 	info := EnvInfo{
-		MapSize:    int64(_info.me_mapsize),
-		LastPNO:    int64(_info.me_last_pgno),
-		LastTxnID:  int64(_info.me_last_txnid),
-		MaxReaders: uint(_info.me_maxreaders),
-		NumReaders: uint(_info.me_numreaders),
+		MapSize:    _info.MapSize,
+		LastPNO:    int64(_info.LastPgno),
+		LastTxnID:  int64(_info.LastTxnID),
+		MaxReaders: uint(_info.MaxReaders),
+		NumReaders: uint(_info.NumReaders),
 	}
 	return &info, nil
 }
@@ -292,36 +302,43 @@ func (env *Env) Info() (*EnvInfo, error) {
 //
 // See mdb_env_sync.
 func (env *Env) Sync(force bool) error {
-	ret := C.mdb_env_sync(env._env, cbool(force))
-	return operrno("mdb_env_sync", ret)
+	env.closeLock.RLock()
+	defer env.closeLock.RUnlock()
+	e, err := env.engine()
+	if err != nil {
+		return err
+	}
+	return operr("mdb_env_sync", e.Sync(force))
 }
 
 // SetFlags sets flags in the environment.
 //
 // See mdb_env_set_flags.
 func (env *Env) SetFlags(flags uint) error {
-	ret := C.mdb_env_set_flags(env._env, C.uint(flags), C.int(1))
-	return operrno("mdb_env_set_flags", ret)
+	return env.setFlags(flags, true)
 }
 
 // UnsetFlags clears flags in the environment.
 //
 // See mdb_env_set_flags.
 func (env *Env) UnsetFlags(flags uint) error {
-	ret := C.mdb_env_set_flags(env._env, C.uint(flags), C.int(0))
-	return operrno("mdb_env_set_flags", ret)
+	return env.setFlags(flags, false)
 }
 
 // Flags returns the flags set in the environment.
 //
 // See mdb_env_get_flags.
 func (env *Env) Flags() (uint, error) {
-	var _flags C.uint
-	ret := C.mdb_env_get_flags(env._env, &_flags)
-	if ret != success {
-		return 0, operrno("mdb_env_get_flags", ret)
+	env.closeLock.RLock()
+	defer env.closeLock.RUnlock()
+	if e := env.eng.Load(); e != nil {
+		return uint(e.Flags()), nil
 	}
-	return uint(_flags), nil
+	if env.closed {
+		return 0, errClosed
+	}
+	// Before Open: the flags given to SetFlags.
+	return uint(env.opts.Flags), nil
 }
 
 // Path returns the path argument passed to Open.  Path returns a non-nil error
@@ -329,15 +346,13 @@ func (env *Env) Flags() (uint, error) {
 //
 // See mdb_env_get_path.
 func (env *Env) Path() (string, error) {
-	var cpath *C.char
-	ret := C.mdb_env_get_path(env._env, &cpath)
-	if ret != success {
-		return "", operrno("mdb_env_get_path", ret)
-	}
-	if cpath == nil {
+	env.closeLock.RLock()
+	defer env.closeLock.RUnlock()
+	e := env.eng.Load()
+	if e == nil {
 		return "", errNotOpen
 	}
-	return C.GoString(cpath), nil
+	return e.Path(), nil
 }
 
 // SetMapSize sets the size of the environment memory map.
@@ -347,8 +362,18 @@ func (env *Env) SetMapSize(size int64) error {
 	if size < 0 {
 		return errNegSize
 	}
-	ret := C.mdb_env_set_mapsize(env._env, C.size_t(size))
-	return operrno("mdb_env_set_mapsize", ret)
+	env.closeLock.Lock()
+	defer env.closeLock.Unlock()
+	if e := env.eng.Load(); e != nil {
+		// Read transactions may be active (they keep the map they began
+		// with); EINVAL with a write transaction of this process, as in C.
+		return operr("mdb_env_set_mapsize", e.SetMapSize(size))
+	}
+	if env.closed {
+		return errClosed
+	}
+	env.opts.MapSize = size
+	return nil
 }
 
 // SetMaxReaders sets the maximum number of reader slots in the environment.
@@ -358,17 +383,35 @@ func (env *Env) SetMaxReaders(size int) error {
 	if size < 0 {
 		return errNegSize
 	}
-	ret := C.mdb_env_set_maxreaders(env._env, C.uint(size))
-	return operrno("mdb_env_set_maxreaders", ret)
+	env.closeLock.Lock()
+	defer env.closeLock.Unlock()
+	if env.closed {
+		return errClosed
+	}
+	// As C: EINVAL once open, and for fewer than one reader.
+	if env.opened || size < 1 || uint64(size) > uint64(^uint32(0)) {
+		return &OpError{Op: "mdb_env_set_maxreaders", Errno: syscall.EINVAL}
+	}
+	env.opts.MaxReaders = uint32(size)
+	return nil
 }
 
 // MaxReaders returns the maximum number of reader slots for the environment.
 //
 // See mdb_env_get_maxreaders.
 func (env *Env) MaxReaders() (int, error) {
-	var max C.uint
-	ret := C.mdb_env_get_maxreaders(env._env, &max)
-	return int(max), operrno("mdb_env_get_maxreaders", ret)
+	env.closeLock.RLock()
+	defer env.closeLock.RUnlock()
+	if e := env.eng.Load(); e != nil {
+		return int(e.MaxReaders()), nil
+	}
+	if env.closed {
+		return 0, errClosed
+	}
+	if env.opts.MaxReaders != 0 {
+		return int(env.opts.MaxReaders), nil
+	}
+	return format.DefaultReaders, nil
 }
 
 // MaxKeySize returns the maximum allowed length for a key.
@@ -376,9 +419,9 @@ func (env *Env) MaxReaders() (int, error) {
 // See mdb_env_get_maxkeysize.
 func (env *Env) MaxKeySize() int {
 	if env == nil {
-		return int(C.mdb_env_get_maxkeysize(nil))
+		return format.MaxKeySize09
 	}
-	return int(C.mdb_env_get_maxkeysize(env._env))
+	return env.maxKeySize()
 }
 
 // SetMaxDBs sets the maximum number of named databases for the environment.
@@ -388,8 +431,16 @@ func (env *Env) SetMaxDBs(size int) error {
 	if size < 0 {
 		return errNegSize
 	}
-	ret := C.mdb_env_set_maxdbs(env._env, C.MDB_dbi(size))
-	return operrno("mdb_env_set_maxdbs", ret)
+	env.closeLock.Lock()
+	defer env.closeLock.Unlock()
+	if env.closed {
+		return errClosed
+	}
+	if env.opened || uint64(size) > uint64(^uint32(0)) {
+		return &OpError{Op: "mdb_env_set_maxdbs", Errno: syscall.EINVAL}
+	}
+	env.opts.MaxDBs = uint32(size)
+	return nil
 }
 
 // BeginTxn is an unsafe, low-level method to initialize a new transaction on
@@ -518,5 +569,9 @@ func (env *Env) run(lock bool, flags uint, fn TxnOp) error {
 //
 // See mdb_dbi_close.
 func (env *Env) CloseDBI(db DBI) {
-	C.mdb_dbi_close(env._env, C.MDB_dbi(db))
+	env.closeLock.RLock()
+	defer env.closeLock.RUnlock()
+	if e := env.eng.Load(); e != nil {
+		e.CloseDBI(engine.DBI(db))
+	}
 }

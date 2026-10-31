@@ -107,6 +107,9 @@ func (e *Env) beginWrite() (*Txn, error) {
 	if e.isReadOnly() {
 		return nil, syscall.EACCES
 	}
+	if e.closed.Load() {
+		return nil, syscall.EINVAL
+	}
 	e.writerMu.Lock()
 	if err := e.lock.LockWriter(func() (uint64, error) {
 		m, err := e.pickMeta()
@@ -116,7 +119,7 @@ func (e *Env) beginWrite() (*Txn, error) {
 		return nil, err
 	}
 	unlock := func() {
-		e.lock.UnlockWriter()
+		_ = e.lock.UnlockWriter() // same goroutine as LockWriter: cannot fail
 		e.writerMu.Unlock()
 	}
 	var last uint64
@@ -143,7 +146,9 @@ func (e *Env) beginWrite() (*Txn, error) {
 		unlock()
 		return nil, err
 	}
-	t := &Txn{env: e, pageSize: e.pageSize, l: e.layout, dmap: m, slot: -1}
+	t := &Txn{env: e, pageSize: e.pageSize, l: e.layout, dmap: m, slot: -1,
+		dbs: e.writer.dbs, gen: e.writer.gen}
+	e.writer.dbs = nil
 	if err := t.setSnapshot(last+1, &meta); err != nil {
 		t.releaseMap()
 		unlock()
@@ -167,10 +172,18 @@ func (e *Env) beginWrite() (*Txn, error) {
 // end is mdb_txn_end for a top-level write transaction: export (keep) or
 // close the handles of databases this transaction created
 // (mdb_dbis_update), drop the dirty pages and cursors, unlock.
-func (t *Txn) end(keep bool) {
+//
+// The error is the writer mutex's unlock failing: the transaction ended on
+// another OS thread than the one that began it (Linux: EPERM). The mutex
+// stays held by the beginning thread; C ignores this (UNLOCK_MUTEX). The
+// in-process lock is released all the same, so that once that thread ends
+// (its goroutine exits while still pinned) the next writer recovers the
+// mutex from its dead owner instead of every writer of the process
+// waiting forever.
+func (t *Txn) end(keep bool) error {
 	w := t.w
 	if w.flags&txnFinished != 0 {
-		return
+		return nil
 	}
 	if w.parent != nil {
 		if keep {
@@ -178,10 +191,10 @@ func (t *Txn) end(keep bool) {
 		} else {
 			t.endNested(endAbort)
 		}
-		return
+		return nil
 	}
 	r := &t.env.dbis
-	for i := format.CoreDBs; i < len(t.dbs); i++ {
+	for i := format.CoreDBs; i < t.ndbs; i++ {
 		if e := t.dbe(i); e.state&dbNew != 0 {
 			r.finishNew(i, keep, e.db.Flags)
 		}
@@ -202,10 +215,21 @@ func (t *Txn) end(keep bool) {
 		e := t.env
 		e.writer.pgOldest = w.pgOldest
 		e.writer.pbufPad = w.pbufPad
+		// The next write transaction reuses the table; this one can no
+		// longer reach it (its handles fail with EINVAL).
+		e.writer.dbs, e.writer.gen = t.dbs, t.gen
+		t.dbs, t.ndbs = nil, 0
 		t.releaseMap()
-		e.lock.UnlockWriter()
+		var err error
+		if !e.closed.Load() {
+			// After Close the lock region is gone (a write transaction
+			// left open across Close: a caller error, as in C).
+			err = e.lock.UnlockWriter()
+		}
 		e.writerMu.Unlock()
+		return err
 	}
+	return nil
 }
 
 // wroteMeta: after mdb_env_write_meta wrote meta and published its txnid,
@@ -224,7 +248,7 @@ func (t *Txn) wroteMeta(meta format.Meta) {
 func (t *Txn) closeVanishedHandles(main format.DB) {
 	r := &t.env.dbis
 	var candidates []int
-	for i := format.CoreDBs; i < len(t.dbs); i++ {
+	for i := format.CoreDBs; i < t.ndbs; i++ {
 		e := t.dbe(i)
 		if e.state&dbValid != 0 && e.state&dbNew == 0 && e.seq == r.seqOf(i) {
 			candidates = append(candidates, i)
@@ -251,7 +275,7 @@ func (t *Txn) abortWrite() {
 	if t.w.child != nil {
 		t.w.child.abortWrite()
 	}
-	t.end(false)
+	_ = t.end(false) // mdb_txn_abort reports nothing; see end
 }
 
 // commitWrite is mdb_txn_commit of a write transaction. On failure the
@@ -280,12 +304,15 @@ func (t *Txn) commitWrite() error {
 	}
 	if w.flags&txnHasChild != 0 {
 		if err := w.child.commitWrite(); err != nil {
-			t.end(false)
+			_ = t.end(false)
 			return err
 		}
 	}
 	err := t.commit0()
-	t.end(err == nil)
+	if uerr := t.end(err == nil); err == nil {
+		// Committed, but the writer mutex is still held (see end).
+		err = uerr
+	}
 	return err
 }
 

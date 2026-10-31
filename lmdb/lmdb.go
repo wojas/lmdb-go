@@ -1,12 +1,43 @@
 /*
-Package lmdb provides bindings to the lmdb C API.  The package bindings are
-fairly low level and are designed to provide a minimal interface that prevents
+Package lmdb provides the API of lmdb-go, the Go bindings to the lmdb C API, on
+an implementation of LMDB in Go.  The API is
+fairly low level and is designed to provide a minimal interface that prevents
 misuse to a reasonable extent.  When in doubt refer to the C documentation as a
 reference.
 
 	http://www.lmdb.tech/doc/
 	http://www.lmdb.tech/doc/starting.html
 	http://www.lmdb.tech/doc/modules.html
+
+# Implementation
+
+The storage engine is a port to Go of rlmdb, the Rust rewrite of LMDB, which
+follows LMDB (Lightning Memory-Mapped Database, by Howard Chu, Symas
+Corporation) function by function.  Data files and lock files are binary
+compatible with C LMDB: C, Rust and Go processes can use one environment at
+the same time.  The API, its types, constants, errors and documentation are
+those of lmdb-go v1, so that programs switch implementations without code
+changes; the API for the LMDB 1.0 data format is that of lmdb-go v2.
+DEVIATIONS.md lists where behaviour differs from lmdb-go v1 on C LMDB.
+
+Everything but the two locks that LMDB shares between processes (the writer
+lock and the reader-table lock: pthread mutexes on Linux, POSIX semaphores on
+macOS) is Go.  The locks are libc objects, taken through cgo in package
+internal/lockfile.  A program built without cgo (CGO_ENABLED=0) can only open
+environments with the NoLock flag; Env.Open without it returns
+ErrNoSharedLocking.  SharedLockingAvailable tells which kind of build this is.
+
+# LMDB versions
+
+Both on-disk formats of LMDB are read and written: that of the 0.9.x series and
+that of the 1.0.x series, which are mutually incompatible.  The format of an
+Env is decided at Open: an existing database is always opened in its on-disk
+format (see SniffFormat), while a new database uses the format requested with
+Env.SetFormat or the process-wide default (V09 unless changed with
+SetDefaultFormat or the LMDBGO_DEFAULT_FORMAT environment variable).
+Databases of both formats can be open simultaneously in one process.  lmdb-go
+never converts a database between formats; migrating means dumping with an
+environment of one format and loading into another.
 
 # Environment
 
@@ -111,7 +142,9 @@ Write transactions (those created without the Readonly flag) must be created in
 a goroutine that has been locked to its thread by calling the function
 runtime.LockOSThread.  Futhermore, all methods on such transactions must be
 called from the goroutine which created them.  This is a fundamental limitation
-of LMDB even when using the NoTLS flag (which the package always uses).  The
+of LMDB even when using the NoTLS flag (which the package always uses): the
+writer lock shared with other processes belongs to the OS thread that took it
+(on Linux a robust pthread mutex).  The
 Env.Update method assists the programmer by calling runtime.LockOSThread
 automatically but it cannot sufficiently abstract write transactions to make
 them completely safe in Go.
@@ -126,36 +159,28 @@ details about dealing with such situations.
 */
 package lmdb
 
-/*
-#cgo CFLAGS: -pthread -W -Wall -Wno-unused-parameter -Wno-format-extra-args -Wbad-function-cast -Wno-missing-field-initializers -Wno-stringop-overflow -Wno-unknown-warning-option -O2 -g
-#cgo linux,pwritev CFLAGS: -DMDB_USE_PWRITEV
+import "github.com/PowerDNS/lmdb-go/internal/format"
 
-#include "lmdb.h"
-*/
-import "C"
-
-// Version return the major, minor, and patch version numbers of the LMDB C
-// library and a string representation of the version.
+// Version return the major, minor, and patch version numbers of the LMDB
+// implementation and a string representation of the version: 0, 9, 85
+// (see versionString).
 //
 // See mdb_version.
 func Version() (major, minor, patch int, s string) {
-	var maj, min, pat C.int
-	verstr := C.mdb_version(&maj, &min, &pat)
-	return int(maj), int(min), int(pat), C.GoString(verstr)
+	return format.VersionMajor, format.VersionMinor, format.VersionPatch, versionString
 }
 
-// VersionString returns a string representation of the LMDB C library version.
+// VersionString returns a string representation of the LMDB implementation's version.
 //
 // See mdb_version.
 func VersionString() string {
-	var maj, min, pat C.int
-	verstr := C.mdb_version(&maj, &min, &pat)
-	return C.GoString(verstr)
+	return versionString
 }
 
-func cbool(b bool) C.int {
-	if b {
-		return 1
-	}
-	return 0
-}
+// versionString is what mdb_version returns.  The numbers are 0.9.85: the 0.9
+// series, whose API and default data format this is, with a patch level
+// above every C release so that a program can tell this implementation from C
+// LMDB, as rlmdb's C library reports them ("LMDB 0.9.85: (rlmdb <version>)",
+// rlmdb DUAL_FORMAT.md).  Env.EngineVersion says which C release an open
+// environment's data format matches.
+const versionString = "LMDB 0.9.85: (lmdb-go, Go port of rlmdb)"

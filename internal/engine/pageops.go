@@ -269,7 +269,9 @@ func insertNode(l *format.Layout, p []byte, indx, nodeSize int, key []byte, flag
 // key at indx, shifting the following keys up.
 func insertLeaf2(l *format.Layout, p []byte, indx int, key []byte, ksize int) bool {
 	nkeys := numKeys(l, p)
-	if indx > nkeys || len(key) != ksize || ksize < 2 {
+	// ksize may be 1: C's mp_upper -= ksize - sizeof(indx_t) then adds 1
+	// (indx_t arithmetic), and setUpper stores mod 2^16 as C does.
+	if indx > nkeys || len(key) != ksize || ksize < 1 {
 		return false
 	}
 	start := l.PageHdr + indx*ksize
@@ -316,7 +318,7 @@ func deleteNode(l *format.Layout, p []byte, indx, ksize int) bool {
 		x := numkeys - 1 - indx
 		base := l.PageHdr + indx*ksize
 		end := base + ksize + x*ksize
-		if end > len(p) || ksize < 2 {
+		if end > len(p) || ksize < 1 {
 			return false
 		}
 		copy(p[base:], p[base+ksize:end])

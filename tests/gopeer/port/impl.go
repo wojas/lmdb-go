@@ -1,5 +1,3 @@
-//go:build port
-
 // What differs between the implementations, the port side: the Go
 // implementation, which opens both data formats with lmdb-go v2's API
 // (Env.SetFormat, Env.Format, V09, V10) and sets the page size of new LMDB
@@ -36,6 +34,10 @@ func setFormat(env *lmdb.Env, v10 bool) error {
 
 // isFormat10 tells whether an open env is an LMDB 1.0 environment.
 func isFormat10(env *lmdb.Env) bool { return env.Format() == lmdb.V10 }
+
+// delNullData tells whether Txn.Del(dbi, key, nil) is mdb_del with NULL
+// data: the port's is (lmdb DEVIATIONS.md).
+const delNullData = true
 
 // setPageSize sets the page size of a new LMDB 1.0 environment before
 // Open.

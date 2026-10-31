@@ -1125,7 +1125,7 @@ func (t *Txn) namedDBIOpen() bool {
 	r := &t.env.dbis
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	for i := format.CoreDBs; i < len(t.dbs); i++ {
+	for i := format.CoreDBs; i < t.ndbs; i++ {
 		if st := t.dbe(i).state; st != 0 {
 			if st&dbValid != 0 {
 				return true
