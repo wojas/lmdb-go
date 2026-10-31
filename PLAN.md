@@ -203,5 +203,10 @@ in the lock file) and `LockFileEx` on the lock file, all reachable from
   peers built there. rlmdb is adding support for more architectures first
   (owner, 2026-10-31); when its thread reports, port that work here (the
   same way as any rlmdb change, see "Following rlmdb").
+* **BSDs.** rlmdb supports FreeBSD, OpenBSD, NetBSD and DragonFly as an
+  untested tier (e4a5ad9, ledger #39; C 1.0 uses SysV semaphores on
+  OpenBSD/NetBSD/DragonFly, FreeBSD's robust mutex is 8 bytes). Port in
+  the next rlmdb sync round, together with rlmdb's versions of #38 and the
+  meta-sync fix, then Windows and big-endian when they land there.
 * Cross-compiling cgo builds: `zig cc` as `CC` (bundled glibc, musl and
   macOS headers) is the suggested toolchain; document and test it.
