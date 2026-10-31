@@ -293,7 +293,7 @@ func (e *Env) copyCompact(out io.Writer) error {
 	// Meta page 0: a new environment (mdb_env_init_meta0), with the
 	// source's recorded map address.
 	meta := format.NewEnvMeta(l, uint32(ps), uint64(e.mapSize.Load()), e.flags.Load())
-	m0, err := e.readMeta(0)
+	m0, err := e.readMetaIn(txn.dmap, 0)
 	if err != nil {
 		return err
 	}

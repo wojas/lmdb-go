@@ -61,8 +61,10 @@ type Env struct {
 	// eng is the open environment: nil before Open and after Close.
 	eng atomic.Pointer[engine.Env]
 
-	// closeLock is used to allow the Txn finalizer to check if the Env has
-	// been closed, so that it may know if it must abort.
+	// closeLock keeps Close out of Open, the settings and the short Env
+	// methods that use the open environment.  It is never held while
+	// waiting for a writer lock: transactions (also their finalizers) and
+	// copies do not take it (internal/engine/PORTING.md, "Lock order").
 	closeLock sync.RWMutex
 
 	// The state below is guarded by closeLock.

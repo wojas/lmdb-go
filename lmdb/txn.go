@@ -219,16 +219,15 @@ func (txn *Txn) commit() error {
 		// Ends the transaction, which is safe after Env.Close (v1 did not
 		// lock here either).
 		err = txn._txn.Commit()
+	} else if txn.env.eng.Load() == nil {
+		// After Env.Close (DEVIATIONS.md).  No closeLock: a commit never
+		// waits for Close, which may be queued behind a copy that waits
+		// for this writer.  A Close during the commit is safe: the
+		// transaction keeps the environment until it ends.
+		txn._txn.Abort()
+		err = syscall.EINVAL
 	} else {
-		// Keep Env.Close from running during the commit.
-		txn.env.closeLock.RLock()
-		if txn.env.closed {
-			txn._txn.Abort()
-			err = syscall.EINVAL
-		} else {
-			err = txn._txn.Commit()
-		}
-		txn.env.closeLock.RUnlock()
+		err = txn._txn.Commit()
 	}
 	txn.clearTxn()
 	return operr("mdb_txn_commit", err)
@@ -252,12 +251,9 @@ func (txn *Txn) abort() {
 		return
 	}
 
-	// Get a read-lock on the environment so we can abort txn if needed.
-	// After Close, aborting only releases the transaction's memory map:
-	// Close released its reader slot.
-	txn.env.closeLock.RLock()
+	// Without closeLock, as commit: the engine keeps the environment for
+	// the transaction until it ends, also after Close.
 	txn._txn.Abort()
-	txn.env.closeLock.RUnlock()
 
 	txn.clearTxn()
 }

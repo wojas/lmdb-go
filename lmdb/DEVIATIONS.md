@@ -132,7 +132,9 @@ differently from C is in `internal/engine/PORTING.md` and in rlmdb's
   then. Until that moment, opening the same path again in this process
   fails with `EBUSY` with a lock file; a `NoLock` handle opened meanwhile
   shares the closed one's reader table. `Commit` of a write transaction after `Close` aborts
-  it and returns `EINVAL`.
+  it and returns `EINVAL`. `Close` waits for no commit or copy: a commit
+  in progress, and a copy that has taken its snapshot, finish; a copy that
+  has not fails with `EINVAL`.
 * **`SetMapSize` on an open environment** may run while read transactions
   are active (they keep the map they began with); `EINVAL` while this
   process has a write transaction, as in C.

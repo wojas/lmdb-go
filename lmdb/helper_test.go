@@ -133,15 +133,30 @@ func (h *helperProc) kill() {
 // state.
 func waitGoroutine(t *testing.T, fn, state string) {
 	t.Helper()
-	buf := make([]byte, 1<<20)
 	for deadline := time.Now().Add(10 * time.Second); time.Now().Before(deadline); time.Sleep(time.Millisecond) {
-		n := runtime.Stack(buf, true)
-		for _, g := range strings.Split(string(buf[:n]), "\n\n") {
-			header, _, _ := strings.Cut(g, "\n")
-			if strings.Contains(g, fn) && strings.Contains(header, "["+state) {
-				return
-			}
+		if goroutineWaits(fn, state) {
+			return
 		}
 	}
 	t.Fatalf("no goroutine waits in %s (%s)", fn, state)
+}
+
+// goroutineWaits reports whether a goroutine runs fn in a wait whose state
+// contains state (see waitGoroutine).
+func goroutineWaits(fn, state string) bool {
+	buf := make([]byte, 1<<20)
+	n := runtime.Stack(buf, true)
+	for _, g := range strings.Split(string(buf[:n]), "\n\n") {
+		header, _, _ := strings.Cut(g, "\n")
+		if strings.Contains(g, fn) && strings.Contains(header, "["+state) {
+			return true
+		}
+	}
+	return false
+}
+
+// allStacks is the stack of every goroutine, for a test that hangs.
+func allStacks() string {
+	buf := make([]byte, 1<<20)
+	return string(buf[:runtime.Stack(buf, true)])
 }

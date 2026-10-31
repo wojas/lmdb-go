@@ -131,6 +131,49 @@ lists what happened to each commit since.
   lock is released anyway, so the next writer recovers the mutex once the
   owning thread ends.
 
+### Lock order
+
+Locks are taken in this order, outermost first; a goroutine waits for a
+lock only while it holds none that comes after it:
+
+1. `lmdb.Env.closeLock` (package lmdb, one per handle): the handle's own
+   state (`Open`, the settings made before it, `Close`) and the short
+   `Env` methods that use the open environment. It is never held while
+   waiting for a writer lock: transactions (begin, commit, abort,
+   finalizers) and copies do not take it, `SetMapSize` only tries
+   `writerMu`. The one wait under it is a `NoLock` `Open` that finds a new
+   file being set up by another handle and waits for the file's shared
+   writer lock (3), whose holder is that other `Open`.
+2. `Env.writerMu` (one per handle): its write transaction, or a plain copy.
+3. The region's writer lock: the lock file's writer mutex, or under
+   `NoLock` the in-memory region's, which every handle of the file in the
+   process shares. Its owner-death repair (Linux) takes the reader mutex.
+   A goroutine holding one handle's writer locks never begins a write
+   transaction or copy in another handle of the file.
+4. Leaves, held briefly and never while waiting for anything else: the
+   reader mutex (slot claims, releases, reader checks), `Env.mapMu`, the
+   DBI registry's and the environment registry's mutexes. Readers never
+   wait for 2 or 3; they at most try 3 (`TryLockWriter`).
+
+A map reference (`Env.pin`, a transaction's map) is not a lock: taking
+one never waits, and it keeps alive what the holder uses (lock region,
+files) until it is released. Rules that follow from this (stage 4 review,
+round 2):
+
+* The owner-death repair reads the meta pages through the map the waiting
+  goroutine pinned before it began to wait (`Env.lockWriter`), never
+  through `Env.dmap`, which `Close` clears (finding P1-3: after a `Close`
+  the repair failed, and the mutex was left `ENOTRECOVERABLE` for every
+  process).
+* Once a write transaction has released the writer locks (2 and 3), its
+  `Txn` is the next writer's (`writerState.txn`): `end` detaches the map
+  before the unlock, releases it after, and touches nothing of the `Txn`
+  after the unlock (finding P1-1).
+* Copies and transaction ends do not take `closeLock` (finding P1-2: a
+  copy waiting for `writerMu` under it, a `Close` queued for it, and the
+  writer's commit waiting for it behind the `Close` deadlocked). After
+  `Close`, the engine keeps what they use until their transaction ends.
+
 ### Stage 3: performance (divergences from rlmdb's structure)
 
 Measurements and what is left: `tests/bench/RESULTS.md`. Allocation
