@@ -63,7 +63,10 @@ lists what happened to each commit since.
   and a page-by-page structural comparison (port of interop `pagecmp`), and
   the Go engine reading C's result; Go-side spilling; plain and compacting
   copies byte-identical to `mdb_copy`/`mdb_copy -c`; Go reading `cpeer
-  fill` data sets.
+  fill` data sets. It takes 2 to 4 minutes natively and 7 to 9 under
+  emulation (`GOARCH=amd64` under Rosetta with x86-64 oracles, or the
+  x86-64 Linux container), where `go test`'s default 10-minute timeout
+  fails it on a loaded machine: run it there with `-timeout 30m`.
 * Linux: `scripts/build-c-writeops.sh <rlmdb root> <out dir>` builds the
   oracles from rlmdb's vendored C sources in the container (glibc and
   musl/Alpine), see its header for the command.
