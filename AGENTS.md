@@ -191,10 +191,12 @@ performance matter less; do not spend much effort there.
 Allocations are expensive in Go; memory is cheap on the systems this
 targets. Therefore:
 
-* Prefer fixed, predictable sizes (arrays, not slices, where the bound is
-  known: cursor stacks, page-number scratch, key/value scratch) so values
-  stay on the stack or inside an existing object, and check with
-  `go build -gcflags=-m` that hot-path values do not escape.
+* Prefer predictable sizes. Slices preallocated with a realistic start
+  capacity are fine; arrays are fine where they make sense (a known bound
+  such as a cursor stack), and an array field can also be the initial
+  backing store of a slice (`s := t.buf[:0]`) that only spills to the
+  heap when it outgrows it. Check with `go build -gcflags=-m` that
+  hot-path values do not escape.
 * Preallocate the buffers you expect to use, and keep them in long-lived
   objects (`Env`, the reusable write `Txn`, cursors) for reuse across
   transactions, as C reuses `me_txn0`. Making `Env` or `Txn` larger by
