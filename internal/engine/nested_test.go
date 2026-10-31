@@ -7,6 +7,8 @@ package engine
 import (
 	"bytes"
 	"encoding/binary"
+	"fmt"
+	"slices"
 	"syscall"
 	"testing"
 
@@ -164,4 +166,54 @@ func TestBeginTxnParentRules(t *testing.T) {
 	expectErr(t, err, format.BadTxn, "second child")
 	c.Abort()
 	p.Abort()
+}
+
+// TestReusedChildKeepsParentPghead: a committed child hands its copy of
+// the reclaimed pages (me_pghead) to the parent; the next child, which
+// reuses the first one's memory, must work on a copy again, so that its
+// abort leaves the parent's list as it was.
+func TestReusedChildKeepsParentPghead(t *testing.T) {
+	env, _ := openTest(t, format.V09, Options{})
+	key := func(i int) []byte { return []byte(fmt.Sprintf("key%06d", i)) }
+	val := bytes.Repeat([]byte("v"), 200)
+	put := func(txn *Txn, from, to int) {
+		t.Helper()
+		for i := from; i < to; i++ {
+			must(t, txn.Put(MainDBI, key(i), val, 0))
+		}
+	}
+	// Free many pages: fill, then delete most of it.
+	txn := beginW(t, env)
+	put(txn, 0, 3000)
+	must(t, txn.Commit())
+	txn = beginW(t, env)
+	for i := 0; i < 2900; i++ {
+		must(t, txn.Del(MainDBI, key(i), nil))
+	}
+	must(t, txn.Commit())
+	// A free DB record is reclaimed once it is older than every snapshot.
+	txn = beginW(t, env)
+	put(txn, 5000, 5001)
+	must(t, txn.Commit())
+	// The parent reclaims them.
+	p := beginW(t, env)
+	put(p, 10000, 10050)
+	if len(p.w.pghead) < 10 {
+		t.Fatalf("setup: pghead holds %d pages", len(p.w.pghead))
+	}
+	c, err := env.BeginTxn(p, 0)
+	must(t, err)
+	put(c, 20000, 20050)
+	must(t, c.Commit())
+	before := append([]uint64(nil), p.w.pghead...)
+	c, err = env.BeginTxn(p, 0)
+	must(t, err)
+	put(c, 30000, 30400)
+	c.Abort()
+	if !slices.Equal(before, p.w.pghead) {
+		t.Fatalf("an aborted child changed the parent's pghead:\n%v\n%v", before, []uint64(p.w.pghead))
+	}
+	put(p, 40000, 40400)
+	must(t, p.Commit())
+	must(t, env.Audit())
 }

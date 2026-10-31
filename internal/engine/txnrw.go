@@ -86,9 +86,11 @@ type wstate struct {
 	// of its parent, grandparent, ... (nearest first).
 	parents []layer
 	// parent is the parent of a nested transaction, child the active
-	// nested transaction of this one.
-	parent *Txn
-	child  *Txn
+	// nested transaction of this one, spareChild the memory of its last
+	// child, for the next one (beginNested).
+	parent     *Txn
+	child      *Txn
+	spareChild *Txn
 	// cursorBackup is the parent's cursors as they were when this nested
 	// transaction began (mc_backup).
 	cursorBackup []backupSlot

@@ -210,10 +210,9 @@ type backupSlot struct {
 	s aslot
 }
 
-// backup copies the live slots, to put back with restore if a nested
-// transaction aborts.
-func (a *arena) backup() []backupSlot {
-	var out []backupSlot
+// backupInto appends copies of the live slots to out, to put back with
+// restore if a nested transaction aborts.
+func (a *arena) backupInto(out []backupSlot) []backupSlot {
 	for i := range a.slots {
 		if a.slots[i].live {
 			out = append(out, backupSlot{i, a.slots[i]})

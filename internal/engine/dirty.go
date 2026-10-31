@@ -28,6 +28,7 @@
 package engine
 
 import (
+	"slices"
 	"sort"
 
 	"github.com/PowerDNS/lmdb-go/internal/format"
@@ -222,6 +223,8 @@ type dirtyPages struct {
 	// hint is where pages were last found, by pgno % hints.
 	hint [hints]pageSlot
 	pool pagePool
+	// spareIndex is the memory of an earlier index, for merge.
+	spareIndex []dirtyIdx
 }
 
 func (d *dirtyPages) len() int { return len(d.index) }
@@ -463,7 +466,9 @@ func (d *dirtyPages) merge(o *dirtyPages) {
 		return
 	}
 	mine := d.index
-	merged := make([]dirtyIdx, 0, len(mine)+len(o.index))
+	// Merge into the spare index (the one replaced last time), so that a
+	// parent merging child after child allocates nothing.
+	merged := slices.Grow(d.spareIndex[:0], len(mine)+len(o.index))
 	j := 0
 	for _, e := range o.index {
 		for j < len(mine) && mine[j].pgno < e.pgno {
@@ -488,8 +493,21 @@ func (d *dirtyPages) merge(o *dirtyPages) {
 		merged = append(merged, dirtyIdx{e.pgno, s})
 	}
 	merged = append(merged, mine[j:]...)
-	d.index = merged
-	*o = dirtyPages{}
+	d.index, d.spareIndex = merged, mine[:0]
+	o.forget()
+}
+
+// forget empties the list without recycling its buffers (merge gave them
+// to another list), keeping its memory.
+func (d *dirtyPages) forget() {
+	d.index = d.index[:0]
+	clear(d.slots)
+	d.slots = d.slots[:0]
+	d.vacant = d.vacant[:0]
+	for i := range d.hint {
+		d.hint[i] = noSlot
+	}
+	d.pool = pagePool{}
 }
 
 // newDirtyPages is an empty list with a pool for pages of pageSize bytes.

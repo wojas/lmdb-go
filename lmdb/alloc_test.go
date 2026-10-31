@@ -49,7 +49,7 @@ const (
 	allocsDelete       = 0
 	allocsPutReserve   = 0
 	allocsPutDup       = 0
-	allocsSub          = 14
+	allocsSub          = 1
 	allocsUpdateBigPut = 1
 )
 
