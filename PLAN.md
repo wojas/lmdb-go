@@ -107,3 +107,18 @@ uses a test fake of the interface (in-process only).
   sources removed; this plan; `scripts/linux-test.sh`. The module path
   stays `github.com/PowerDNS/lmdb-go` (owner: drop-in `replace`). The nested `tests/` module holds the
   pinned cgo reference `tests/cgolmdb` (`scripts/update-cgolmdb.sh`).
+
+## Deferred decisions (owner, revisit before a release)
+
+* **Builds without cgo.** Go disables cgo by default when
+  cross-compiling or when no C compiler is found, so a plain
+  `GOOS=linux go build` from a Mac silently gets the `NoLock`-only build,
+  which fails only at `Env.Open`. Option: make `!cgo` builds fail to
+  compile unless they opt in with a tag (e.g. `lmdb_nocgo`). Today: runtime
+  error at `Open` without `NoLock`.
+* **macOS locks without cgo.** Go binaries on macOS always link
+  libSystem, even with `CGO_ENABLED=0`, so the semaphore calls could use
+  libSystem trampolines (as `x/sys/unix` does) instead of cgo, making
+  macOS builds without cgo fully functional. Today: cgo, as on Linux.
+* Cross-compiling cgo builds: `zig cc` as `CC` (bundled glibc, musl and
+  macOS headers) is the suggested toolchain; document and test it.
