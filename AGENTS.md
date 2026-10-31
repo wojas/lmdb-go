@@ -186,6 +186,40 @@ compare separate runs. Report units (ns/op) and say what a ratio is
 (Go/C: below 1 means Go is faster). DUPSORT and sequential-append
 performance matter less; do not spend much effort there.
 
+## Allocations (owner)
+
+Allocations are expensive in Go; memory is cheap on the systems this
+targets. Therefore:
+
+* Prefer predictable sizes. Slices preallocated with a realistic start
+  capacity are fine; arrays are fine where they make sense (a known bound
+  such as a cursor stack), and an array field can also be the initial
+  backing store of a slice (`s := t.buf[:0]`) that only spills to the
+  heap when it outgrows it. Check with `go build -gcflags=-m` that
+  hot-path values do not escape.
+* Preallocate the buffers you expect to use, and keep them in long-lived
+  objects (`Env`, the reusable write `Txn`, cursors) for reuse across
+  transactions, as C reuses `me_txn0`. Making `Env` or `Txn` larger by
+  tens or hundreds of KiB of preallocated space is fine; do not squeeze
+  memory at the cost of allocations.
+* Size buffers for modern machines (many cores, GiBs of RAM, 16 KiB
+  pages on Apple silicon), not for decades-old hardware.
+* Give slices a realistic initial capacity (`make([]T, 0, n)` with `n` what
+  a typical transaction needs) instead of letting `append` grow them
+  1, 2, 4, 8, ...; reset with `s = s[:0]` to reuse.
+* Measure allocations per operation (`-benchmem`, `testing.AllocsPerRun`)
+  for every hot path, read and write; the target is zero steady-state
+  allocations per operation wherever C has none.
+* Allocation counts are guarded by tests that fail on regression: an
+  `AllocsPerRun` test per hot path of the public API (read and write:
+  View/Get/cursor ops/Renew/Reset, Update with one put, puts, deletes,
+  commits, nested txns, big values) with the expected count as a
+  constant (the measured value, never a loose margin), and benchmarks
+  that report allocs/op. They run in the normal `go test` (skipped under
+  `-race`, which changes allocation counts). A change that lowers a count
+  lowers the constant in the same commit; raising one needs a reason in
+  the commit message.
+
 ## Style
 
 Idiomatic, documented Go. Each file starts with a comment saying what it
