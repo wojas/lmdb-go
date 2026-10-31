@@ -7,6 +7,7 @@ package engine
 import (
 	"bytes"
 	"encoding/binary"
+	"syscall"
 	"testing"
 
 	"github.com/PowerDNS/lmdb-go/internal/format"
@@ -146,4 +147,21 @@ func TestParentCommitCommitsActiveChild(t *testing.T) {
 	if _, err := r.Get(MainDBI, []byte("c")); err != format.NotFound {
 		t.Fatal(err)
 	}
+}
+
+func TestBeginTxnParentRules(t *testing.T) {
+	env, _ := openTest(t, format.V09, Options{})
+	r := beginR(t, env)
+	_, err := env.BeginTxn(r, 0)
+	expectErr(t, err, syscall.EINVAL, "child of a read-only txn")
+	r.Abort()
+	p := beginW(t, env)
+	_, err = env.BeginTxn(p, format.ReadOnly)
+	expectErr(t, err, format.BadTxn, "read-only child")
+	c, err := env.BeginTxn(p, 0)
+	must(t, err)
+	_, err = env.BeginTxn(p, 0)
+	expectErr(t, err, format.BadTxn, "second child")
+	c.Abort()
+	p.Abort()
 }

@@ -83,23 +83,29 @@ func (t *Txn) Env() *Env { return t.env }
 
 // BeginTxn is mdb_txn_begin. flags may hold MDB_RDONLY for a read
 // transaction; parent is a write transaction for a nested one (nil for a
-// top-level transaction).
+// top-level transaction). Errors as C: EACCES for a write transaction in a
+// read-only environment, EINVAL for a read-only parent, MDB_BAD_TXN for a
+// read-only child or a parent that failed or has a child already.
 func (e *Env) BeginTxn(parent *Txn, flags uint32) (*Txn, error) {
-	if flags&format.ReadOnly != 0 {
-		if parent != nil {
-			// C 0.9 allows a read-only child of a read-only parent only
-			// with MDB_RDONLY on both; nested read transactions are not
-			// supported (as rlmdb).
+	if e.isReadOnly() && flags&format.ReadOnly == 0 {
+		return nil, syscall.EACCES
+	}
+	if parent != nil {
+		// Nested transactions: max 1 child, write txns only.
+		if parent.w == nil {
 			return nil, syscall.EINVAL
 		}
+		if flags&format.ReadOnly != 0 {
+			return nil, format.BadTxn
+		}
+		return parent.beginNested()
+	}
+	if flags&format.ReadOnly != 0 {
 		t := new(Txn)
 		if err := e.BeginRead(t); err != nil {
 			return nil, err
 		}
 		return t, nil
-	}
-	if parent != nil {
-		return parent.beginNested()
 	}
 	return e.beginWrite()
 }
