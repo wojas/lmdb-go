@@ -19,7 +19,7 @@
 //	   LMDB_ORACLE_BIN=/tmp/c-oracles/bin go test ./lockfile'
 //
 // For musl, add LINUX_TEST_IMAGE=golang:1.25-alpine and start the command
-// with "apk add -q build-base git &&"; for x86-64 under emulation,
+// with "apk add -q build-base &&"; for x86-64 under emulation,
 // LINUX_TEST_PLATFORM=linux/amd64. C and Go must use the same libc: on
 // aarch64, glibc's and musl's lock files differ.
 //

@@ -119,9 +119,10 @@ func (e *Env) copyPlain(w io.Writer) error {
 	// read transaction must start after that. C takes no lock without a
 	// lock file (MDB_NOLOCK); here the writers of this process are kept
 	// out all the same (AGENTS.md rule 2a: writerMu and the in-memory
-	// region's writer lock), or a commit could write pages past the
-	// snapshot's end, which the copy leaves out, and a meta page naming
-	// them (rlmdb locks its NO_LOCK writers out the same way).
+	// region's writer lock, which every NoLock handle of the file shares),
+	// or a commit could write pages past the snapshot's end, which the
+	// copy leaves out, and a meta page naming them (rlmdb locks its
+	// NO_LOCK writers out the same way).
 	runtime.LockOSThread()
 	e.writerMu.Lock()
 	err := e.lock.LockWriter(func() (uint64, error) {
@@ -550,15 +551,26 @@ func overflowRun(txn *Txn, pgno uint64, pages, ps int) ([]byte, error) {
 // widened to 8-byte alignment; if less than 8 bytes are unused, or for
 // P_LEAF2 pages, everything up to the (aligned) unused tail.
 func copyUsed(l *format.Layout, dst, src []byte, ps int) error {
-	if len(src) < l.PageHdr {
+	if len(src) < l.PageHdr || len(src) < ps || len(dst) < ps {
 		return format.Corrupted
 	}
-	lower, upper, flags := pLower(l, src), pUpper(l, src), pFlags(l, src)
-	if len(src) < ps || len(dst) < ps || lower > upper || upper > ps {
+	if pFlags(l, src)&format.PLeaf2 != 0 {
+		// mp_lower/mp_upper only count here, and 1-byte items take
+		// mp_upper past the page end (leaf2Count): the free tail is C's
+		// (indx_t)(upper - lower).
+		used := ps - sizeLeft(l, src)&^7
+		if used < 0 {
+			return format.Corrupted
+		}
+		copy(dst[:used], src[:used])
+		return nil
+	}
+	lower, upper := pLower(l, src), pUpper(l, src)
+	if lower > upper || upper > ps {
 		return format.Corrupted
 	}
 	unused := (upper - lower) &^ 7
-	if unused != 0 && flags&format.PLeaf2 == 0 {
+	if unused != 0 {
 		up := upper &^ 7
 		lo := (lower + 7) &^ 7
 		copy(dst[:lo], src[:lo])

@@ -1,5 +1,5 @@
 // The deterministic data set shared by fill, verify and delete (rlmdb
-// rust/interop/c/dataset.c, README.md "Deterministic data set").
+// interop/c/dataset.c, README.md "Deterministic data set").
 //
 // Everything here is a pure function of (seed, i, d), so that any peer, in
 // any process, can regenerate the exact bytes another peer wrote. All
@@ -78,7 +78,11 @@ func (ds *dataset) finish() string {
 	switch {
 	case f&lmdb.IntegerDup != 0 && ds.valsize != 4 && ds.valsize != 8:
 		return "--intdup needs --valsize 4 or 8"
-	case f&lmdb.DupSort != 0 && (ds.valsize < 4 || ds.valsize > 511):
+	case f&lmdb.DupFixed != 0 && (ds.valsize < 1 || ds.valsize > 511):
+		return "DUPFIXED values must be 1..511 bytes (--valsize)"
+	case f&lmdb.DupFixed != 0 && ds.valsize < 4 && ds.dups > uint32(1)<<(8*ds.valsize):
+		return "--dups exceeds the distinct values of --valsize"
+	case f&lmdb.DupSort != 0 && f&lmdb.DupFixed == 0 && (ds.valsize < 4 || ds.valsize > 511):
 		return "DUPSORT values must be 4..511 bytes (--valsize)"
 	case f&lmdb.DupSort != 0 && ds.big != 0:
 		return "--big cannot be used with DUPSORT (dup data is limited to 511 bytes)"
@@ -152,6 +156,14 @@ func (ds *dataset) value(i, d uint32, buf []byte) {
 			binary.NativeEndian.PutUint64(buf, uint64(tag)<<32|uint64(d))
 		} else {
 			binary.NativeEndian.PutUint32(buf, tag)
+		}
+		return
+	}
+	// DUPFIXED values under 4 bytes: the low bytes of the tag, big-endian
+	// (distinct, as d only changes them: --dups is limited to fit).
+	if ds.dbflags&lmdb.DupFixed != 0 && len(buf) < 4 {
+		for off := range buf {
+			buf[off] = byte(tag >> (8 * (len(buf) - 1 - off)))
 		}
 		return
 	}

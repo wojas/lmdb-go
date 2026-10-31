@@ -1,5 +1,5 @@
 // Long-running commands for cross-process concurrency tests (rlmdb
-// rust/interop/c/cpeer_loops.c):
+// interop/c/cpeer_loops.c):
 //
 //	hold-reader  pins a snapshot (a read transaction) for a while: MVCC test.
 //	hold-env     keeps the environment open without a read transaction.

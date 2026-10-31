@@ -82,7 +82,7 @@ type nodeVal struct {
 const (
 	dupCurrent = iota // goto current: overwrite the single item
 	dupPutSub         // goto put_sub: the node has room for the item
-	dupReplace        // MDB_CURRENT with an item that does not fit
+	dupReplace        // an item that does not fit where it would replace one: delete, then put
 	dupNewSub         // goto new_sub
 )
 
@@ -488,6 +488,8 @@ func (t *Txn) putItem(mc cref, db *format.DB, key []byte, item nodeVal, flags *u
 				if err := t.delAt(mc, 0); err != nil {
 					return false, nil, false, err
 				}
+				// putAt counts the item itself. (Never MDB_MULTIPLE: its
+				// MDB_DUPFIXED items have the size of the key's only one.)
 				_, rc := t.putAt(mc, key, putBytes(item.bytes), 0)
 				return true, rc, false, nil
 			case dupNewSub:
@@ -721,6 +723,10 @@ func (t *Txn) dupPrepare(mc cref, item nodeVal, flags *uint32, insertKey, bigNew
 	offset := 0
 	toSubDB := bigNew
 	xsize := 0
+	// bigPgno is the overflow run of a lone item on overflow pages, freed
+	// when it becomes a duplicate (ledger: rlmdb KNOWN_C_BUGS.md #38).
+	var bigPgno uint64
+	hasBig := false
 	if bigNew {
 		// Set up an empty "old sub-page" for prep_subDB to expand to a
 		// full page (P_DIRTY: the sub-DB root built from it is a dirty
@@ -741,16 +747,36 @@ func (t *Txn) dupPrepare(mc cref, item nodeVal, flags *uint32, insertKey, bigNew
 		if !ok {
 			return st, format.Corrupted
 		}
-		od, ok := n.InlineData()
-		if !ok {
+		nflags, ksize := n.Flags(), n.KeySize()
+		var od []byte
+		if nflags&(format.FBigData|format.FDupData) == format.FBigData {
+			// A lone item on overflow pages, which C 1.0 writes for an
+			// MDB_CURRENT item too big for a node (rlmdb KNOWN_C_BUGS.md
+			// #38): read it through them (C reads the node as if the item
+			// were inline); converting it to duplicates frees them below.
+			if bigPgno, ok = n.OverflowPgno(); !ok {
+				return st, format.Corrupted
+			}
+			hasBig = true
+			if od, err = t.overflowData(bigPgno, n.DataSize()); err != nil {
+				return st, err
+			}
+		} else if od, ok = n.InlineData(); !ok {
 			return st, format.Corrupted
 		}
 		olddata := copyInto(&t.w.dupOld, od)
-		nflags, ksize := n.Flags(), n.KeySize()
 		switch {
 		case nflags&format.FDupData == 0:
-			// Was a single item before, must convert now.
+			// Was a single item before, must convert now. An item that
+			// replaces it but does not fit a node takes the route of a
+			// new key's (a sub-DB): C would store it on overflow pages,
+			// an F_BIGDATA node in a DUPSORT database, which its next
+			// duplicate corrupts (rlmdb KNOWN_C_BUGS.md #38).
+			tooBig := l.LeafSize(ksize, item.size) > nodemax
 			if *flags == format.Current {
+				if tooBig {
+					return dupStep{kind: dupReplace}, nil
+				}
 				return dupStep{kind: dupCurrent}, nil
 			}
 			e := t.dbe(t.cur(mc).dbi)
@@ -765,6 +791,9 @@ func (t *Txn) dupPrepare(mc cref, item nodeVal, flags *uint32, insertKey, bigNew
 			if dcmp.Compare(item.bytes, olddata) == 0 {
 				if *flags&(format.NoDupData|format.AppendDup) != 0 {
 					return st, format.KeyExist
+				}
+				if tooBig {
+					return dupStep{kind: dupReplace}, nil
 				}
 				// Overwrite it.
 				return dupStep{kind: dupCurrent}, nil
@@ -913,6 +942,13 @@ func (t *Txn) dupPrepare(mc cref, item nodeVal, flags *uint32, insertKey, bigNew
 	}
 	*flags |= uint32(format.FDupData)
 	if !insertKey {
+		if hasBig {
+			// C's mdb_node_del leaves the run allocated and counted: a leak
+			// (rlmdb KNOWN_C_BUGS.md #38).
+			if err := t.ovpageFree(mc, bigPgno); err != nil {
+				return st, err
+			}
+		}
 		if err := t.nodeDel(mc, 0); err != nil {
 			return st, err
 		}

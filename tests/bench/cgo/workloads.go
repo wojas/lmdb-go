@@ -1,4 +1,4 @@
-// Package workloads is the Go side of rlmdb's benchmark (rust/bench:
+// Package workloads is the Go side of rlmdb's benchmark (bench:
 // c/cbench.c, src/workloads.rs) on lmdb-go's API: every workload group with
 // the same data (../data), the same operations in the same order and the
 // same transaction sizes, plus the goapi group (lmdb-go's own API costs).

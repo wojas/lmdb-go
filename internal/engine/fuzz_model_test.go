@@ -800,13 +800,6 @@ func (r *fzRun) opCurrent() {
 		if !fits {
 			nd = d
 		}
-		// Known bug (C 1.0, rlmdb, this port; FUZZING.md): MDB_CURRENT on a
-		// key's only item with an item too big for a node stores it on
-		// overflow pages (F_BIGDATA in a DUPSORT database), and the next
-		// duplicate of the key corrupts it. Not generated until fixed.
-		if len(ds) == 1 && r.f.Layout().LeafSize(len(k), len(nd)) > r.f.Layout().NodeMax(r.ps) {
-			nd = d
-		}
 	}
 	reserve := !dupsort && sel&1 != 0
 	r.note("cursor put CURRENT db %d %s %s -> %s reserve %v", i, k, d, nd, reserve)

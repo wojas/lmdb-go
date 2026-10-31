@@ -9,6 +9,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"slices"
+	"strings"
 	"syscall"
 	"testing"
 
@@ -216,4 +217,79 @@ func TestReusedChildKeepsParentPghead(t *testing.T) {
 	put(p, 40000, 40400)
 	must(t, p.Commit())
 	must(t, env.Audit())
+}
+
+// TestComparatorOfAbortedDBNotInherited: an abort that closes the handle
+// of a database its transaction (or a nested child) created forgets the
+// comparators installed for it, so the next database to get the slot
+// starts with the default order (rlmdb 774f8d0, capi_write.c
+// test_comparator_reuse; C's mdb_dbi_open calls mdb_default_cmp). The
+// port keeps the comparators in the environment's DBI slot, which every
+// close clears with the rest of it.
+func TestComparatorOfAbortedDBNotInherited(t *testing.T) {
+	rev := func(a, b []byte) int { return bytes.Compare(b, a) }
+	for _, f := range []format.Format{format.V09, format.V10} {
+		for _, nested := range []bool{false, true} {
+			for _, dup := range []bool{false, true} {
+				what := fmt.Sprintf("%v nested=%v dupsort=%v", f, nested, dup)
+				env, _ := openTest(t, f, Options{MaxDBs: 2})
+				flags := uint32(format.Create)
+				if dup {
+					flags |= format.DupSort
+				}
+				p := beginW(t, env)
+				creator := p
+				if nested {
+					var err error
+					if creator, err = env.BeginTxn(p, 0); err != nil {
+						t.Fatal(err)
+					}
+				}
+				a, err := creator.OpenDBI([]byte("a"), flags)
+				must(t, err)
+				if dup {
+					must(t, creator.SetDupsort(a, rev))
+				} else {
+					must(t, creator.SetCompare(a, rev))
+				}
+				creator.Abort()
+				if nested {
+					must(t, p.Commit())
+				}
+				w := beginW(t, env)
+				b, err := w.OpenDBI([]byte("b"), flags)
+				must(t, err)
+				if b != a {
+					t.Fatalf("%s: b got DBI %d, a had %d", what, b, a)
+				}
+				key, dcmp, _, err := w.Comparators(b)
+				must(t, err)
+				c := key
+				if dup {
+					c = dcmp
+				}
+				if c.Compare([]byte("a"), []byte("b")) >= 0 {
+					t.Errorf("%s: b inherited a's comparator", what)
+				}
+				for _, v := range []string{"b", "a"} {
+					must(t, w.Put(b, []byte("k"), []byte(v), 0))
+					must(t, w.Put(b, []byte(v), []byte(v), 0))
+				}
+				cur, _ := w.OpenCursor(b)
+				var got []string
+				for k, v, err := cur.Get(nil, nil, format.Next); err == nil; k, v, err = cur.Get(nil, nil, format.Next) {
+					got = append(got, string(k)+string(v))
+				}
+				want := "aa bb ka kb"
+				if !dup {
+					want = "aa bb ka"
+				}
+				if strings.Join(got, " ") != want {
+					t.Errorf("%s: order %q, want %q", what, got, want)
+				}
+				w.Abort()
+				env.Close()
+			}
+		}
+	}
 }

@@ -609,8 +609,9 @@ func TestEnv_Close_racesWithTxns(t *testing.T) {
 
 // A read transaction that outlives Close keeps its snapshot (review
 // finding P1-4): the environment stays open underneath until it ends, so
-// the same path cannot be opened again in this process (EBUSY) and its
-// pages are not reused; afterwards it can.
+// the same path cannot be opened again in this process with a lock file
+// (EBUSY), and a NoLock handle opened meanwhile shares its reader table;
+// either way its pages are not reused.
 func TestEnv_Close_liveSnapshot(t *testing.T) {
 	for _, flags := range []uint{0, NoLock} {
 		t.Run(fmt.Sprint(flags), func(t *testing.T) {
@@ -648,23 +649,36 @@ func TestEnv_Close_liveSnapshot(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if err := env2.Open(path, testFlags(flags), 0o644); !IsErrnoSys(err, syscall.EBUSY) {
+			update := func() {
+				for i := 0; i < 5; i++ {
+					v := bytes.Repeat([]byte{byte('B' + i)}, 5000)
+					if err := env2.Update(func(txn *Txn) error { return txn.Put(db, []byte("key"), v, 0) }); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+			err = env2.Open(path, testFlags(flags), 0o644)
+			if testFlags(flags)&NoLock != 0 {
+				// The new handle shares the reader table of the closed one,
+				// whose snapshot its writers keep.
+				if err != nil {
+					t.Fatalf("NoLock Open while a transaction outlives Close: %v", err)
+				}
+				update()
+			} else if !IsErrnoSys(err, syscall.EBUSY) {
 				t.Fatalf("Open while a transaction outlives Close: %v, want EBUSY", err)
 			}
 			if !bytes.Equal(old, want) {
 				t.Fatal("snapshot changed")
 			}
 			txn.Abort()
-			if err := env2.Open(path, testFlags(flags), 0o644); err != nil {
-				t.Fatalf("Open after the transaction ended: %v", err)
-			}
-			defer env2.Close()
-			for i := 0; i < 5; i++ {
-				v := bytes.Repeat([]byte{byte('B' + i)}, 5000)
-				if err := env2.Update(func(txn *Txn) error { return txn.Put(db, []byte("key"), v, 0) }); err != nil {
-					t.Fatal(err)
+			if testFlags(flags)&NoLock == 0 {
+				if err := env2.Open(path, testFlags(flags), 0o644); err != nil {
+					t.Fatalf("Open after the transaction ended: %v", err)
 				}
 			}
+			defer env2.Close()
+			update()
 		})
 	}
 }

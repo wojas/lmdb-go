@@ -1,7 +1,14 @@
 # Porting notes: rlmdb core -> internal/engine
 
-Status of the stage-1 engine port (PLAN.md, agent E). rlmdb sources:
-`rlmdb/src/core/*.rs` and `format/*` at the pinned commit `9ea2373`.
+Status of the engine port (PLAN.md). rlmdb sources: `rlmdb/src/core/*.rs`
+and `format/*`.
+
+**Sync point: rlmdb `e48ebe0`** (its main after the restructuring that
+made the repository root the Cargo workspace and vendored the C sources in
+`tests/lmdb-c`; the next commit there, `9c854c2`, changes only rlmdb's
+scripts). The stages before were ported from `9ea2373`, whose `rust/`
+tree is `5a2ebd2` of the restructured history. "Sync with rlmdb" below
+lists what happened to each commit since.
 
 ## File map
 
@@ -10,7 +17,9 @@ Status of the stage-1 engine port (PLAN.md, agent E). rlmdb sources:
 | `internal/format/*` | `format/*` (minus lockfile), consts, flags, error, cmp, idl | done, unit tests ported |
 | `internal/sys/*` | `os/unix.rs`, `os/mod.rs` minus shared locks | done (data map, pread/pwrite, fdatasync) |
 | `lockregion.go` | `core/reader.rs` (interface only) | done |
-| `memlock.go` | (none) | in-memory region: NoLock reader table, test stand-in |
+| `memlock.go` | `core/reader.rs` `LocalReaders`, `core/registry.rs` `LocalShared` | in-memory region: NoLock reader table, committed txnid and writer lock; test stand-in for the lock file |
+| `registry.go` | `core/registry.rs` | done (claims keyed by the data file, see the ledger) |
+| `slotpool.go` | (none) | reader slots kept for reuse (not in rlmdb) |
 | `slotpool.go` | (none; C's TLS-mode slot reuse) | idle reader slots kept for the next read transaction |
 | `env.go` | `core/env.rs` | done |
 | `dbi.go` | `core/dbi.rs` | done |
@@ -44,15 +53,20 @@ Status of the stage-1 engine port (PLAN.md, agent E). rlmdb sources:
   cases checked, `ROBUST_CASES` for more), zero allocations on the hot read
   path, benchmarks.
 * `tests/engine` (C oracles from rlmdb's interop build; `RLMDB_DIR` or
-  `RLMDB_BIN`): the lock-step write differential against `writeops`
-  (C 0.9.36) and `writeops10` (C 1.0 at 1, 4, 16, 64 KiB pages) with every
+  `RLMDB_BIN`; the 0.9 tests skip when the oracles' page size is not this
+  process's, e.g. arm64 oracles under `GOARCH=amd64`): the lock-step write
+  differential against `writeops` (C 0.9.36) and `writeops10` (C 1.0 at 1,
+  4, 16, 64 KiB pages; 256 B to 64 KiB for small `MDB_DUPFIXED` items, and
+  `writeops10_ndebug` for the one script on which C 1.0's assertions
+  abort, rlmdb `KNOWN_C_BUGS.md` #37) with every
   cursor compared after every step, then `mdb_dump`, `cpeer check-freelist`
   and a page-by-page structural comparison (port of interop `pagecmp`), and
   the Go engine reading C's result; Go-side spilling; plain and compacting
   copies byte-identical to `mdb_copy`/`mdb_copy -c`; Go reading `cpeer
   fill` data sets.
-* Linux: `scripts/build-c-writeops.sh` builds the oracles in the container
-  (glibc and musl/Alpine), see its header for the command.
+* Linux: `scripts/build-c-writeops.sh <rlmdb root> <out dir>` builds the
+  oracles from rlmdb's vendored C sources in the container (glibc and
+  musl/Alpine), see its header for the command.
 
 ## Design decisions (Go vs Rust)
 
@@ -107,7 +121,8 @@ Status of the stage-1 engine port (PLAN.md, agent E). rlmdb sources:
   surviving transactions keep their reader slots and the process's
   liveness lock (their snapshots stay protected against writers here and
   in other processes) and never use a torn-down region, without a lock
-  around their operations; reopening the path meanwhile is `EBUSY`
+  around their operations; reopening the path meanwhile is `EBUSY` with a
+  lock file, and a `NoLock` handle opened meanwhile shares the region
   (stage 4, review findings P1-4 and P1-5: `Close` cleared their slots and
   closed the lock file under them).
 * `LockRegion.UnlockWriter` returns an error (the Linux mutex refuses an
@@ -167,26 +182,34 @@ counts of the API's hot paths are pinned by `lmdb/alloc_test.go`.
 ## Ledger: deviations from C and rlmdb
 
 * NoLock (AGENTS.md rule 2a): C's MDB_NOLOCK leaves writer serialisation
-  and reader safety to the caller, and rlmdb's find_oldest returns
-  txnid-1 without a lock region (a soundness bug being fixed in rlmdb,
-  not ported). Here the environment always has a region: without a lock
-  file (NoLock, or OpenLock returning nil on a read-only file system) an
-  unbounded in-memory reader table (MemLock) that FindOldest consults, and
-  write transactions stay serialised by Env.writerMu. Snapshots under
+  and reader safety to the caller. rlmdb tracks readers in memory too
+  since 86a4d1b (the Go port did from the start). Here the environment
+  always has a region: without a lock file (NoLock, or OpenLock returning
+  nil on a read-only file system) an unbounded in-memory reader table
+  (MemLock) that FindOldest consults, and write transactions stay
+  serialised by its writer lock. The NoLock handles of one data file in
+  the process share one MemLock (registry.go, rlmdb d3d9239), so this
+  holds across handles. Snapshots under
   NoLock still come from the newest meta page (C's mdb_env_pick_meta), so
   commits by another process (coordinated by the caller) are seen. Readers
   use the lock-file protocol with an in-process stand-in for mti_txnid
   (the in-memory region's TxnID: set by this process's writers after the
   meta write, and to the snapshot they began from before it), plus a
   catch-up with other processes' commits while no writer of this process
-  holds writerMu (TryLock); a plain copy adopts the newest txnid under the
+  holds the shared writer lock (TryLockWriter); a plain copy adopts the newest txnid under the
   writer lock before its transaction renews (noLockSnapshot; rlmdb's
   design, commit ade31f0; stage 4, review finding P1-1: comparing the
   txnids of two copies accepted a torn copy, N's roots with N+2's txnid).
   C's observable outputs are kept: no lock file is created, Info.NumReaders is
   0, ReaderList is nil (C prints "(no reader locks)"), ReaderCheck is 0,
-  and there is no reader limit. A second open of the same path in one
-  process fails with EBUSY (rlmdb's registry).
+  and there is no reader limit. Differences from rlmdb's code that
+  remain (no observable difference found): a meta copy that fails
+  validation is retried if the committed txnid moved meanwhile (rlmdb
+  returns the error); a write transaction takes its handle's writerMu
+  before the shared writer lock (rlmdb the file's lock first), so
+  SetMapSize of a handle whose writer waits for another handle's is
+  EINVAL already; idle reader slots stay in the shared table per handle
+  (slotpool.go), released at the handle's teardown.
 * Reader slots (stage 4, `slotpool.go`): C with `MDB_NOTLS` (lmdb-go's
   mode) and rlmdb claim a slot under the reader mutex at every read
   transaction's begin and free it (`mr_pid = 0`) at the end. Here the end
@@ -200,23 +223,63 @@ counts of the API's hot paths are pinned by `lmdb/alloc_test.go`.
   processes see the idle slots (`mdb_stat -r`: txnid `-`) and count them
   in `mti_numreaders`, as for a C process in TLS mode; the environment's
   teardown releases them. Not in rlmdb (to be proposed there).
-* The registry of open environments (EBUSY for a second open in the
-  process) holds data files, by resolved path and, once the file exists,
-  by device and inode (registered before the lock file is touched, and
-  again from the opened descriptor). rlmdb registers the path given
-  (the directory, or the file with MDB_NOSUBDIR), so the two modes, or a
-  hard link, open one data file twice. Processes that open a data file in
-  different modes use different lock files (`lock.mdb`, `<file>-lock`), in
-  C as here: they do not exclude each other.
-* `MDB_DUPFIXED` items of one byte (stage 2): rlmdb refuses `P_LEAF2`
-  keys shorter than 2 bytes (`ksize.checked_sub(2)` in `insert_leaf2`
-  and the `P_LEAF2` delete) and fails with `MDB_PAGE_FULL` on the second
-  duplicate; C adds 1 to `mp_upper` per item there (indx_t arithmetic).
-  The port does what C does, byte for byte (`tests/engine` profile
-  `dupfixed1`). To be fixed in rlmdb.
+* The registry of open environments (registry.go, rlmdb
+  core/registry.rs since d3d9239): a data file is claimed exclusively
+  with a lock file (a second open is EBUSY, before the lock file is
+  touched) and shared under NoLock (any number of handles, one MemLock);
+  the two kinds refuse each other, and a read-only handle on a read-only
+  file system claims exclusively. Claims are by the data file's resolved
+  path (before anything is opened) and by device and inode (once it
+  exists, again from the opened descriptor). rlmdb claims the path given
+  (the directory, or the file with MDB_NOSUBDIR) and then device and
+  inode, which refuses and shares the same opens, only later in the open
+  (after the lock file of the other mode was opened). Processes that open
+  a data file in different modes use different lock files (`lock.mdb`,
+  `<file>-lock`), in C as here: they do not exclude each other.
+* `MDB_DUPFIXED` items of one byte: from stage 2 on the port inserted,
+  deleted and split them as C does, but its SIZELEFT saturated where a
+  64 KiB page's `mp_upper` wraps (every later insert split the page) and
+  its compacting copy refused such pages as corrupt. rlmdb fixed the same
+  in d039bf9 and 8dcdb22, and the port now follows its code (one
+  `leaf2Count` with C's wrapping 16-bit arithmetic, SIZELEFT of a
+  `P_LEAF2` page modulo 2^16, `copyUsed`; rlmdb `KNOWN_C_BUGS.md` #37 for
+  C 1.0's assertion).
+* MDB_CURRENT with an item too big for a node on a DUPSORT key's only
+  item (rlmdb `KNOWN_C_BUGS.md` #38, found by this port's FuzzWriteModel):
+  implemented from rlmdb's decision while its fix
+  (`fix/current-bigdata-dupsort`) has not landed; compare with it when it
+  does. The writer never creates an F_BIGDATA node in a DUPSORT database
+  (dupPrepare sends such a replacement, also a put of an item the
+  duplicate order calls equal, the delete-then-insert route of #15), and a
+  lone F_BIGDATA item (C 1.0 writes one) is read through its overflow
+  pages, which are freed, when it becomes a duplicate.
 * Every KNOWN_C_BUGS.md decision of rlmdb is kept as rlmdb implements it
   (the differential test exercises the cursor-state ones with rlmdb's
   repairs of C's side).
+
+## Sync with rlmdb `5a2ebd2..e48ebe0`
+
+The commits since the old pin (`9ea2373`, which is `5a2ebd2` in the
+restructured history), oldest first:
+
+| rlmdb | what | here |
+|---|---|---|
+| `760fae9` | vendor the C 0.9.36 and 1.0 sources in `tests/lmdb-c` | the oracle scripts build from them (byte-identical to the old oracle's sources) |
+| `ab4c3d1` | workspace at the repository root, vendored C sources in the builds | `tests/internal/coracle`, `scripts/*`, docs: new paths |
+| `d97d02a` | docs: paths and commit ids | not applicable |
+| `c1caf42` | CI | not applicable |
+| `86a4d1b` | NO_LOCK: track read transactions in memory | the port did from the start (rule 2a); compared, see the NoLock row |
+| `d3d9239` | NO_LOCK handles of one file share the reader table and writer lock | ported (`registry.go`, `MemLock` shared, new-file set-up under the writer lock; tests) |
+| `d039bf9` | 1-byte `MDB_DUPFIXED` items; the interop page audit accepts them | ported: `leaf2Count`, `copyUsed`; gopeer's audit and data set; tests |
+| `5015941` | refuse a root split that would overflow the cursor stack (#36) | ported (`checkRootPush`, `splitPeer`; rlmdb's handbuilt test) |
+| `8dcdb22` | `P_LEAF2` free space wraps like C's 16-bit counters (#37) | ported (`sizeLeft`, `Page.SizeLeft`; the wrap test against `writeops10_ndebug`) |
+| `1ade420` | a CursorId names its arena | no change needed: a `Cursor` holds its `*Txn`, the arena is never replaced and keeps its generations (test ported) |
+| `ade31f0` | NO_LOCK readers publish the committed txnid before copying the meta page | ported in stage 4 (`noLockSnapshot`); compared again, see the NoLock row |
+| `774f8d0` | rlmdb-capi: clear C comparators when an abort closes a handle | no change needed: comparators live in the DBI slot that every close clears (test ported); `lmdb` has no comparator API |
+| `e48ebe0` | `LockMap::read_bytes` dead code on Linux | not applicable |
+
+Also from rlmdb's decisions, not yet a commit on its main: #38 (see the
+ledger).
 
 ## Open items
 

@@ -1,9 +1,9 @@
 # gopeer: the Go peer of rlmdb's interop harness
 
 `gopeer` speaks the peer command protocol of rlmdb's interop test bed
-(rlmdb `rust/interop/README.md`, "The peer command protocol"): the same
+(rlmdb `interop/README.md`, "The peer command protocol"): the same
 commands, options, output lines and exit codes as the C peer `cpeer`,
-whose source (`rust/interop/c/cpeer*.c`) it ports file by file to
+whose source (`interop/c/cpeer*.c`) it ports file by file to
 lmdb-go's API. rlmdb's harness runs it as `Peer::Go` next to C LMDB 0.9
 (`cpeer`), C LMDB 1.0 (`cpeer10`), rlmdb (`rpeer`) and C on rlmdb
 (`cpeer_capi`), as separate processes on one environment.
@@ -79,7 +79,8 @@ C's, gopeer does this:
 
 ## Running rlmdb's interop tests with gopeer
 
-rlmdb's interop crate (branch with `Peer::Go`) finds gopeer through
+rlmdb's interop crate (branch `t3/interop-gopeer-v2`, `Peer::Go` on top
+of rlmdb's main; not merged into it) finds gopeer through
 `INTEROP_GOPEER` (its path) and `INTEROP_GOPEER_IMPL` (`cgo` or `port`,
 passed as `--impl`); without `INTEROP_GOPEER` the Go tests are skipped.
 In the rlmdb checkout:
@@ -89,7 +90,7 @@ INTEROP_GOPEER=/tmp/gopeer INTEROP_GOPEER_IMPL=cgo cargo test -p rlmdb-interop \
     --test go_peer --test go_pairs --test go_pairs10
 ```
 
-On Linux, rlmdb's `rust/scripts/linux-test.sh` runs cargo in a
+On Linux, rlmdb's `scripts/linux-test.sh` runs cargo in a
 `rust:1-bookworm` container that sees only the rlmdb checkout (read-only
 in the VM) and passes no environment. Build a Linux gopeer in this
 repository's Debian golang container (same glibc), write it into the
@@ -99,10 +100,10 @@ cargo's `--config env`:
 ```sh
 # in this checkout
 scripts/linux-test.sh sh -c 'cd tests && go build -o /tmp/gopeer ./gopeer >&2 && cat /tmp/gopeer' \
-    > <rlmdb>/rust/interop/gopeer-linux && chmod +x <rlmdb>/rust/interop/gopeer-linux
+    > <rlmdb>/interop/gopeer-linux && chmod +x <rlmdb>/interop/gopeer-linux
 # in the rlmdb checkout (gopeer-linux is git-ignored there)
-rust/scripts/linux-test.sh test -p rlmdb-interop --test go_peer --test go_pairs \
-    --config 'env.INTEROP_GOPEER="/work/rust/interop/gopeer-linux"' \
+scripts/linux-test.sh test -p rlmdb-interop --test go_peer --test go_pairs \
+    --config 'env.INTEROP_GOPEER="/work/interop/gopeer-linux"' \
     --config 'env.INTEROP_GOPEER_IMPL="cgo"'
 ```
 
@@ -112,27 +113,20 @@ build-base && cd tests && go build -o /tmp/gopeer ./gopeer >&2 && cat
 /tmp/gopeer'`. glibc and musl lock files differ (on arm64
 `pthread_mutex_t` is 48 bytes with glibc, 40 with musl), so a musl gopeer
 must meet C peers built against musl. The matrix runs in an image derived
-from `rust:1-alpine` with `build-base` and `git` (rlmdb's `linux-test.sh`
+from `rust:1-alpine` with `build-base` (rlmdb's `linux-test.sh`
 runs `cargo` directly), on a target volume of its own (so that glibc and
 musl builds do not overwrite each other), with the musl gopeer streamed
 into the rlmdb checkout as above; rlmdb's `build.rs` builds `cpeer` and
-the C tools against musl there, and every pair also runs reader loops of
-rlmdb's peers (`rpeer`, `cpeer_capi`) on musl's mutexes. `build.rs`
-extracts the LMDB 1.0 sources with git; where the container does not see
-the repository's git directory reliably (a Lima VM did not, for a git
-directory that other worktrees keep changing), stream the sources in and
-commit them in a scratch repository on the container's tmpfs:
+the C tools against musl there, from the C sources rlmdb vendors
+(`tests/lmdb-c`), and every pair also runs reader loops of rlmdb's peers
+(`rpeer`, `cpeer_capi`) on musl's mutexes:
 
 ```sh
-printf 'FROM rust:1-alpine\nRUN apk add -q build-base git\n' | docker build -q -t rlmdb-interop-musl -
-git -C <rlmdb> archive 4865523ff0e1514d26a675d9cfd1d3a4b2b6c4c3 libraries/liblmdb |
+printf 'FROM rust:1-alpine\nRUN apk add -q build-base\n' | docker build -q -t rlmdb-interop-musl -
 docker run --rm -i --tmpfs /tmp:exec,size=4g -v <rlmdb>:/work \
-    -v lmdb-rs-target-musl:/work/rust/target -v lmdb-rs-cargo-registry:/usr/local/cargo/registry \
-    -w /work/rust -e INTEROP_GOPEER=/work/rust/interop/gopeer-linux -e INTEROP_GOPEER_IMPL=port \
-    rlmdb-interop-musl sh -c 'mkdir /tmp/l10 && tar -x -C /tmp/l10 && git init -q /tmp/l10 &&
-      git -C /tmp/l10 add -A && git -C /tmp/l10 -c user.name=x -c user.email=x@localhost commit -qm l10 &&
-      export GIT_DIR=/tmp/l10/.git GIT_WORK_TREE=/work RLMDB_LMDB10_REF=$(git -C /tmp/l10 rev-parse HEAD) &&
-      cargo test -p rlmdb-interop --test go_peer --test go_pairs --test go_pairs10'
+    -v lmdb-rs-target-musl:/work/target -v lmdb-rs-cargo-registry:/usr/local/cargo/registry \
+    -w /work -e INTEROP_GOPEER=/work/interop/gopeer-linux -e INTEROP_GOPEER_IMPL=port \
+    rlmdb-interop-musl cargo test -p rlmdb-interop --test go_peer --test go_pairs --test go_pairs10
 ```
 
 ### Results with `--impl port` (the Go implementation)
@@ -154,6 +148,12 @@ counts as C 0.9.36 and later do), and `delete` needs no workaround.
 | macOS 15 (arm64) | 165 / 165 | 231 / 231 | 5 / 5 |
 | Linux arm64, glibc (Debian bookworm) | 165 / 165 | 231 / 231 | 5 / 5 |
 | Linux arm64, musl (Alpine) | 165 / 165 | 231 / 231 | 5 / 5 |
+
+The macOS row is with rlmdb's main after its restructuring
+(`t3/interop-gopeer-v2`, whose scenarios now include 1- to 3-byte
+`MDB_DUPFIXED` data sets; the Go peer's data set and page audit follow
+them). The Linux rows are from the branch on the old pin (`9ea2373`) and
+have not been rerun since.
 
 ### Results with `--impl cgo` (lmdb-go v1.9.4, C LMDB 0.9.35)
 

@@ -1,6 +1,6 @@
 // Package data is the data generator of the benchmarks: a line-by-line
-// port of rlmdb's rust/bench/src/data.rs, which is in turn identical (by
-// construction) to the generator at the top of rust/bench/c/cbench.c. The
+// port of rlmdb's bench/src/data.rs, which is in turn identical (by
+// construction) to the generator at the top of bench/c/cbench.c. The
 // same seeds and formulas produce the same keys, values, index streams and
 // permutations as the C and Rust sides, so every implementation builds
 // identical databases and does the same operations in the same order;
