@@ -132,6 +132,18 @@ uses a test fake of the interface (in-process only).
 * Stage 1 E: `internal/format`, `internal/sys`, `internal/engine`
   (see `internal/engine/PORTING.md`), byte-identical to C writers.
 
+## Windows (planned)
+
+The owner will add Windows support once a test machine is available
+(rlmdb has no Windows support yet either). Until then: keep every OS
+specific behind build constraints (`internal/sys`, `internal/lockfile`)
+so a `_windows.go` file pair can be added without touching the engine,
+keep lmdb-go's Windows files (e.g. `lmdb/error_windows.go`) and their
+declarations, and do not design anything that cannot work there. C LMDB on
+Windows uses named mutexes (`CreateMutex`, `Global\MDBr…`/`MDBw…`, names
+in the lock file) and `LockFileEx` on the lock file, all reachable from
+`golang.org/x/sys/windows` without cgo.
+
 ## Deferred decisions (owner, revisit before a release)
 
 * **Builds without cgo.** Go disables cgo by default when
