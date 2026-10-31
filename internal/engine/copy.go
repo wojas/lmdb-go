@@ -9,7 +9,8 @@
 // transaction that pins the snapshot; then the other pages follow without
 // the lock. Without a lock file the writers of this process are locked
 // out the same way (C locks nothing then). The result is byte for byte
-// what C's mdb_copy writes.
+// what C's mdb_copy writes, except where a meta page on the file is newer
+// than the snapshot (snapshotMetas).
 //
 // Compacting copy: only the pages the snapshot uses, renumbered from page
 // 2 in depth-first order (each page after the pages below it, so a tree's
@@ -152,6 +153,9 @@ func (e *Env) copyPlain(w io.Writer) error {
 	if err != nil {
 		return err
 	}
+	if err := e.snapshotMetas(buf[:2*ps], txn.txnid); err != nil {
+		return err
+	}
 	if err := writeAll(w, buf[:2*ps]); err != nil {
 		return err
 	}
@@ -169,6 +173,35 @@ func (e *Env) copyPlain(w io.Writer) error {
 			return err
 		}
 		pos += int64(n)
+	}
+	return nil
+}
+
+// snapshotMetas makes the two meta pages a plain copy read from the file
+// (metas) fit the snapshot txnid it copies: a meta page with a newer txnid
+// names pages past the snapshot's end, which the copy leaves out, so it
+// gets the snapshot's meta (the part a commit writes, from mm_mapsize on)
+// instead. With the writer lock held there is one only after a commit
+// whose meta page reached the file but whose write or sync then failed
+// (here such a commit makes the environment fatal, and no copy runs; in C
+// or rlmdb, or in another process, it may not). C's mdb_copy copies the
+// meta pages as they are. MDB_CORRUPTED if the snapshot's own meta page
+// does not hold its txnid.
+func (e *Env) snapshotMetas(metas []byte, txnid uint64) error {
+	ps, base := e.pageSize, e.layout.MetaOffset()
+	id := func(i int) uint64 {
+		v, _ := format.Get64(metas, i*ps+base+format.MetaTxnID)
+		return v
+	}
+	body := func(i int) []byte {
+		return metas[i*ps+base+format.MetaMapSize : i*ps+base+format.MetaSize]
+	}
+	own := int(txnid & 1)
+	if id(own) != txnid {
+		return format.Corrupted
+	}
+	if other := own ^ 1; id(other) > txnid {
+		copy(body(other), body(own))
 	}
 	return nil
 }

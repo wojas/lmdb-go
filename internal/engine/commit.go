@@ -217,10 +217,16 @@ func (t *Txn) writeBatch(f *os.File, bufs [][]byte, pos uint64) error {
 // meta page page is written.
 var testHookMetaWrite func(e *Env, page int)
 
+// testHookMetaWritten, if set (tests only), runs in writeMeta after the
+// meta page was written (and synced); an error stands for a failure of
+// the write or the sync after the bytes reached the page cache.
+var testHookMetaWritten func(e *Env) error
+
 // writeMeta is mdb_env_write_meta: write the new meta page (txnid % 2)
-// and publish the txnid. A failed write makes the environment unusable
-// (MDB_FATAL_ERROR; later transactions fail with MDB_PANIC), after trying
-// to put the old txnid back so the half-written page is not used.
+// and publish the txnid. A failed write (or sync after it) makes the
+// environment unusable (MDB_FATAL_ERROR; later transactions and copies
+// fail with MDB_PANIC), after trying to put the old txnid back so the
+// half-written page is not used.
 func (t *Txn) writeMeta() error {
 	e := t.env
 	ps := t.pageSize
@@ -259,9 +265,21 @@ func (t *Txn) writeMeta() error {
 	if syncFD && e.metaFile != nil {
 		f = e.metaFile
 	}
-	if err := sys.WriteAt(f, buf[format.MetaMapSize:], off); err != nil {
+	err := sys.WriteAt(f, buf[format.MetaMapSize:], off)
+	if err == nil && runtime.GOOS == "darwin" && syncFD && e.metaFile != nil {
+		// O_DSYNC does not flush the drive cache on macOS.
+		err = sys.Fdatasync(e.metaFile)
+	}
+	if err == nil && testHookMetaWritten != nil {
+		err = testHookMetaWritten(e)
+	}
+	if err != nil {
 		// On a failure, the page cache still contains the new data. Write
-		// some old data back, to prevent it from being used.
+		// some old data back, to prevent it from being used. A failed sync
+		// is the same failure: the new meta page is on the file but not
+		// published, and a copy or a later open would take it (C has no
+		// sync here; where it syncs a meta page, with MDB_WRITEMAP, a
+		// failure is MDB_FATAL_ERROR too).
 		if haveOld {
 			meta.LastPgno, meta.TxnID = oldLast, oldTxnid
 			meta.Write(buf[:])
@@ -269,12 +287,6 @@ func (t *Txn) writeMeta() error {
 		}
 		e.fatal.Store(true)
 		return err
-	}
-	if runtime.GOOS == "darwin" && syncFD && e.metaFile != nil {
-		// O_DSYNC does not flush the drive cache on macOS.
-		if err := sys.Fdatasync(e.metaFile); err != nil {
-			return err
-		}
 	}
 	e.lock.SetTxnID(txnid)
 	t.wroteMeta(meta)

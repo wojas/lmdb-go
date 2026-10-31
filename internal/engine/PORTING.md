@@ -296,6 +296,24 @@ counts of the API's hot paths are pinned by `lmdb/alloc_test.go`.
   duplicate order calls equal, the delete-then-insert route of #15), and a
   lone F_BIGDATA item (C 1.0 writes one) is read through its overflow
   pages, which are freed, when it becomes a duplicate.
+* A failed sync after the meta page write (macOS: the `F_FULLFSYNC` after
+  the `O_DSYNC` write; stage 4 review, round 2, P2-4) is handled as C
+  handles a failed meta page write: the old txnid is written back and the
+  environment is fatal (`MDB_PANIC` for later transactions and copies).
+  C 0.9.36 has no sync there (its `MDB_WRITEMAP` branch, which syncs the
+  meta page on macOS, makes a failed sync fatal, without the write-back);
+  rlmdb (also at e48ebe0) returns the error and does neither, which leaves
+  meta N+1 on the file with N published: a later plain copy pinned N and
+  copied meta N+1, naming pages it left out. To be fixed in rlmdb.
+* A plain copy writes no meta page newer than its snapshot
+  (`snapshotMetas`): such a page gets the snapshot's meta (the part a
+  commit writes). It exists only after a commit whose meta page reached
+  the file while its write or sync failed, in another process (C restores
+  the old txnid after a failed write, but not when the restore fails too,
+  nor with `MDB_WRITEMAP`; rlmdb not after a failed sync) or in this one
+  before the entry above. C's `mdb_copy` and rlmdb copy both meta pages as
+  they are, so their copy then names pages it does not contain. Copies of
+  every other file stay byte-identical to `mdb_copy`'s.
 * Every KNOWN_C_BUGS.md decision of rlmdb is kept as rlmdb implements it
   (the differential test exercises the cursor-state ones with rlmdb's
   repairs of C's side).
