@@ -121,7 +121,7 @@ func (e *Env) copyPlain(w io.Writer) error {
 	// out all the same (AGENTS.md rule 2a: writerMu and the in-memory
 	// region's writer lock), or a commit could write pages past the
 	// snapshot's end, which the copy leaves out, and a meta page naming
-	// them. rlmdb copies there without a writer lock, as C does.
+	// them (rlmdb locks its NO_LOCK writers out the same way).
 	runtime.LockOSThread()
 	e.writerMu.Lock()
 	err := e.lock.LockWriter(func() (uint64, error) {
@@ -129,7 +129,15 @@ func (e *Env) copyPlain(w io.Writer) error {
 		return m.TxnID, err
 	})
 	if err == nil {
-		err = txn.Renew()
+		if !e.lockFile {
+			// Commits of other processes: the transaction cannot adopt
+			// them while we hold the writer lock (noLockSnapshot), and it
+			// must read the newest meta page, which we copy.
+			err = e.adoptNewestTxnIDPinned()
+		}
+		if err == nil {
+			err = txn.Renew()
+		}
 		if err == nil && copySnapshotHook != nil {
 			copySnapshotHook()
 		}

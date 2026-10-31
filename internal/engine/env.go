@@ -82,6 +82,9 @@ type Env struct {
 	// (MDB_NOLOCK, or a read-only file system), see AGENTS.md rule 2a.
 	lock     LockRegion
 	lockFile bool
+	// slots are the idle reader slots this process keeps for its next
+	// read transactions (slotpool.go).
+	slots slotPool
 
 	dbis dbiRegistry
 
@@ -108,10 +111,13 @@ type Env struct {
 	regKey     envID
 
 	closeOnce sync.Once
-	// closed is set by Close before anything is released. Transactions
-	// that end afterwards leave the (closed) lock region alone; see
-	// Close.
+	// closed is set by Close: no new transactions, no Renew.
 	closed atomic.Bool
+	// liveMaps counts the data maps not yet unmapped. The environment is
+	// torn down (lock region, files, registry entry) when it drops to 0,
+	// which happens only after Close: see Close.
+	liveMaps     atomic.Int32
+	teardownOnce sync.Once
 }
 
 // writerState is the per-environment state of the single write
@@ -376,7 +382,9 @@ func Open(path string, opts Options) (env *Env, err error) {
 			return nil, err
 		}
 	}
-	m, err := sys.MapReadOnly(e.dataFile, int(mapSize), flags&format.NoReadahead != 0, format.NumMetas*pageSize)
+	e.pageSize = pageSize
+	e.flags.Store(flags)
+	m, err := e.newMap(mapSize)
 	if err != nil {
 		return nil, err
 	}
@@ -393,9 +401,8 @@ func Open(path string, opts Options) (env *Env, err error) {
 	if e.lockFile {
 		e.maxReaders = e.lock.MaxReaders()
 	}
+	e.slots.init(e.maxReaders, e.lock.MaxReaders())
 	e.dbis.init(opts.MaxDBs)
-	e.flags.Store(flags)
-	e.pageSize = pageSize
 	e.mapSize.Store(mapSize)
 	e.dirtyLimit.Store(format.IDLUMMax)
 	e.layout = layout
@@ -414,45 +421,118 @@ func Open(path string, opts Options) (env *Env, err error) {
 	return e, nil
 }
 
-// release closes what Open or Close own, in mdb_env_close0's order:
-// unmap the data file, close its descriptors, then the lock file, and only
-// then leave the registry.
+// release drops the environment's reference on its current map (Close,
+// or a failed Open). The teardown follows when no transaction holds a map
+// any more, at once if none does.
 func (e *Env) release() {
 	if m := e.dmap.Swap(nil); m != nil {
 		m.Release()
+	} else if e.liveMaps.Load() == 0 {
+		e.teardown()
 	}
-	if e.metaFile != nil {
-		e.metaFile.Close()
-	}
-	if e.dataFile != nil {
-		e.dataFile.Close()
-	}
-	if e.lock != nil {
-		e.lock.Close()
-	}
-	unregister(e.regKey)
 }
 
-// Close closes the environment (mdb_env_close). Transactions still alive
-// keep their data map until they end; using them after Close is an error,
-// as in C. Ending them (Abort, Reset) is allowed: it releases their data
-// map and leaves the lock region alone, whose slots Close cleared. The
-// caller must not run Close concurrently with transactions ending (the
-// lmdb package serialises the two); C has the same rule.
+// newMap maps size bytes of the data file; the environment counts the map
+// until it is unmapped (mapFreed).
+func (e *Env) newMap(size int64) (*sys.DataMap, error) {
+	m, err := sys.MapReadOnly(e.dataFile, int(size), e.flags.Load()&format.NoReadahead != 0, format.NumMetas*e.pageSize)
+	if err != nil {
+		return nil, err
+	}
+	e.liveMaps.Add(1)
+	m.SetOnFree(e.mapFreed)
+	return m, nil
+}
+
+// mapFreed: a data map was unmapped. While the environment is open it
+// holds its current map, and SetMapSize maps the new one before it
+// releases the old one, so the count reaches 0 only after Close, when the
+// last transaction is gone.
+func (e *Env) mapFreed() {
+	if e.liveMaps.Add(-1) == 0 {
+		e.teardown()
+	}
+}
+
+// teardown closes what the environment owns, in mdb_env_close0's order
+// (the maps are unmapped already): the data file's descriptors, then the
+// lock file, and only then the registry entry. No transaction is left, so
+// nothing uses the lock region any more.
+func (e *Env) teardown() {
+	e.teardownOnce.Do(func() {
+		if e.metaFile != nil {
+			e.metaFile.Close()
+		}
+		if e.dataFile != nil {
+			e.dataFile.Close()
+		}
+		if e.lock != nil {
+			// The pooled slots first (the lock file's Close would clear
+			// them too, the in-memory table's would not).
+			e.slots.drain(e.lock.ReleaseSlot)
+			e.lock.Close()
+		}
+		unregister(e.regKey)
+	})
+}
+
+// Close closes the environment (mdb_env_close): no transaction can begin
+// or Renew from now on (EINVAL). C requires every transaction to have
+// ended before; here transactions still alive keep working until they end
+// (lmdb-go's finalizers may end them much later), and their snapshots
+// stay protected: the environment keeps its lock file (their reader
+// slots, and the lock that tells other processes this one is alive), its
+// files and its registry entry (so that the same path cannot be opened
+// again in this process, with a reader table of its own) until the last
+// of them has ended, and is torn down then. Every transaction holds a
+// reference on a data map from its begin to its end, Reset included, and
+// takes it before it touches the lock region; the teardown runs when the
+// last map is unmapped (mapFreed).
 func (e *Env) Close() error {
 	e.closed.Store(true)
 	e.closeOnce.Do(e.release)
 	return nil
 }
 
+// pin takes a reference on the current map, which keeps the environment
+// from being torn down until it is released; EINVAL after Close.
+func (e *Env) pin() (*sys.DataMap, error) {
+	m, err := e.acquireMap()
+	if err != nil {
+		return nil, err
+	}
+	if e.closed.Load() {
+		m.Release()
+		return nil, syscall.EINVAL
+	}
+	return m, nil
+}
+
 // --- meta pages --------------------------------------------------------------
 
-// readMeta reads meta page i (0 or 1) into a private copy. Other processes
-// may be rewriting it; the caller decides whether the copy is consistent.
+// The meta pages are read through a data map the reader holds a
+// reference on: a transaction through its own map, anything else through
+// the current map with a reference taken for the read (readMeta,
+// pickMeta). Loading Env.dmap without a reference would race with
+// SetMapSize and Close, which release the map and unmap it once its last
+// reference goes.
+
+// readMeta reads meta page i (0 or 1) into a private copy, through the
+// current map. Other processes may be rewriting it; the caller decides
+// whether the copy is consistent.
 func (e *Env) readMeta(i int) (format.Meta, error) {
+	m, err := e.acquireMap()
+	if err != nil {
+		return format.Meta{}, err
+	}
+	defer m.Release()
+	return e.readMetaIn(m, i)
+}
+
+// readMetaIn is readMeta through m, on which the caller holds a reference.
+func (e *Env) readMetaIn(m *sys.DataMap, i int) (format.Meta, error) {
 	var buf [format.MetaSize]byte
-	m := e.dmap.Load()
-	if m == nil || !m.ReadMeta(i*e.pageSize+e.layout.MetaOffset(), buf[:]) {
+	if !m.ReadMeta(i*e.pageSize+e.layout.MetaOffset(), buf[:]) {
 		return format.Meta{}, format.Corrupted
 	}
 	meta, ok := format.ReadMeta(buf[:])
@@ -462,13 +542,13 @@ func (e *Env) readMeta(i int) (format.Meta, error) {
 	return meta, nil
 }
 
-// metaIDs is mm_last_pg and mm_txnid of meta page i, not validated: what
+// metaIDsIn is mm_last_pg and mm_txnid of meta page i, read through m (on
+// which the caller holds a reference), not validated: what
 // mdb_env_write_meta keeps of the page it overwrites (to restore it if the
 // write fails).
-func (e *Env) metaIDs(i int) (lastPgno, txnid uint64, ok bool) {
+func (e *Env) metaIDsIn(m *sys.DataMap, i int) (lastPgno, txnid uint64, ok bool) {
 	var buf [16]byte
-	m := e.dmap.Load()
-	if m == nil || !m.ReadMeta(i*e.pageSize+e.layout.MetaOffset()+format.MetaLastPgno, buf[:]) {
+	if !m.ReadMeta(i*e.pageSize+e.layout.MetaOffset()+format.MetaLastPgno, buf[:]) {
 		return 0, 0, false
 	}
 	a, _ := format.Get64(buf[:], 0)
@@ -476,14 +556,25 @@ func (e *Env) metaIDs(i int) (lastPgno, txnid uint64, ok bool) {
 	return a, b, true
 }
 
-// pickMeta is mdb_env_pick_meta: the newer of the two meta pages.
+// pickMeta is mdb_env_pick_meta: the newer of the two meta pages, through
+// the current map.
 func (e *Env) pickMeta() (format.Meta, error) {
-	var metas [2]format.Meta
-	var err error
-	if metas[0], err = e.readMeta(0); err != nil {
+	m, err := e.acquireMap()
+	if err != nil {
 		return format.Meta{}, err
 	}
-	if metas[1], err = e.readMeta(1); err != nil {
+	defer m.Release()
+	return e.pickMetaIn(m)
+}
+
+// pickMetaIn is pickMeta through m, on which the caller holds a reference.
+func (e *Env) pickMetaIn(m *sys.DataMap) (format.Meta, error) {
+	var metas [2]format.Meta
+	var err error
+	if metas[0], err = e.readMetaIn(m, 0); err != nil {
+		return format.Meta{}, err
+	}
+	if metas[1], err = e.readMetaIn(m, 1); err != nil {
 		return format.Meta{}, err
 	}
 	return metas[format.PickNewest(&metas)], nil
@@ -551,7 +642,12 @@ func (e *Env) Stat() (Stat, error) {
 
 // Info is mdb_env_info.
 func (e *Env) Info() (Info, error) {
-	m, err := e.pickMeta()
+	pin, err := e.pin()
+	if err != nil {
+		return Info{}, err
+	}
+	defer pin.Release()
+	m, err := e.pickMetaIn(pin)
 	if err != nil {
 		return Info{}, err
 	}
@@ -645,8 +741,15 @@ func (e *Env) SetMapSize(size int64) error {
 		return syscall.EINVAL
 	}
 	defer e.writerMu.Unlock()
+	// The writer lock keeps other SetMapSize calls out; only Close can
+	// replace the map meanwhile (with nil).
+	cur, err := e.pin()
+	if err != nil {
+		return err
+	}
+	defer cur.Release()
 	e.writer.hasLastMeta = false
-	meta, err := e.pickMeta()
+	meta, err := e.pickMetaIn(cur)
 	if err != nil {
 		return err
 	}
@@ -657,13 +760,16 @@ func (e *Env) SetMapSize(size int64) error {
 	size = max(size, int64(meta.LastPgno+1)*int64(e.pageSize))
 	e.mapMu.Lock()
 	defer e.mapMu.Unlock()
-	m, err := sys.MapReadOnly(e.dataFile, int(size), e.flags.Load()&format.NoReadahead != 0, format.NumMetas*e.pageSize)
+	m, err := e.newMap(size)
 	if err != nil {
 		return err
 	}
-	if old := e.dmap.Swap(m); old != nil {
-		old.Release()
+	if !e.dmap.CompareAndSwap(cur, m) {
+		// Closed meanwhile.
+		m.Release()
+		return syscall.EINVAL
 	}
+	cur.Release() // the environment's reference
 	e.mapSize.Store(size)
 	return nil
 }
@@ -675,6 +781,11 @@ func (e *Env) ReaderList() []format.ReaderInfo {
 	if !e.lockFile {
 		return nil
 	}
+	m, err := e.pin()
+	if err != nil {
+		return nil
+	}
+	defer m.Release()
 	return e.lock.ReaderList()
 }
 
@@ -684,6 +795,11 @@ func (e *Env) ReaderCheck() (int, error) {
 	if !e.lockFile {
 		return 0, nil
 	}
+	m, err := e.pin()
+	if err != nil {
+		return 0, err
+	}
+	defer m.Release()
 	return e.lock.ReaderCheck()
 }
 
