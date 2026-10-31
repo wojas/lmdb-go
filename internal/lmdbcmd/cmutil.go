@@ -6,7 +6,7 @@ import (
 	"io"
 	"os"
 
-	"github.com/PowerDNS/lmdb-go/lmdb"
+	"github.com/PowerDNS/lmdb-go-rewrite/lmdb"
 )
 
 var flagPrintVersion bool

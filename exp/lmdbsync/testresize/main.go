@@ -27,8 +27,8 @@ import (
 	"os"
 	"time"
 
-	"github.com/PowerDNS/lmdb-go/exp/lmdbsync"
-	"github.com/PowerDNS/lmdb-go/lmdb"
+	"github.com/PowerDNS/lmdb-go-rewrite/exp/lmdbsync"
+	"github.com/PowerDNS/lmdb-go-rewrite/lmdb"
 )
 
 func main() {

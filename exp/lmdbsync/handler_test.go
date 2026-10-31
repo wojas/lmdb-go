@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/PowerDNS/lmdb-go/internal/lmdbtest"
-	"github.com/PowerDNS/lmdb-go/lmdb"
+	"github.com/PowerDNS/lmdb-go-rewrite/internal/lmdbtest"
+	"github.com/PowerDNS/lmdb-go-rewrite/lmdb"
 )
 
 type testHandler struct {

@@ -1,3 +1,3 @@
-module github.com/PowerDNS/lmdb-go
+module github.com/PowerDNS/lmdb-go-rewrite
 
-go 1.17
+go 1.22

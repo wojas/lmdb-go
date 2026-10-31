@@ -112,7 +112,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/PowerDNS/lmdb-go/lmdb"
+	"github.com/PowerDNS/lmdb-go-rewrite/lmdb"
 )
 
 // Env wraps an *lmdb.Env, receiving all the same methods and proxying some to
