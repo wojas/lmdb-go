@@ -274,11 +274,19 @@ func (t *Txn) end(keep bool) error {
 		// Handles fail with EINVAL until the next write transaction takes
 		// the table up again (initDBs).
 		t.dbs, t.ndbs = t.dbs[:0], 0
-		// The map last: its release may tear the environment down (a
-		// write transaction left open across Close).
+		// Once the writer locks are released, t belongs to the next write
+		// transaction (writerState.txn): take the map off it before. The
+		// map is released last: that may tear the environment down (a
+		// write transaction left open across Close), and the unlock needs
+		// the lock region.
+		m := t.dmap
+		t.dmap = nil
 		err := e.lock.UnlockWriter()
 		e.writerMu.Unlock()
-		t.releaseMap()
+		if testHookWriterUnlocked != nil {
+			testHookWriterUnlocked(e)
+		}
+		m.Release()
 		return err
 	}
 	return nil
@@ -1063,3 +1071,8 @@ func (c *Cursor) Del(flags uint32) error {
 	}
 	return t.delAt(mainRef(slot), flags)
 }
+
+// testHookWriterUnlocked, if set (tests only), runs in the end of a
+// top-level write transaction right after the writer locks are released,
+// before the transaction's map is.
+var testHookWriterUnlocked func(e *Env)
