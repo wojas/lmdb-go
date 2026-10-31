@@ -372,6 +372,11 @@ func TestEnv_ReaderList_idleSlot(t *testing.T) {
 func TestEnv_View_concurrentSlots(t *testing.T) {
 	env := setup(t)
 	defer clean(env, t)
+	// A reader that the scheduler leaves alone for a while pins its
+	// snapshot while the writer commits freely: room for that.
+	if err := env.SetMapSize(1 << 30); err != nil {
+		t.Fatal(err)
+	}
 	var db DBI
 	val := func(n uint64, k byte) []byte {
 		v := make([]byte, 200)
