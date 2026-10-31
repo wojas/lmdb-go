@@ -106,8 +106,18 @@ func (p Page) OverflowPages() uint32 {
 func (p Page) NumKeys() int { return p.L.NumKeys(p.Lower()) }
 
 // SizeLeft is SIZELEFT: free bytes between pointers and nodes.
+//
+// C computes (indx_t)(mp_upper - mp_lower), modulo 2^16. That matters for
+// P_LEAF2 pages, which only count with the two fields (mp_upper grows past
+// the page end, and wraps on 64 KiB pages, with 1-byte items, while the
+// difference stays exact; see AddLeaf2Key): their free space is the
+// wrapping difference, as in C. On other pages mp_upper is an offset, and
+// a corrupt one below mp_lower yields 0.
 func (p Page) SizeLeft() int {
 	u, l := p.Upper(), p.Lower()
+	if p.IsLeaf2() {
+		return int(u - l)
+	}
 	if u < l {
 		return 0
 	}
@@ -352,7 +362,8 @@ func (b PageBuilder) AddNode(indx int, key []byte, data NodeData, flags uint16) 
 
 // AddLeaf2Key inserts a key into a P_LEAF2 page at index indx, as the
 // IS_LEAF2 branch of mdb_node_add does (keys shift up, mp_lower += 2,
-// mp_upper -= ksize - 2).
+// mp_upper -= ksize - 2, modulo 2^16 as in C: mp_upper grows for 1-byte
+// keys).
 func (b PageBuilder) AddLeaf2Key(indx int, key []byte) bool {
 	pg := b.Page()
 	nkeys, lower, upper, sizeLeft := pg.NumKeys(), pg.Lower(), pg.Upper(), pg.SizeLeft()
@@ -363,6 +374,9 @@ func (b PageBuilder) AddLeaf2Key(indx int, key []byte) bool {
 	hdr := b.L.PageHdr
 	start := hdr + indx*ksize
 	end := hdr + nkeys*ksize
+	if end+ksize > len(b.B) {
+		return false
+	}
 	copy(b.B[start+ksize:end+ksize], b.B[start:end])
 	copy(b.B[start:], key)
 	b.SetLower(lower + 2)

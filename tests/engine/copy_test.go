@@ -12,8 +12,8 @@ import (
 )
 
 // fillEnv writes named databases of several kinds (plain with overflow
-// values, DUPSORT with sub-pages and sub-DBs, DUPFIXED) and deletes some
-// items so the free list is not empty.
+// values, DUPSORT with sub-pages and sub-DBs, DUPFIXED, DUPFIXED with
+// 1-byte items) and deletes some items so the free list is not empty.
 func fillEnv(t *testing.T, dir string, f format.Format, ps int) {
 	env, err := eng.Open(dir, eng.Options{Format: f, PageSize: ps, MapSize: 256 << 20, MaxDBs: 8, Flags: format.NoLock | format.NoSync})
 	if err != nil {
@@ -28,6 +28,7 @@ func fillEnv(t *testing.T, dir string, f format.Format, ps int) {
 		plain, _ := txn.OpenDBI([]byte("plain"), format.Create)
 		dups, _ := txn.OpenDBI([]byte("dups"), format.Create|format.DupSort)
 		fixed, _ := txn.OpenDBI([]byte("fixed"), format.Create|format.DupSort|format.DupFixed)
+		fixed1, _ := txn.OpenDBI([]byte("fixed1"), format.Create|format.DupSort|format.DupFixed)
 		for i := 0; i < 3000; i++ {
 			k := []byte(fmt.Sprintf("k%06d-%d", i*7919%3000, round))
 			v := bytes.Repeat([]byte{byte(i)}, 10+i%300)
@@ -43,6 +44,18 @@ func fillEnv(t *testing.T, dir string, f format.Format, ps int) {
 		}
 		for i := 0; i < 3000; i += 3 {
 			_ = txn.Del(plain, []byte(fmt.Sprintf("k%06d-%d", i, round)), nil)
+		}
+		// 1-byte items: mp_upper of their P_LEAF2 sub-pages and pages lies
+		// past the end, and the keys' size takes them to sub-DBs on 1 KiB
+		// pages (mdb_page_copy of such a page in the compacting copy).
+		for k := 0; k < 8; k++ {
+			key := append(bytes.Repeat([]byte("f"), 300), byte('a'+k))
+			for v := round; v < 256; v += 1 + k%3 {
+				must(t, txn.Put(fixed1, key, []byte{byte(v)}, 0))
+			}
+			for v := round; v < 256 && k%2 == 1; v += 5 {
+				_ = txn.Del(fixed1, key, []byte{byte(v)})
+			}
 		}
 		must(t, txn.Commit())
 	}

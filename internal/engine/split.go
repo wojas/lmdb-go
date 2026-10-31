@@ -457,8 +457,8 @@ func (t *Txn) splitLeaf2(mc cref, mp, rp uint64, src, newkey []byte, newindx, sp
 	hdr := l.PageHdr
 	x := newindx - splitIndx
 	split := hdr + splitIndx*ksize
-	rsize := (nkeys - splitIndx) * ksize
-	lsize := (nkeys - splitIndx) * 2
+	moved := nkeys - splitIndx
+	rsize := moved * ksize
 	if split < 0 || rsize < 0 || split+rsize > len(src) || ksize < 1 {
 		return nil, format.Corrupted
 	}
@@ -476,14 +476,14 @@ func (t *Txn) splitLeaf2(mc cref, mp, rp uint64, src, newkey []byte, newindx, sp
 	if err != nil {
 		return nil, err
 	}
-	setLower(l, page, pLower(l, page)-lsize)
-	setUpper(l, page, pUpper(l, page)+rsize-lsize)
+	// C's mp_lower -= lsize; mp_upper += rsize - lsize and the reverse on
+	// rp, wrapping as C's unsigned arithmetic does (1-byte items).
+	leaf2Count(l, page, -moved, ksize)
 	rpage, err := t.dirtyMut(rp)
 	if err != nil {
 		return nil, err
 	}
-	setLower(l, rpage, pLower(l, rpage)+lsize)
-	setUpper(l, rpage, pUpper(l, rpage)-(rsize-lsize))
+	leaf2Count(l, rpage, moved, ksize)
 	if x < 0 {
 		// The new key goes left: all keys from splitIndx move right.
 		copy(rpage[hdr:hdr+rsize], keys)
@@ -493,8 +493,7 @@ func (t *Txn) splitLeaf2(mc cref, mp, rp uint64, src, newkey []byte, newindx, sp
 		}
 		copy(page[ins+ksize:split+ksize], page[ins:split])
 		copy(page[ins:ins+ksize], newkey)
-		setLower(l, page, pLower(l, page)+2)
-		setUpper(l, page, pUpper(l, page)-(ksize-2))
+		leaf2Count(l, page, 1, ksize)
 	} else {
 		ins := hdr + x*ksize
 		if ins+ksize+rsize-x*ksize > len(rpage) || x*ksize > len(keys) {
@@ -503,8 +502,7 @@ func (t *Txn) splitLeaf2(mc cref, mp, rp uint64, src, newkey []byte, newindx, sp
 		copy(rpage[hdr:ins], keys[:x*ksize])
 		copy(rpage[ins:ins+ksize], newkey)
 		copy(rpage[ins+ksize:], keys[x*ksize:])
-		setLower(l, rpage, pLower(l, rpage)+2)
-		setUpper(l, rpage, pUpper(l, rpage)-(ksize-2))
+		leaf2Count(l, rpage, 1, ksize)
 		w := t.cur(mc)
 		w.ki[w.top] = uint16(x)
 	}

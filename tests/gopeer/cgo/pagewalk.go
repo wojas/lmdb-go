@@ -120,6 +120,40 @@ func (l *layout) pages(p []byte) uint32   { return rd32(p, l.hdr-4) }
 func (l *layout) emptyLower() int         { return l.hdr - l.base }
 func (l *layout) numKeys(p []byte) int    { return (l.lower(p) - l.emptyLower()) >> 1 }
 func (l *layout) ptr(p []byte, i int) int { return int(rd16(p, l.hdr+2*i)) + l.base }
+
+// pageCountsOK checks mp_lower and mp_upper of a page of psize bytes: they
+// bound the pointers and nodes, except on P_LEAF2 pages (leaf2OK).
+func (l *layout) pageCountsOK(p []byte, psize int, leaf2 bool) bool {
+	if leaf2 {
+		return l.leaf2OK(p, psize)
+	}
+	return l.lower(p) >= l.emptyLower() && l.lower(p) <= l.upper(p) && l.upper(p)+l.base <= psize
+}
+
+// subpageCountsOK is pageCountsOK for a sub-page of dsize bytes, of which
+// only mp_lower is checked (as C's audit does) unless it is a P_LEAF2
+// sub-page (dupfixed).
+func (l *layout) subpageCountsOK(sp []byte, dsize int, dupfixed bool) bool {
+	if dupfixed {
+		return l.leaf2OK(sp, dsize)
+	}
+	return l.lower(sp) >= l.emptyLower() && l.lower(sp)+l.base <= dsize
+}
+
+// leaf2OK checks the header of a P_LEAF2 page or sub-page of size bytes:
+// packed items of mp_pad bytes, no pointers, no nodes. mp_lower and
+// mp_upper only count (mdb_node_add: mp_lower += sizeof(indx_t), mp_upper
+// -= ksize - sizeof(indx_t), unsigned and stored modulo 2^16), so mp_upper
+// lies past the end of a page of 1-byte items. What holds: the items fit,
+// and SIZELEFT is exactly the space after them.
+func (l *layout) leaf2OK(p []byte, size int) bool {
+	if l.lower(p) < l.emptyLower() {
+		return false
+	}
+	used := l.hdr + l.numKeys(p)*int(l.pad(p))
+	return used <= size && int(rd16(p, l.hdr-2)-rd16(p, l.hdr-4)) == size-used
+}
+
 func (l *layout) nodeDataOff(ksize int) int { // NODEDATA(node) - node
 	if l.evenKeys {
 		return nodeSize + (ksize+1)&^1
@@ -425,8 +459,7 @@ func (w *walker) leafNode(t *tree, page []byte, n node) {
 			want |= pLeaf2
 		}
 		l := w.l
-		if int(n.dsize) < l.hdr || l.flags(sp)&^l.subpDirty != want ||
-			l.lower(sp) < l.emptyLower() || l.lower(sp)+l.base > int(n.dsize) {
+		if int(n.dsize) < l.hdr || l.flags(sp)&^l.subpDirty != want || !l.subpageCountsOK(sp, int(n.dsize), t.dupfixed) {
 			w.fail("bad sub-page in DB %s (flags 0x%x, %d bytes)", w.names[t.use-useDB],
 				l.flags(page[n.dataOff:]), n.dsize)
 			return
@@ -464,7 +497,7 @@ func (w *walker) walkPage(t *tree, pgno uint64, level int) {
 		return
 	}
 	w.checkTxnid(pgno, page)
-	if l.lower(page) < l.emptyLower() || l.lower(page) > l.upper(page) || l.upper(page)+l.base > w.psize {
+	if !l.pageCountsOK(page, w.psize, flags&pLeaf2 != 0) {
 		w.fail("page %d: bad lower/upper %d/%d", pgno, l.lower(page), l.upper(page))
 		return
 	}
