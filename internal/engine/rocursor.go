@@ -46,13 +46,15 @@ type Cursor struct {
 // the transaction. EINVAL for the free DB in a write transaction, as in C.
 func (t *Txn) OpenCursor(dbi DBI) (*Cursor, error) {
 	c := new(Cursor)
-	if err := t.openCursorInto(c, dbi); err != nil {
+	if err := t.OpenCursorInto(c, dbi); err != nil {
 		return nil, err
 	}
 	return c, nil
 }
 
-func (t *Txn) openCursorInto(c *Cursor, dbi DBI) error {
+// OpenCursorInto is OpenCursor into a caller's Cursor (for pooled
+// cursors; nothing is allocated for a read transaction).
+func (t *Txn) OpenCursorInto(c *Cursor, dbi DBI) error {
 	if t.w != nil {
 		id, err := t.openWriteCursor(dbi)
 		if err != nil {
@@ -85,7 +87,7 @@ func (c *Cursor) Renew(t *Txn) error {
 	if t.w != nil || (c.txn != nil && c.txn.w != nil) {
 		return syscall.EINVAL
 	}
-	return t.openCursorInto(c, c.dbi)
+	return t.OpenCursorInto(c, c.dbi)
 }
 
 // Close is mdb_cursor_close. Closing a cursor of an ancestor transaction
