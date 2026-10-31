@@ -16,7 +16,7 @@ Status of the stage-1 engine port (PLAN.md, agent E). rlmdb sources:
 | `txn.go` | `core/txn.rs` | done |
 | `cursor.go` | `core/cursor.rs` | done |
 | `rocursor.go` | `core/ro_cursor.rs` + handle cursors of `txn_rw.rs` | done |
-| `dirty.go` | `core/dirty.rs` | done (single-page pool only) |
+| `dirty.go` | `core/dirty.rs` | done (page pool for single pages and overflow runs) |
 | `wcursor.go` | `core/wcursor.rs` | done |
 | `txnrw.go` | `core/txn_rw.rs` | done |
 | `pageops.go` | `core/page_ops.rs` | done |
@@ -69,12 +69,12 @@ Status of the stage-1 engine port (PLAN.md, agent E). rlmdb sources:
 * The data map is reference counted (`sys.DataMap`): the env holds one
   reference while it is current, every transaction one (rlmdb's
   `Arc<DataMap>`); `SetMapSize` keeps live readers' slices valid.
-* rlmdb's buffer pools are allocation optimisations; only the single-page
-  pool is ported. Scratch buffers of puts and splits are plain
-  allocations. Stage 3 measures.
+* rlmdb's buffer pools and spare containers are allocation
+  optimisations; stage 3 ported them in Go form (see "Stage 3" below).
 * Commit gathers each contiguous run into one reused buffer and writes it
   with one `pwrite` (the `syscall` package has no `pwritev`): same bytes,
-  one more copy.
+  one more copy. Stage 3 tried a raw `pwritev` on Linux: no measurable
+  gain (tmpfs), not kept.
 * The copy target is not opened with `O_DIRECT`/`F_NOCACHE` (rlmdb does,
   best effort): no effect on the bytes written.
 * `mdb_txn_commit`/`mdb_txn_abort` of a parent with an active child commit
@@ -109,17 +109,48 @@ Status of the stage-1 engine port (PLAN.md, agent E). rlmdb sources:
 
 ### Stage 3: performance (divergences from rlmdb's structure)
 
+Measurements and what is left: `tests/bench/RESULTS.md`. Allocation
+counts of the API's hot paths are pinned by `lmdb/alloc_test.go`.
+
 * One `Txn` per environment for top-level write transactions
-  (`writerState.txn`), reused by each as C reuses `me_txn0`, with its DB
+  (`writerState.txn`), reused by each as C reuses `me_txn0`: its DB
   table, dirty list and page pool (C's `me_dpages`; it keeps as many spare
   pages as the last transaction used, at most 256 MiB), cursor arena,
-  spill set and page lists. A `Txn` must not be used after its `Commit` or
-  `Abort` once another write transaction began (package `lmdb` drops its
-  reference at the end, as lmdb-go did with C's); cursors of an ended
-  transaction still fail cleanly (arena generations). rlmdb allocates
-  these per transaction: in Rust that is cheap, in Go the garbage (a few
-  16 KiB pages per commit on a small heap) made the collector run every
-  few commits.
+  spill set, page lists and every scratch buffer below. rlmdb keeps the
+  containers in a `SpareTxn` (bounded to 4096 entries and 16 cursors);
+  here the whole `Txn` stays, unbounded except for the pool, as the
+  owner's allocation rules ask. A `Txn` must not be used after its
+  `Commit` or `Abort` once another write transaction began (package
+  `lmdb` drops its reference at the end, as lmdb-go did with C's);
+  cursors of an ended transaction still fail cleanly (arena generations).
+  The arena hands slots out in the order a new one would, so cursor
+  fixups run in the same order as before.
+* A parent keeps its last nested transaction's memory (`spareChild`) for
+  the next child; a child borrows its parent's spare-page lists by taking
+  them over (and gives them back), instead of copying them buffer by
+  buffer; the merge of a child's dirty list builds into the index it
+  replaced last time.
+* Scratch space of the write path lives in the write transaction
+  (`wstate`): a LIFO stack of page buffers for the temporary copies of
+  splits and merges (they nest as the operations recurse up the tree),
+  the node offsets of a split per recursion depth, the keys and value of
+  `nodeMove`/separator updates, the DUPSORT put's old data, new sub-page
+  and sub-DB record (C's `me_pbuf`), the free DB keys of `reclaimRun` and
+  `freelistSave` (distinct: the latter's puts can call the former; a key
+  passed to a comparator through a function value escapes, so a local
+  array would be heap-allocated), the flush list, `me_pghead`'s memory
+  and `freelistSave`'s copies. rlmdb allocates most of these per call.
+* Overflow runs are pooled by length like single pages (C mallocs and
+  frees them).
+* `mdb_page_touch` copies a page as C's `mdb_page_copy` does, skipping
+  the gap between `mp_lower` and `mp_upper` (zeroed instead of left as
+  the buffer was; rlmdb copies the whole page).
+* Tried and not kept: a branch-free binary search in `searchPage`. A
+  lower-bound search is wrong where C's probe sequence matters (pages
+  need not be sorted after the C behaviours the port keeps, e.g. keys
+  replaced in place; the write differential caught it), and masking C's
+  own step made lookups 15-40% slower on Apple M1: with the branch the
+  CPU speculates into the next probe's load.
 
 ## Ledger: deviations from C and rlmdb
 
@@ -152,10 +183,8 @@ Status of the stage-1 engine port (PLAN.md, agent E). rlmdb sources:
 * `MemLock` doubles as the test stand-in for the lock file; the real
   `internal/lockfile` is wired in at stage 2. Cross-process tests (C and
   Go on one environment at once) need it.
-* rlmdb's run-buffer pool, scratch-buffer reuse and `SpareTxn` are not
-  ported (allocation only).
 * x86-64 Linux is cross-compiled and vetted, not run (no emulated run
   yet).
 * The read-only-file-system path (OpenLock returning nil) is exercised
   only through NoLock.
-* Performance: measured only roughly (`go test -bench .`); stage 3.
+* Performance: see `tests/bench/RESULTS.md` (stage 3).
