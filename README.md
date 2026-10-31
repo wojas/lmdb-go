@@ -51,7 +51,8 @@ commands in `cmd/` and `exp/cmd/`. Read the API documentation with
   reader table, and on Linux a writer that dies holding the lock is
   recovered from, as between C processes.
 * **Platforms.** Linux (glibc and musl; arm64 and x86-64) and macOS. Windows
-  is planned.
+  is planned. 64-bit only: 32-bit builds stop with a compile error; 64-bit
+  big-endian targets build but are untested.
 * **`NoLock`** only removes the locking between processes. Within the
   process, write transactions are still serialised and pages that a live
   reader can see are never reused; opening one environment twice in a

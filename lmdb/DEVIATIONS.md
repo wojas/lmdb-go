@@ -148,6 +148,14 @@ differently from C is in `internal/engine/PORTING.md` and in rlmdb's
   the memory of ended ones (one small allocation each, for the handle).
 * **Windows** is not supported yet: the OS layer (`internal/sys`,
   `internal/lockfile`) has no Windows files. `error_windows.go` is kept.
+* **64-bit only.** lmdb-go v1 built and ran on 32-bit platforms with C
+  LMDB, whose 32-bit data files are a format of their own (the file
+  depends on `sizeof(size_t)`), not shared with 64-bit processes. This
+  implementation has only the 64-bit format, as rlmdb: a build for a
+  32-bit `GOARCH` (386, arm, mips, mipsle) fails with `undefined:
+  lmdb_requires_a_64_bit_platform` (`internal/format/arch_unsupported.go`).
+  64-bit big-endian targets (s390x, ppc64, mips64) build but are untested;
+  like C, files are in the host's byte order.
 
 ## Tests of lmdb-go v1 that were changed
 
