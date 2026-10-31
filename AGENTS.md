@@ -6,7 +6,8 @@ LMDB behind lmdb-go's public API, ported from **rlmdb**, the Rust rewrite
 of LMDB, and binary compatible with C LMDB: a C process, a Rust (rlmdb)
 process and a Go process must be able to use one environment at the same
 time. The package and module names are not decided. The module path
-`github.com/PowerDNS/lmdb-go-rewrite` is a placeholder; the package stays
+stays `github.com/PowerDNS/lmdb-go` (do not change it: the owner tests the
+port as a drop-in `replace` of lmdb-go v1); the package stays
 `lmdb`. Do not call the project "pure Go" anywhere (names, docs, commit
 messages) until that is established.
 
@@ -62,6 +63,14 @@ messages) until that is established.
    the style of `x/sys/unix`'s darwin files. Tests, oracles and benchmarks
    may use cgo, in separate packages or modules that the library does not
    import (for example a `tests/` or `bench/` module with its own `go.mod`).
+   Because the port keeps lmdb-go's module path, lmdb-go v1 (cgo) and the
+   port cannot be in one build. Code that runs against both imports
+   `github.com/PowerDNS/lmdb-go/lmdb` and is built twice: with a `go.mod`
+   that `replace`s the module with this repository (the port), and with a
+   second mod file (`go build -modfile=go.cgo.mod`) that requires the real
+   `v1.9.4` (cgo). Tests that need both in one process (in-process
+   differential tests) must use the C binaries from rlmdb or a helper
+   process instead.
 2. **Interoperability with C locking is an absolute must.** On Linux the
    writer and reader-table mutexes are glibc's process-shared robust
    `pthread_mutex_t`s inside the lock file; the Go implementation must

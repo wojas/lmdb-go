@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/PowerDNS/lmdb-go-rewrite/lmdb"
+	"github.com/PowerDNS/lmdb-go/lmdb"
 )
 
 func TestResize(t *testing.T) {

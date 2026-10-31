@@ -7,7 +7,7 @@ import (
 	"math/rand"
 	"time"
 
-	"github.com/PowerDNS/lmdb-go-rewrite/lmdb"
+	"github.com/PowerDNS/lmdb-go/lmdb"
 )
 
 // Handler can intercept errors returned by a transaction and handle them in an

@@ -9,7 +9,7 @@ import (
 	"runtime"
 	"time"
 
-	"github.com/PowerDNS/lmdb-go-rewrite/lmdb"
+	"github.com/PowerDNS/lmdb-go/lmdb"
 )
 
 // These values shouldn't actually be assigned to.  The are used as stand-ins
