@@ -131,7 +131,11 @@ messages) until that is established.
    `LICENSE.md` (lmdb-go, BSD), `LICENSE.mdb.md` (OpenLDAP Public License,
    which also covers the engine, a derivative of LMDB through rlmdb), the
    README's credits for the fork's history, and any copyright notices in
-   files you replace or port. New docs credit rlmdb and LMDB (Howard Chu,
+   files you replace or port. When porting lmdb-go's own files (the
+   public API), keep every existing declaration in place (same file,
+   order, signature line and doc comment) and only fill in the bodies, so
+   `git blame` survives; put new code in new files or after the existing
+   declarations. New docs credit rlmdb and LMDB (Howard Chu,
    Symas) as the sources of the engine. The pinned copy in
    `tests/cgolmdb` keeps the license headers of the C sources.
 
