@@ -25,12 +25,15 @@ The module declares Go 1.22; development and testing use Go 1.25.
 
 cgo is used only for the two locks LMDB shares between processes, the writer
 lock and the reader-table lock: libc pthread mutexes on Linux, POSIX named
-semaphores on macOS. Everything else is Go. A build without cgo
-(`CGO_ENABLED=0`) can only open environments with the `NoLock` flag;
-`Env.Open` without it returns `ErrNoSharedLocking`, and
+semaphores on macOS. Everything else is Go. On Linux, shared locking needs
+cgo: a build without cgo (`CGO_ENABLED=0`) can only open environments with
+the `NoLock` flag; `Env.Open` without it returns `ErrNoSharedLocking`, and
 `SharedLockingAvailable` reports which kind of build is running. Go turns cgo
 off by default when cross-compiling or when no C compiler is found: such a
-build compiles, but fails at `Env.Open`.
+Linux build compiles, but fails at `Env.Open`. On macOS, a cgo build (the
+default) takes the semaphores through cgo, and a build without cgo calls them
+in libSystem directly, as `golang.org/x/sys/unix` does for system calls; both
+work fully, so cross-compiling to macOS needs no C toolchain.
 
 The packages are those of lmdb-go: `lmdb`, `lmdbscan`, `exp/lmdbsync`, and the
 commands in `cmd/` and `exp/cmd/`. Read the API documentation with
@@ -48,7 +51,8 @@ commands in `cmd/` and `exp/cmd/`. Read the API documentation with
   reader table, and on Linux a writer that dies holding the lock is
   recovered from, as between C processes.
 * **Platforms.** Linux (glibc and musl; arm64 and x86-64) and macOS. Windows
-  is planned.
+  is planned. 64-bit only: 32-bit builds stop with a compile error; 64-bit
+  big-endian targets build but are untested.
 * **`NoLock`** only removes the locking between processes. Within the
   process, write transactions are still serialised and pages that a live
   reader can see are never reused; opening one environment twice in a

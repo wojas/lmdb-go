@@ -59,7 +59,7 @@ func sides(t *testing.T) []cside {
 	d := oracleDir(t)
 	probe, err := lockfile.Open(filepath.Join(t.TempDir(), "lock.mdb"), 0o644, 1, false, lockfile.LockV09)
 	if errors.Is(err, lockfile.ErrNoSharedLocks) {
-		t.Fatal("tests/lockfile needs a cgo build (CGO_ENABLED=1; cross-GOARCH builds default to 0)")
+		t.Fatal("tests/lockfile needs shared locking: on Linux a cgo build (CGO_ENABLED=1; cross-GOARCH builds default to 0)")
 	}
 	if err != nil {
 		t.Fatal(err)

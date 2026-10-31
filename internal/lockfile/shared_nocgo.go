@@ -1,10 +1,11 @@
-//go:build !cgo
+//go:build linux && !cgo
 
-// The counterpart of shared_cgo.go for builds without cgo: the shared locks
-// are libc objects (pthread mutexes, named semaphores), so without cgo
-// there are none. The package still builds; Open returns ErrNoSharedLocks,
-// and environments without a lock file (MDB_NOLOCK) need nothing from this
-// package.
+// The counterpart of shared_cgo.go for Linux builds without cgo: the
+// shared locks are pthread mutexes, which only cgo reaches (their size and
+// protocol are the C library's), so without cgo there are none. The package
+// still builds; Open returns ErrNoSharedLocks, and environments without a
+// lock file (MDB_NOLOCK) need nothing from this package. (macOS builds
+// without cgo have shared locks: sem_libsystem_darwin.go.)
 
 package lockfile
 

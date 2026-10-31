@@ -106,8 +106,8 @@ func NewEnv() (*Env, error) {
 // requested with SetFormat, or the process-wide default (V09 unless changed).
 // If the on-disk format conflicts with an explicitly requested format, Open
 // fails with ErrFormatConflict.  Without the NoLock flag Open uses the
-// environment's lock file, which a program built without cgo cannot: Open
-// returns ErrNoSharedLocking then (see SharedLockingAvailable).  A failed
+// environment's lock file, which a Linux program built without cgo cannot:
+// Open returns ErrNoSharedLocking then (see SharedLockingAvailable).  A failed
 // Open may be retried.
 //
 // See mdb_env_open.

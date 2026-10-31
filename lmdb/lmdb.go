@@ -22,10 +22,12 @@ DEVIATIONS.md lists where behaviour differs from lmdb-go v1 on C LMDB.
 
 Everything but the two locks that LMDB shares between processes (the writer
 lock and the reader-table lock: pthread mutexes on Linux, POSIX semaphores on
-macOS) is Go.  The locks are libc objects, taken through cgo in package
-internal/lockfile.  A program built without cgo (CGO_ENABLED=0) can only open
-environments with the NoLock flag; Env.Open without it returns
-ErrNoSharedLocking.  SharedLockingAvailable tells which kind of build this is.
+macOS) is Go.  The locks are libc objects, taken in package internal/lockfile:
+on Linux through cgo; on macOS through cgo in a cgo build (the default) and
+through libSystem directly in a build without cgo.  A Linux program built
+without cgo (CGO_ENABLED=0) can only open environments with the NoLock flag;
+Env.Open without it returns ErrNoSharedLocking.  SharedLockingAvailable tells
+which kind of build this is.
 
 # LMDB versions
 

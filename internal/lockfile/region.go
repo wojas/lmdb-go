@@ -22,15 +22,16 @@ import (
 	"github.com/PowerDNS/lmdb-go/internal/format"
 )
 
-// ErrNoSharedLocks is returned by Open in a build without cgo: the shared
-// writer and reader-table locks are libc objects (pthread mutexes, POSIX
-// semaphores), reached through cgo. Without cgo only environments without a
-// lock file (MDB_NOLOCK) can be used.
-var ErrNoSharedLocks = errors.New("lockfile: shared locking needs a cgo build (CGO_ENABLED=1); without cgo use NoLock")
+// ErrNoSharedLocks is returned by Open in a Linux build without cgo: the
+// shared writer and reader-table locks are pthread mutexes there, reached
+// through cgo. Without cgo only environments without a lock file
+// (MDB_NOLOCK) can be used. (macOS builds have the locks with and without
+// cgo.)
+var ErrNoSharedLocks = errors.New("lockfile: shared locking on Linux needs a cgo build (CGO_ENABLED=1); without cgo use NoLock")
 
 // SharedLocksAvailable reports whether this build can take the shared
-// locks, i.e. whether Open can succeed: true in a cgo build, false
-// otherwise.
+// locks, i.e. whether Open can succeed: true on macOS, and on Linux in a
+// cgo build.
 func SharedLocksAvailable() bool { return sharedLocksAvailable }
 
 // Region is an open lock file: its mapping, the two shared locks and this

@@ -60,19 +60,35 @@ messages) until that is established.
 
 1. **cgo only for the shared locks.** The writer and reader-table locks
    are libc objects (Linux: process-shared robust `pthread_mutex_t`s inside
-   the lock file; macOS: POSIX named semaphores). They are taken and
-   released through libc via cgo, in one small file pair in
-   `internal/lockfile` selected by the standard `cgo` build constraint
-   (`//go:build cgo` / `//go:build !cgo`; no extra build tags). That keeps
-   interop exact on glibc, musl and macOS. The size of `pthread_mutex_t`
-   (which moves the reader table) comes from cgo, not from a table.
+   the lock file; macOS: POSIX named semaphores), taken and released
+   through libc, which keeps interop exact on glibc, musl and macOS. They
+   live in `internal/lockfile`, selected by the standard `cgo` build
+   constraint only (no extra build tags):
+   * Linux: cgo, in one small file pair (`shared_cgo.go` /
+     `shared_nocgo.go`: `//go:build linux && cgo` / `linux && !cgo`). The
+     size of `pthread_mutex_t` (which moves the reader table) comes from
+     cgo, not from a table. Built with `CGO_ENABLED=0`, the library
+     compiles and works with `NoLock` (C's `MDB_NOLOCK`: no lock file at
+     all); `Env.Open` without `NoLock` returns a clear error saying that
+     shared locking on Linux needs a cgo build.
+   * macOS: `sem_darwin.go` on one small set of semaphore calls with two
+     implementations, cgo in a cgo build (`sem_cgo_darwin.go`, the
+     default) and libSystem stubs in a build without cgo
+     (`sem_libsystem_darwin.go` and its `.s` trampolines: the
+     `golang.org/x/sys/unix` mechanism, `//go:cgo_import_dynamic` plus
+     `//go:linkname` to `syscall.syscall` / `syscall.syscall6`). macOS
+     builds therefore share locks with C with and without cgo, and
+     cross-compile to macOS without a C toolchain. Both implementations
+     must pass the same tests (`sem_darwin_test.go`, and `tests/lockfile`
+     against C): run them once normally and once with `CGO_ENABLED=0`.
+     Keep the cgo path: should a Go release break that linkname (a link
+     error in `CGO_ENABLED=0` macOS builds), cgo builds are unaffected. No
+     other runtime linkname, and no third-party package (purego) for this.
+
    Everything else (B-tree, mmap, file I/O, fsync, `fcntl` record locks)
-   is Go using `syscall` / `golang.org/x/sys/unix`, without cgo. Built with
-   `CGO_ENABLED=0`, the library compiles and works with `NoLock` (C's
-   `MDB_NOLOCK`: no lock file at all); `Env.Open` without `NoLock` returns
-   a clear error saying that shared locking needs a cgo build. No cgo call
-   on the read path: reader slots the process already owns are reused
-   without the reader mutex, as rlmdb does.
+   is Go using `syscall` / `golang.org/x/sys/unix`, without cgo. No cgo or
+   semaphore call on the read path: reader slots the process already owns
+   are reused without the reader mutex, as rlmdb does.
    The cgo reference lives in exactly one place: the nested module
    `tests/` (`module github.com/PowerDNS/lmdb-go/tests`, `replace`s the
    parent with `../`). Its package `tests/cgolmdb` is a pinned copy of
@@ -152,9 +168,12 @@ messages) until that is established.
   anything OS-, layout- or lock-related; musl and x86-64 (emulated) only
   when the change touches libc-dependent code (lock file layouts, the cgo
   lock calls, `internal/sys`, build constraints) or cross-process
-  behaviour. Pure engine, API or test changes need the local target plus
-  one other platform run at most. The full matrix (macOS, glibc arm64,
-  glibc x86-64, musl, `CGO_ENABLED=0`) runs once, before a stage or task is declared done.
+  behaviour. A change to the macOS lock calls runs on macOS with and
+  without cgo, and, since each architecture has its own trampolines,
+  also with `GOARCH=amd64` (Rosetta). Pure engine, API or test changes
+  need the local target plus one other platform run at most. The full
+  matrix (macOS, glibc arm64, glibc x86-64, musl, `CGO_ENABLED=0`) runs
+  once, before a stage or task is declared done.
   Run slow targets in the background while continuing other work rather
   than waiting on them.
 * musl is supported: run the Linux tests in Alpine as well

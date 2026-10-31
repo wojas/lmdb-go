@@ -15,11 +15,12 @@ import (
 var optNoLock = &lmdbtest.EnvOptions{Flags: lmdb.NoLock}
 
 // requireLockFile skips a test that opens an environment with a lock file
-// in a build without cgo, which cannot (lmdb.ErrNoSharedLocking).
+// in a build without shared locking (Linux without cgo), which cannot
+// (lmdb.ErrNoSharedLocking).
 func requireLockFile(t *testing.T) {
 	t.Helper()
 	if !lmdb.SharedLockingAvailable() {
-		t.Skip("needs a lock file: a cgo build")
+		t.Skip("needs a lock file: shared locking (on Linux, a cgo build)")
 	}
 }
 

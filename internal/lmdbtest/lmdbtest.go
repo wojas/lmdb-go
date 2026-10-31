@@ -76,7 +76,8 @@ func NewEnv(opt *EnvOptions) (env *lmdb.Env, err error) {
 		}
 	}
 	if !lmdb.SharedLockingAvailable() {
-		// A build without cgo opens only environments without a lock file.
+		// A build without shared locking (Linux without cgo) opens only
+		// environments without a lock file.
 		flags |= lmdb.NoLock
 	}
 	err = env.Open(dir, flags, 0644)

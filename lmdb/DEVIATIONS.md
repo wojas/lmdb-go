@@ -53,12 +53,14 @@ differently from C is in `internal/engine/PORTING.md` and in rlmdb's
   rlmdb's engine says `MDB_INVALID`). `PrevSnapshot` is not implemented
   (rlmdb has no such feature): `Open` fails with `EINVAL` for either
   format, where v2's 1.0 engine opens the previous snapshot.
-* **Builds without cgo.** The writer and reader-table locks shared with
-  other processes are libc objects reached through cgo
-  (`internal/lockfile`). Built with `CGO_ENABLED=0`, `Env.Open` without
-  `NoLock` returns `ErrNoSharedLocking` before touching the file system;
-  `NoLock` environments work. `SharedLockingAvailable` says which kind of
-  build is running.
+* **Builds without cgo.** lmdb-go v1 did not build without cgo. Here only
+  the writer and reader-table locks shared with other processes are libc
+  objects (`internal/lockfile`). On Linux they are reached through cgo:
+  built with `CGO_ENABLED=0`, `Env.Open` without `NoLock` returns
+  `ErrNoSharedLocking` before touching the file system; `NoLock`
+  environments work. On macOS a build without cgo calls the semaphores in
+  libSystem directly and works fully. `SharedLockingAvailable` says which
+  kind of build is running.
 * **`NoLock`.** Only the cross-process locking is removed: within the
   process, write transactions are serialised and readers are tracked in an
   in-memory table, so pages a live reader can see are never reused. C
@@ -146,6 +148,14 @@ differently from C is in `internal/engine/PORTING.md` and in rlmdb's
   the memory of ended ones (one small allocation each, for the handle).
 * **Windows** is not supported yet: the OS layer (`internal/sys`,
   `internal/lockfile`) has no Windows files. `error_windows.go` is kept.
+* **64-bit only.** lmdb-go v1 built and ran on 32-bit platforms with C
+  LMDB, whose 32-bit data files are a format of their own (the file
+  depends on `sizeof(size_t)`), not shared with 64-bit processes. This
+  implementation has only the 64-bit format, as rlmdb: a build for a
+  32-bit `GOARCH` (386, arm, mips, mipsle) fails with `undefined:
+  lmdb_requires_a_64_bit_platform` (`internal/format/arch_unsupported.go`).
+  64-bit big-endian targets (s390x, ppc64, mips64) build but are untested;
+  like C, files are in the host's byte order.
 
 ## Tests of lmdb-go v1 that were changed
 
@@ -161,17 +171,18 @@ unchanged except:
   transaction keeps its (pooled) state across `Reset` and `Renew` and
   releases it in `Abort`, instead of the C memory of v1's value buffers.
 * `lmdb/env_test.go`, `lmdb_test.go`, `txn_test.go`: `Env.Open` gets
-  `testFlags(flags)`, which adds `NoLock` in a build without cgo (or with
-  `LMDB_TEST_NOLOCK=1`, to run the suite on `NoLock` with cgo);
+  `testFlags(flags)`, which adds `NoLock` in a build without shared
+  locking (Linux without cgo), or with `LMDB_TEST_NOLOCK=1`, to run the
+  suite on `NoLock` in any build;
   `TestEnv_ReaderList` needs a lock file and skips then.
   (`testflags_test.go` is new.)
-* `internal/lmdbtest.NewEnv` adds `NoLock` in a build without cgo
-  (`lmdbscan`'s tests use it).
+* `internal/lmdbtest.NewEnv` adds `NoLock` in a build without shared
+  locking (`lmdbscan`'s tests use it).
 * `exp/lmdbsync` tests: `newEnv` takes the `*testing.T` and skips without
-  cgo unless the test asks for `NoLock` (with `NoLock`, `lmdbsync.Env`
+  shared locking unless the test asks for `NoLock` (with `NoLock`, `lmdbsync.Env`
   serialises its own transactions, which changes what those tests check;
   its handler runner deadlocks there by design); `TestNewEnv`,
-  `TestEnv_Open` and `TestResize` skip without cgo.
+  `TestEnv_Open` and `TestResize` skip without shared locking.
 
 lmdb-go v2's tests for the format API (`sniff_test.go`, `version_test.go`,
 `preopen_test.go`) run with `Open` through `testFlags`, and
