@@ -27,7 +27,7 @@ pinned commit.
 | `commit.go` | `core/commit.rs` | |
 | `nested.go` | `core/nested.rs` | |
 | `spill.go` | `core/spill.rs` | |
-| `copy.go` | `core/copy.rs` | |
+| `copy.go` | `core/copy.rs` | done, byte-identical to mdb_copy (-c) |
 | `audit.go` | `core/audit.rs` | |
 
 ## Design decisions (Go vs Rust)
