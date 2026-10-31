@@ -107,6 +107,9 @@ func (e *Env) beginWrite() (*Txn, error) {
 	if e.isReadOnly() {
 		return nil, syscall.EACCES
 	}
+	if e.closed.Load() {
+		return nil, syscall.EINVAL
+	}
 	e.writerMu.Lock()
 	if err := e.lock.LockWriter(func() (uint64, error) {
 		m, err := e.pickMeta()
@@ -211,7 +214,12 @@ func (t *Txn) end(keep bool) error {
 		e.writer.pgOldest = w.pgOldest
 		e.writer.pbufPad = w.pbufPad
 		t.releaseMap()
-		err := e.lock.UnlockWriter()
+		var err error
+		if !e.closed.Load() {
+			// After Close the lock region is gone (a write transaction
+			// left open across Close: a caller error, as in C).
+			err = e.lock.UnlockWriter()
+		}
 		e.writerMu.Unlock()
 		return err
 	}

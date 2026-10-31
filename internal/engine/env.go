@@ -108,6 +108,10 @@ type Env struct {
 	regKey     string
 
 	closeOnce sync.Once
+	// closed is set by Close before anything is released. Transactions
+	// that end afterwards leave the (closed) lock region alone; see
+	// Close.
+	closed atomic.Bool
 }
 
 // writerState is the per-environment state of the single write
@@ -370,8 +374,12 @@ func (e *Env) release() {
 
 // Close closes the environment (mdb_env_close). Transactions still alive
 // keep their data map until they end; using them after Close is an error,
-// as in C.
+// as in C. Ending them (Abort, Reset) is allowed: it releases their data
+// map and leaves the lock region alone, whose slots Close cleared. The
+// caller must not run Close concurrently with transactions ending (the
+// lmdb package serialises the two); C has the same rule.
 func (e *Env) Close() error {
+	e.closed.Store(true)
 	e.closeOnce.Do(e.release)
 	return nil
 }

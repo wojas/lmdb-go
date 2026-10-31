@@ -126,6 +126,9 @@ func (e *Env) BeginRead(t *Txn) error {
 	t.w = nil
 	t.slot = -1
 	t.state = txnDone
+	if e.closed.Load() {
+		return syscall.EINVAL
+	}
 	s, err := e.lock.AcquireSlot()
 	if err != nil {
 		return err
@@ -217,7 +220,7 @@ func (t *Txn) Reset() {
 	if t.w != nil || t.state != txnActive {
 		return
 	}
-	if t.slot >= 0 {
+	if t.slot >= 0 && !t.env.closed.Load() {
 		t.env.lock.ResetSlot(t.slot)
 	}
 	t.releaseMap()
@@ -230,7 +233,7 @@ func (t *Txn) Reset() {
 // reader check in another process); EINVAL if t is not a reset read
 // transaction.
 func (t *Txn) Renew() error {
-	if t.w != nil || t.state != txnReset {
+	if t.w != nil || t.state != txnReset || t.env.closed.Load() {
 		return syscall.EINVAL
 	}
 	if t.slot >= 0 && !t.env.lock.SlotIsIdleAndOurs(t.slot) {
@@ -264,7 +267,7 @@ func (t *Txn) Abort() {
 	if t.state == txnDone && t.slot < 0 && t.dmap == nil {
 		return
 	}
-	if t.slot >= 0 {
+	if t.slot >= 0 && !t.env.closed.Load() {
 		t.env.lock.ReleaseSlot(t.slot)
 	}
 	t.slot = -1
