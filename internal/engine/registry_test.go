@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sync"
 	"syscall"
 	"testing"
@@ -27,24 +28,45 @@ func fileNamesOf(t *testing.T, dir string) []struct {
 	dirLink := filepath.Join(other, "dirlink")
 	fileLink := filepath.Join(other, "filelink")
 	hardDir := filepath.Join(other, "hard")
-	for _, err := range []error{
-		os.Symlink(dir, dirLink),
-		os.Symlink(data, fileLink),
-		os.Mkdir(hardDir, 0o755),
-		os.Link(data, filepath.Join(hardDir, "data.mdb")),
-	} {
-		if err != nil {
-			t.Fatal(err)
-		}
-	}
-	return []struct {
+	names := []struct {
 		path  string
 		flags uint32
-	}{
-		{dir, 0}, {data, format.NoSubdir}, {dirLink, 0},
-		{filepath.Join(dirLink, "data.mdb"), format.NoSubdir}, {fileLink, format.NoSubdir},
-		{hardDir, 0}, {filepath.Join(hardDir, "data.mdb"), format.NoSubdir},
+	}{{dir, 0}, {data, format.NoSubdir}}
+	add := func(path string, flags uint32) {
+		names = append(names, struct {
+			path  string
+			flags uint32
+		}{path, flags})
 	}
+	// made reports whether a link could be made. On Windows some file
+	// systems have no symlinks or hard links (exFAT, FAT), and NTFS
+	// symlinks need a privilege: the names that can be made are checked.
+	made := func(what string, err error) bool {
+		t.Helper()
+		if err == nil {
+			return true
+		}
+		if runtime.GOOS != "windows" {
+			t.Fatal(err)
+		}
+		t.Logf("no %s here: %v", what, err)
+		return false
+	}
+	if made("directory symlink", os.Symlink(dir, dirLink)) {
+		add(dirLink, 0)
+		add(filepath.Join(dirLink, "data.mdb"), format.NoSubdir)
+	}
+	if made("file symlink", os.Symlink(data, fileLink)) {
+		add(fileLink, format.NoSubdir)
+	}
+	if err := os.Mkdir(hardDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if made("hard link", os.Link(data, filepath.Join(hardDir, "data.mdb"))) {
+		add(hardDir, 0)
+		add(filepath.Join(hardDir, "data.mdb"), format.NoSubdir)
+	}
+	return names
 }
 
 // openCounting opens path with flags (plus NoLock if noLock) and reports
@@ -93,16 +115,20 @@ func TestOpenTwiceWithLockFile(t *testing.T) {
 	// A name that appears after the registration (here while the lock
 	// file is opened) is caught once the data file is open.
 	late := filepath.Join(t.TempDir(), "late")
+	var linkErr error
 	e, err := Open(late, Options{Flags: format.NoSubdir, OpenLock: func(string, os.FileMode, uint32, bool, format.Format) (LockRegion, error) {
-		if err := os.Link(data, late); err != nil {
-			return nil, err
+		if linkErr = os.Link(data, late); linkErr != nil {
+			return nil, linkErr
 		}
 		return NewMemLock(0), nil
 	}})
 	if err == nil {
 		e.Close()
 	}
-	if err != syscall.EBUSY {
+	switch {
+	case linkErr != nil && runtime.GOOS == "windows":
+		t.Logf("no hard link here: %v", linkErr)
+	case err != syscall.EBUSY:
 		t.Errorf("open of a hard link made during the open: %v (want EBUSY)", err)
 	}
 
@@ -161,7 +187,7 @@ func TestNoLockHandlesShare(t *testing.T) {
 		}
 	}
 	// Every handle sees the others' commits.
-	putOne(t, handles[3], "k3", "v3")
+	putOne(t, handles[len(handles)-1], "k3", "v3")
 	for i, e := range append(handles, env) {
 		r := beginR(t, e)
 		if v, err := r.Get(MainDBI, []byte("k3")); err != nil || string(v) != "v3" {

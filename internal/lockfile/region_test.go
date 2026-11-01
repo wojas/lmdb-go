@@ -635,3 +635,31 @@ func TestUnlockWriterFromAnotherThread(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// TestCloseWhileWriterHeld: Close while this process's writer lock is
+// still held (a write transaction ended on another thread: EPERM on
+// Linux, ERROR_NOT_OWNER on Windows, and the lock stays with its thread)
+// removes the mapping unless the lock is a robust mutex in it, whose
+// thread's robust list the kernel reads when the thread exits. On Windows
+// the lock file can then be removed (a mapped file cannot).
+func TestCloseWhileWriterHeld(t *testing.T) {
+	needLocks(t)
+	for _, l := range layouts() {
+		path := filepath.Join(t.TempDir(), "lock.mdb")
+		r := openRegion(t, path, l)
+		r.Downgrade(1)
+		if err := r.LockWriter(noRepair); err != nil {
+			t.Fatal(err)
+		}
+		if err := r.Close(); err != nil {
+			t.Fatal(err)
+		}
+		runtime.UnlockOSThread() // LockWriter's pin
+		if kept := r.m.mem != nil; kept != (l.Objects == PthreadMutexes) {
+			t.Errorf("v%d (objects %d): mapping kept %v", l.Version, l.Objects, kept)
+		}
+		if err := os.Remove(path); err != nil {
+			t.Errorf("v%d: remove the lock file: %v", l.Version, err)
+		}
+	}
+}

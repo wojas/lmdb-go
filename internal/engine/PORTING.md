@@ -482,12 +482,13 @@ Divergences from rlmdb on the BSDs (none changes a file):
 * The read-only-file-system path (OpenLock returning nil) is exercised
   only through NoLock.
 * Performance: see `tests/bench/RESULTS.md` (stage 3).
-* Windows: built, vetted and cross-compiled (`go test -c`) for amd64 and
-  arm64, not run yet; `scripts/windows-test.sh` is ready for the first run.
+* Windows: tested on x86-64 (PLAN.md "Windows"); arm64 built and vetted,
+  not run. Not run there: `-race` (needs cgo for every package), rlmdb's
+  interop matrix with the Go peer.
 * The BSDs: built, vetted and cross-compiled (`go test -c`) for amd64
   and arm64 (DragonFly: amd64), with cgo against each BSD's headers too,
   their lock-file layouts checked against C compiled for them
-  (`scripts/bsd-cc-check.sh`); not run yet (PLAN.md "The BSDs").
+  (`scripts/bsd-cc-check.sh`); not run (PLAN.md "The BSDs").
 * Big-endian: the root module and the tests module (C oracles built in
   the container) pass on s390x under QEMU user emulation
   (`LINUX_TEST_IMAGE=golang:1.25-trixie LINUX_TEST_PLATFORM=linux/s390x

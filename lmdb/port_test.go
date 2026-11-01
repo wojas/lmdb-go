@@ -9,12 +9,14 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
 	"testing"
+	"time"
 )
 
 // putDups stores key with the values vals in a new DupSort|DupFixed
@@ -709,8 +711,16 @@ func TestEnv_Close_racesWithTxns(t *testing.T) {
 			}(j)
 		}
 		close(start)
-		clean(env, t)
+		path, _ := env.Path()
+		if err := env.Close(); err != nil {
+			t.Fatal(err)
+		}
+		// The files stay open until the last transaction has ended, and
+		// Windows does not remove open files.
 		wg.Wait()
+		if err := os.RemoveAll(path); err != nil {
+			t.Fatal(err)
+		}
 	}
 }
 
@@ -813,4 +823,19 @@ func TestEnv_Close_liveSnapshot(t *testing.T) {
 			update()
 		})
 	}
+}
+
+// removeEnvDir removes the directory of a closed environment. On Windows,
+// where open files cannot be removed, it retries for a while: a closed
+// environment keeps its files until its last transaction has ended (see
+// DEVIATIONS.md), which a finalizer may do after the test (lmdb-go v1's
+// TestTxn_finalizer).
+func removeEnvDir(path string) error {
+	err := os.RemoveAll(path)
+	for i := 0; err != nil && runtime.GOOS == "windows" && i < 50; i++ {
+		runtime.GC()
+		time.Sleep(100 * time.Millisecond)
+		err = os.RemoveAll(path)
+	}
+	return err
 }

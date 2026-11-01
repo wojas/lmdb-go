@@ -257,7 +257,7 @@ func (t *Txn) writeMeta() error {
 		LastPgno: t.nextPgno - 1,
 		TxnID:    txnid,
 	}
-	var buf [format.MetaSize]byte
+	buf := &t.w.metaBuf
 	meta.Write(buf[:])
 	off := int64(toggle*ps + t.l.MetaOffset() + format.MetaMapSize)
 	if !e.lockFile {

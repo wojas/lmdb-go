@@ -24,6 +24,7 @@ import (
 
 	eng "github.com/PowerDNS/lmdb-go/internal/engine"
 	"github.com/PowerDNS/lmdb-go/internal/format"
+	"github.com/PowerDNS/lmdb-go/tests/internal/coracle"
 )
 
 // oracle is the C side of a round.
@@ -371,7 +372,9 @@ func (c *cRun) finish() (string, string) {
 	return lines[len(lines)-1], c.stderr.String()
 }
 
-func code(err error) int { return format.Code(err) }
+// code is the C return code for the Go engine's err, as a C process
+// prints it (the C runtime's errno numbers on Windows).
+func code(err error) int { return coracle.CErrno(format.Code(err)) }
 
 // probe is MDB_GET_CURRENT (+ count) on a cursor, formatted like
 // writeops.c.

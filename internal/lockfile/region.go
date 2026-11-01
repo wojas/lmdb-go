@@ -557,9 +557,11 @@ func (r *Region) Header() HeaderSnapshot {
 // Windows they are released explicitly first, as C does).
 //
 // If a goroutine still holds the writer lock (LockWriter without
-// UnlockWriter), the mapping is left in place: on Linux the holding
-// thread's robust list points into it, and the kernel reads that list when
-// the thread exits.
+// UnlockWriter) and the lock is a robust mutex in the file (Linux,
+// FreeBSD), the mapping is left in place: the holding thread's robust list
+// points into it, and the kernel reads that list when the thread exits.
+// Other locks are not in the mapping (semaphores, Windows mutexes), so it
+// is removed as C removes it; on Windows a mapped file cannot be deleted.
 func (r *Region) Close() error {
 	r.mu.Lock()
 	if r.closed {
@@ -581,7 +583,7 @@ func (r *Region) Close() error {
 	lastUser := r.layout.Objects.removedByLastUser() && lockByte(r.fd, 0, true, false) == nil
 	r.locks.close(lastUser)
 	var err error
-	if r.writers.Load() == 0 {
+	if r.writers.Load() == 0 || r.layout.Objects != PthreadMutexes {
 		err = r.m.unmap()
 	}
 	// Windows releases the lock on byte 0 now rather than "not necessarily

@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 
@@ -58,6 +59,10 @@ func TestResize(t *testing.T) {
 	}
 
 	bin := filepath.Join(tempdir, "testresize")
+	if runtime.GOOS == "windows" {
+		// exec runs only files with an executable extension there.
+		bin += ".exe"
+	}
 	build := exec.Command("go", "build", "-o", bin, "./testresize")
 	build.Stderr = os.Stderr
 	err = build.Run()

@@ -57,7 +57,7 @@ func run(t testing.TB, name string, args ...string) (int, string, string) {
 	} else if err != nil {
 		t.Fatal(err)
 	}
-	return code, out.String(), errb.String()
+	return code, coracle.Text(out.String()), coracle.Text(errb.String())
 }
 
 // cPageSize is the page size of a new environment of the C 0.9 oracles,

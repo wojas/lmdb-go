@@ -185,13 +185,16 @@ liveness through `OpenProcess`, with rlmdb's fix #42), files opened with
 C's sharing. A write transaction keeps its OS thread (the mutexes belong
 to it, as on Linux). lmdb-go v1's `lmdb/error_windows.go` is kept.
 
-Status: windows/amd64 and windows/arm64 build and vet (the root module;
-the `tests` module on amd64 with cgo through MinGW-w64, and its packages
-that do not need cgo on both without), and so do their test binaries
-(`go test -c`); nothing has run on Windows yet. `scripts/windows-test.sh` runs commands
-on a Windows machine (a git-archive copy, its own work directory and
-toolchain), and `tests/cmd/build-c-oracles` builds the C oracles there
-with MinGW-w64.
+Status: tested on Windows 10 x86-64 with Go 1.25 and MinGW-w64 gcc
+(MSYS2): the root module with and without cgo, and the `tests` module
+(cgo) against C LMDB 0.9.36 and 1.0 built there with
+`tests/cmd/build-c-oracles` (lock-file interop with C peers, the write
+differential, copies, Go reading C's files) pass, on an exFAT drive and,
+for the file-system-sensitive tests (`internal/sys`, `internal/lockfile`,
+the registry's links, `lmdb`, `tests/lockfile`), on NTFS.
+`scripts/windows-test.sh` runs commands on a Windows machine (a
+git-archive copy, its own work directory and toolchain). windows/arm64
+builds and vets; it has not run.
 
 ## The BSDs
 

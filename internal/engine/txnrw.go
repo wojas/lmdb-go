@@ -111,6 +111,10 @@ type wstate struct {
 	// to write.
 	flushBuf []byte
 	runs     []flushEntry
+	// metaBuf is the meta page writeMeta writes. It lives here because
+	// os.File.WriteAt keeps a reference to its buffer on Windows: a local
+	// array escaped to the heap there, one allocation per commit.
+	metaBuf [format.MetaSize]byte
 	// pgheadSpare is the memory of the last pghead (C frees me_pghead at
 	// the end of each transaction), mopBuf and idsBuf freelistSave's
 	// scratch buffers.
