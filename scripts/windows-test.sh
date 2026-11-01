@@ -32,12 +32,18 @@
 # <workdir>\<WINDOWS_ENV> is run (`call`) before the command, from
 # <workdir>. It is not part of this repository: it names the machine's
 # toolchain, for example (with a Go zip unpacked into <workdir>\go and
-# MinGW-w64, e.g. MSYS2's mingw64, under the work directory):
+# MinGW-w64, e.g. MSYS2's mingw64, under the work directory), keeping
+# everything Go writes (module and build caches, telemetry counters, the
+# tests' temporary files) in the work directory:
 #
-#   set GOROOT=%CD%\go
 #   set GOPATH=%CD%\gopath
 #   set GOCACHE=%CD%\gocache
-#   set GOTELEMETRY=off
+#   set GOENV=off
+#   set GOTOOLCHAIN=local
+#   set APPDATA=%CD%\appdata
+#   if not exist tmp mkdir tmp
+#   set TMP=%CD%\tmp
+#   set TEMP=%CD%\tmp
 #   set CGO_ENABLED=1
 #   set CC=gcc
 #   set PATH=%CD%\go\bin;%CD%\mingw64\bin;%PATH%

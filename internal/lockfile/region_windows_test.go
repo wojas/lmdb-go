@@ -7,6 +7,7 @@ package lockfile
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -128,7 +129,7 @@ func TestProcessLiveness(t *testing.T) {
 // TestNamedMutexes is rlmdb's named_mutexes: a mutex created by one handle
 // and opened by another; a thread that ends holding it abandons it.
 func TestNamedMutexes(t *testing.T) {
-	name := `Global\lmdbgo-test-` + filepath.Base(t.TempDir())
+	name := fmt.Sprintf(`Global\lmdbgo-test-%d`, os.Getpid())
 	a, err := createMutex(name)
 	if err != nil {
 		t.Fatal(err)
