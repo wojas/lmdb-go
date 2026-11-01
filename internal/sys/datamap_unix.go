@@ -8,6 +8,8 @@ package sys
 import (
 	"os"
 	"syscall"
+
+	"golang.org/x/sys/unix"
 )
 
 // osMap: a duplicate of the data file's descriptor, to refresh the file
@@ -64,6 +66,33 @@ func (m *DataMap) viewSize() (int64, error) {
 func (m *DataMap) unmap() {
 	_ = syscall.Munmap(m.data)
 	syscall.Close(m.fd)
+}
+
+// Invalidate is MDB_Invalidate, called only where MapNeedsInvalidate
+// (OpenBSD): after n bytes at off of the file were written through a
+// descriptor, msync(MS_INVALIDATE) drops the map's stale copy of them, so
+// the next access reads them from the file. C passes its range as is,
+// which msync refuses unless it starts on an OS page (pages of LMDB 1.0
+// environments may be smaller, and so may those of a 0.9 environment made
+// on a system with smaller pages); here it is widened to whole OS pages
+// (rlmdb's DataMap::invalidate, KNOWN_C_BUGS.md #39) and clamped to the
+// map. Errors are ignored, as in C. The bytes of every page a snapshot can
+// reach do not change (they are read again as they were), so slices
+// handed out stay valid.
+func (m *DataMap) Invalidate(off uint64, n int) {
+	if n < 0 {
+		return
+	}
+	size := uint64(len(m.data))
+	start := off - off%uint64(OSPageSize())
+	end := off + uint64(n)
+	if end < off || end > size {
+		end = size
+	}
+	if start >= end {
+		return
+	}
+	_ = unix.Msync(m.data[start:end], unix.MS_INVALIDATE)
 }
 
 // CommitPages does nothing on Unix: the map always covers the map size,

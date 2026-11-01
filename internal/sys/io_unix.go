@@ -23,10 +23,11 @@ func OpenEnvFile(path string, readOnly bool, mode os.FileMode) (*os.File, error)
 	return os.OpenFile(path, os.O_RDWR|os.O_CREATE, mode)
 }
 
-// OpenDSync opens path for writing with O_DSYNC: the descriptor used for
+// OpenDSync opens path for writing with MDB_DSYNC (O_DSYNC, or O_SYNC
+// where there is none: oDSync in sync_<os>.go): the descriptor used for
 // meta-page writes (me_mfd, C's MDB_O_META).
 func OpenDSync(path string) (*os.File, error) {
-	f, err := os.OpenFile(path, os.O_WRONLY|syscall.O_DSYNC, 0)
+	f, err := os.OpenFile(path, os.O_WRONLY|oDSync, 0)
 	return f, unwrap(err)
 }
 

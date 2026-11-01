@@ -1,9 +1,15 @@
 // MDB_FDATASYNC on macOS: fcntl(F_FULLFSYNC), since plain fsync does not
-// flush the drive cache there.
+// flush the drive cache there; MDB_DSYNC is O_DSYNC.
 
 package sys
 
-import "os"
+import (
+	"os"
+	"syscall"
+)
+
+// oDSync is MDB_DSYNC (mdb.c 0.9.36 lines 456-461): O_DSYNC.
+const oDSync = syscall.O_DSYNC
 
 // Fdatasync flushes the file's data to disk (MDB_FDATASYNC). os.File.Sync
 // uses F_FULLFSYNC on macOS, as C's MDB_FDATASYNC does.
