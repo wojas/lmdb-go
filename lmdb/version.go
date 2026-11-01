@@ -160,7 +160,7 @@ func (env *Env) Format() Format {
 // ErrVersionUndetermined.
 //
 // The package-level Version and VersionString report the implementation
-// (0.9.85, as rlmdb's C library does); EngineVersion is the per-environment
+// (0.9.90, above every C release); EngineVersion is the per-environment
 // format.
 func (env *Env) EngineVersion() (EnvVersion, error) {
 	switch env.Format() {

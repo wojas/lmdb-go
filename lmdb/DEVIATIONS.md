@@ -37,13 +37,14 @@ differently from C is in `internal/engine/PORTING.md` and in rlmdb's
 
 ## Behaviour that differs
 
-* **Version.** `Version()` reports 0, 9, 85 and `VersionString()`
-  `LMDB 0.9.85: (lmdb-go, Go port of rlmdb)`, as rlmdb's C library does: the
-  0.9 series whose API and default format this is, with a patch level
-  above every C release so that programs can tell the two apart. v1
-  reported its bundled C library (0.9.35). `Env.EngineVersion` reports the
-  C release whose format an environment matches: 0.9.36 or 1.0.2 (lmdb-go
-  v2: the bundled engine's `mdb_version`).
+* **Version.** `Version()` reports 0, 9, 90 and `VersionString()`
+  `LMDB 0.9.90: (lmdb-go, Go port of rlmdb)`: the 0.9 series whose API
+  and default format this is, with a patch level above every C release so
+  that programs can tell the two apart (rlmdb's C library reports 0.9.85
+  for the same reason; 90 reads as "go"). v1 reported its bundled C
+  library (0.9.35). `Env.EngineVersion` reports the C release whose format
+  an environment matches: 0.9.36 or 1.0.2 (lmdb-go v2: the bundled
+  engine's `mdb_version`).
 * **Formats.** Both formats are read and written by one engine; v2 has two
   C engines. As in v2, an existing file is opened in its format,
   `SetFormat` asking for the other one is `ErrFormatConflict`, and a file

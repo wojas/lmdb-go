@@ -72,7 +72,7 @@ commands in `cmd/` and `exp/cmd/`. Read the API documentation with
   reader can see are never reused, also across several `NoLock` handles
   of one environment, which share their reader table; with a lock file,
   opening one environment twice in a process fails with `EBUSY`.
-* **Version.** `lmdb.Version()` reports 0.9.85, above every C 0.9 release, so
+* **Version.** `lmdb.Version()` reports 0.9.90, above every C 0.9 release, so
   programs can tell this implementation from C.
 
 Differences from lmdb-go v1 on C (a few v1 bugs not kept, ignored flags such

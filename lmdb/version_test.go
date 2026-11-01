@@ -301,3 +301,17 @@ func TestEnv_PrevSnapshot(t *testing.T) {
 		}
 	})
 }
+
+// TestVersion_Implementation checks the version this implementation
+// reports: 0.9.90, above every C 0.9 release, so that programs can tell it
+// from C LMDB.
+func TestVersion_Implementation(t *testing.T) {
+	maj, min, patch, str := Version()
+	if maj != 0 || min != 9 || patch != 90 {
+		t.Errorf("Version() = %d.%d.%d, want 0.9.90", maj, min, patch)
+	}
+	const want = "LMDB 0.9.90: (lmdb-go, Go port of rlmdb)"
+	if str != want || VersionString() != want {
+		t.Errorf("version string = %q / %q, want %q", str, VersionString(), want)
+	}
+}

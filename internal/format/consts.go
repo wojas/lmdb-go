@@ -140,11 +140,11 @@ const (
 	MinPageSize = 256
 )
 
-// The version mdb_version reports: 0.9.85, a patch level above every real
-// 0.9 release so a program can tell this implementation from C LMDB
-// (rlmdb DUAL_FORMAT.md §4.4).
+// The version mdb_version reports: 0.9.90, a patch level above every real
+// 0.9 release so a program can tell this implementation from C LMDB (as
+// rlmdb's 0.9.85, rlmdb DUAL_FORMAT.md §4.4; 90 reads as "go").
 const (
 	VersionMajor = 0
 	VersionMinor = 9
-	VersionPatch = 85
+	VersionPatch = 90
 )
