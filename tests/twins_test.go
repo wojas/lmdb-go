@@ -16,6 +16,10 @@ var twins = []string{"bench", "gopeer"}
 // gen-port.sh makes of its cgo source now (run go generate ./... after
 // changing a cgo package).
 func TestPortTwinsUpToDate(t *testing.T) {
+	if _, err := exec.LookPath("sh"); err != nil {
+		// Windows: the check does not depend on the platform.
+		t.Skip("gen-port.sh needs sh")
+	}
 	for _, dir := range twins {
 		tmp := t.TempDir()
 		out, err := exec.Command("sh", "gen-port.sh", dir, tmp).CombinedOutput()

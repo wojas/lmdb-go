@@ -58,13 +58,14 @@ const maxCwalkNesting = 3
 // Copy is mdb_env_copy2: copy the environment to a new data file: path is
 // the directory to put data.mdb in (it must exist), or with MDB_NOSUBDIR
 // the file name. The file must not exist (O_EXCL, mode 0666 before the
-// umask). No lock file is created. flags may hold MDB_CP_COMPACT.
+// umask; on Windows CREATE_NEW, unshared and written through). No lock
+// file is created. flags may hold MDB_CP_COMPACT.
 func (e *Env) Copy(path string, flags uint32) error {
 	target := path
 	if e.flags.Load()&format.NoSubdir == 0 {
 		target = filepath.Join(path, "data.mdb")
 	}
-	f, err := os.OpenFile(target, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o666)
+	f, err := sys.CreateCopyTarget(target)
 	if err != nil {
 		return sys.Errno(err)
 	}
@@ -76,14 +77,13 @@ func (e *Env) Copy(path string, flags uint32) error {
 }
 
 // CopyFD is mdb_env_copyfd2: write a copy to the file descriptor fd (a
-// file, pipe or socket) at its current position. fd stays open and is not
-// synced.
+// file, pipe or socket; on Windows a HANDLE, as C's mdb_filehandle_t) at
+// its current position. fd stays open and is not synced.
 func (e *Env) CopyFD(fd uintptr, flags uint32) error {
-	nfd, err := syscall.Dup(int(fd))
+	f, err := sys.DupFile(fd)
 	if err != nil {
 		return err
 	}
-	f := os.NewFile(uintptr(nfd), "copy")
 	defer f.Close()
 	return e.CopyTo(fdWriter{f}, flags)
 }

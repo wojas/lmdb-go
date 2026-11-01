@@ -33,7 +33,9 @@ off by default when cross-compiling or when no C compiler is found: such a
 Linux build compiles, but fails at `Env.Open`. On macOS, a cgo build (the
 default) takes the semaphores through cgo, and a build without cgo calls them
 in libSystem directly, as `golang.org/x/sys/unix` does for system calls; both
-work fully, so cross-compiling to macOS needs no C toolchain.
+work fully, so cross-compiling to macOS needs no C toolchain. On Windows the
+locks are named kernel mutexes, as in C LMDB there, reached through
+`golang.org/x/sys/windows`: no cgo at all.
 
 The packages are those of lmdb-go: `lmdb`, `lmdbscan`, `exp/lmdbsync`, and the
 commands in `cmd/` and `exp/cmd/`. Read the API documentation with
@@ -48,11 +50,13 @@ commands in `cmd/` and `exp/cmd/`. Read the API documentation with
   otherwise. For the same writes, the data file is byte-identical to C's.
 * **Sharing.** Go processes share environments with C LMDB 0.9 and 1.0 and
   with rlmdb: writers exclude each other, readers see each other in the
-  reader table, and on Linux a writer that dies holding the lock is
-  recovered from, as between C processes.
-* **Platforms.** Linux (glibc and musl; arm64 and x86-64) and macOS. Windows
-  is planned. 64-bit only: 32-bit builds stop with a compile error; 64-bit
-  big-endian targets build but are untested.
+  reader table, and on Linux and Windows a writer that dies holding the
+  lock is recovered from, as between C processes.
+* **Platforms.** Linux (glibc and musl; arm64 and x86-64) and macOS.
+  Windows (x86-64; arm64 by the same rules) is implemented after rlmdb's
+  Windows port and builds, but has not run on Windows yet. 64-bit only:
+  32-bit builds stop with a compile error; 64-bit big-endian targets build
+  but are untested.
 * **`NoLock`** only removes the locking between processes. Within the
   process, write transactions are still serialised and pages that a live
   reader can see are never reused, also across several `NoLock` handles

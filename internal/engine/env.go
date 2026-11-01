@@ -13,13 +13,15 @@
 //     file of the other format never re-initialises a peer's lock file.
 //  3. Unless read-only or MDB_NOLOCK, set up the lock file first. Read-only
 //     environments open the data file first (it must exist).
-//  4. Open the data file (O_RDWR|O_CREAT, or O_RDONLY).
+//  4. Open the data file (O_RDWR|O_CREAT, or O_RDONLY; on Windows shared
+//     for reading and writing only, as C opens it).
 //  5. mdb_env_open2: read both meta pages with pread; an empty file is a
 //     new environment whose meta pages are written at once, with the OS
 //     page size (1.0: or the one asked for) capped at the format's
 //     maximum. A 1.0 file using encryption or checksums is refused. The map
 //     size is the configured one, else the one recorded in the meta,
-//     raised to cover all pages in use. Map the file read-only.
+//     raised to cover all pages in use. Map the file read-only (on
+//     Windows as the C release of the format does there: sys.MapData).
 //  6. Open the O_DSYNC descriptor for meta-page writes (me_mfd).
 //  7. If we initialised the lock table, publish the current txnid and
 //     downgrade to a shared lock (mdb_env_share_locks).
@@ -30,6 +32,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -170,6 +173,14 @@ func canonicalPath(path string) (string, error) {
 	}
 	dir, err := filepath.EvalSymlinks(filepath.Dir(abs))
 	if err != nil {
+		if runtime.GOOS == "windows" {
+			// Keyed by its absolute path instead: the open that follows
+			// then fails with the error C gets from opening a file in the
+			// directory (ERROR_PATH_NOT_FOUND for a missing one, where
+			// resolving it says ERROR_FILE_NOT_FOUND). On Unix both are
+			// ENOENT. (rlmdb core/registry.rs, resolve.)
+			return abs, nil
+		}
 		return "", sys.Errno(err)
 	}
 	return filepath.Join(dir, filepath.Base(abs)), nil
@@ -246,12 +257,7 @@ func Open(path string, opts Options) (env *Env, err error) {
 			return nil, err
 		}
 	}
-	if readOnly {
-		e.dataFile, err = os.OpenFile(dataPath, os.O_RDONLY, 0)
-	} else {
-		e.dataFile, err = os.OpenFile(dataPath, os.O_RDWR|os.O_CREATE, mode)
-	}
-	if err != nil {
+	if e.dataFile, err = sys.OpenEnvFile(dataPath, readOnly, mode); err != nil {
 		return nil, sys.Errno(err)
 	}
 	// The NoLock handles of one data file in this process share the
@@ -352,6 +358,7 @@ func Open(path string, opts Options) (env *Env, err error) {
 	}
 	e.pageSize = pageSize
 	e.flags.Store(flags)
+	e.layout = layout
 	m, err := e.newMap(mapSize)
 	if err != nil {
 		return nil, err
@@ -373,7 +380,6 @@ func Open(path string, opts Options) (env *Env, err error) {
 	e.dbis.init(opts.MaxDBs)
 	e.mapSize.Store(mapSize)
 	e.dirtyLimit.Store(format.IDLUMMax)
-	e.layout = layout
 	e.nodeMax = layout.NodeMax(pageSize)
 	e.maxKey = layout.MaxKeySize(pageSize)
 
@@ -401,9 +407,13 @@ func (e *Env) release() {
 }
 
 // newMap maps size bytes of the data file; the environment counts the map
-// until it is unmapped (mapFreed).
+// until it is unmapped (mapFreed). On Windows an LMDB 1.0 file is mapped
+// with a reserved view it grows into, a 0.9 file is extended to the map
+// size (sys.MapData; on Unix both are the same mmap).
 func (e *Env) newMap(size int64) (*sys.DataMap, error) {
-	m, err := sys.MapReadOnly(e.dataFile, int(size), e.flags.Load()&format.NoReadahead != 0, format.NumMetas*e.pageSize)
+	random := e.flags.Load()&format.NoReadahead != 0
+	reserve := e.layout.Format == format.V10
+	m, err := sys.MapData(e.dataFile, int(size), random, format.NumMetas*e.pageSize, reserve)
 	if err != nil {
 		return nil, err
 	}
@@ -559,6 +569,51 @@ func (e *Env) acquireMap() (*sys.DataMap, error) {
 			return m, nil
 		}
 	}
+}
+
+// renewShortMap returns the map to use in place of old, with a reference
+// taken, if old is shorter than the map size (it then covers the file only
+// as it was when it was made: a read-only environment on Windows, see
+// sys.MapData): the environment's current map, made anew if the file has
+// grown past it since (also when another transaction renewed old already,
+// at an older size). ok is false if old is not short (always on Unix).
+// The caller keeps old until it has switched; read transactions keep the
+// map they use, as with SetMapSize. rlmdb Environment::renew_short_map.
+func (e *Env) renewShortMap(old *sys.DataMap) (m *sys.DataMap, ok bool, err error) {
+	size := e.mapSize.Load()
+	if int64(old.Len()) >= size {
+		return nil, false, nil
+	}
+	e.mapMu.Lock()
+	defer e.mapMu.Unlock()
+	cur, err := e.acquireMap()
+	if err != nil {
+		return nil, false, err
+	}
+	fileSize, err := sys.FileSize(e.dataFile)
+	if err != nil {
+		cur.Release()
+		return nil, false, err
+	}
+	if int64(cur.Len()) >= size || fileSize <= int64(cur.Len()) {
+		return cur, true, nil
+	}
+	m, err = e.newMap(size) // its reference becomes the environment's
+	if err != nil {
+		cur.Release()
+		return nil, false, err
+	}
+	m.TryAcquire() // ours
+	if !e.dmap.CompareAndSwap(cur, m) {
+		// Closed meanwhile.
+		m.Release()
+		m.Release()
+		cur.Release()
+		return nil, false, syscall.EINVAL
+	}
+	cur.Release() // the environment's reference
+	cur.Release() // ours
+	return m, true, nil
 }
 
 func (e *Env) isReadOnly() bool { return e.flags.Load()&format.ReadOnly != 0 }
@@ -849,7 +904,7 @@ func SniffFormat(path string, flags uint32) (f format.Format, ok bool, err error
 
 func sniffDataFile(dataPath string) (format.Format, bool, error) {
 	f, err := os.Open(dataPath)
-	if errors.Is(err, os.ErrNotExist) {
+	if err != nil && sys.IsMissing(err, dataPath) {
 		return 0, false, nil
 	}
 	if err != nil {

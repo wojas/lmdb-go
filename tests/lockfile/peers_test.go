@@ -38,7 +38,7 @@ func oracleDir(t *testing.T) string {
 	if d := coracle.InteropBin(os.Getenv("RLMDB_DIR"), "cpeer10"); d != "" {
 		return d
 	}
-	t.Skip("C oracles not found: set LMDB_ORACLE_BIN (scripts/build-c-oracles.sh) or RLMDB_DIR")
+	t.Skip("C oracles not found: set LMDB_ORACLE_BIN (scripts/build-c-oracles.sh, cmd/build-c-oracles) or RLMDB_DIR")
 	return ""
 }
 
@@ -61,11 +61,10 @@ func sides(t *testing.T) []cside {
 		t.Fatal(err)
 	}
 	probe.Close()
+	bin := func(name string) string { return filepath.Join(d, coracle.Exe(name)) }
 	return []cside{
-		{format.V09, lockfile.LockV09, filepath.Join(d, "cpeer"), filepath.Join(d, "mdb_stat"),
-			filepath.Join(d, "layout_dump"), lockfile.LockV10},
-		{format.V10, lockfile.LockV10, filepath.Join(d, "cpeer10"), filepath.Join(d, "mdb_stat10"),
-			filepath.Join(d, "layout_dump10"), lockfile.LockV09},
+		{format.V09, lockfile.LockV09, bin("cpeer"), bin("mdb_stat"), bin("layout_dump"), lockfile.LockV10},
+		{format.V10, lockfile.LockV10, bin("cpeer10"), bin("mdb_stat10"), bin("layout_dump10"), lockfile.LockV09},
 	}
 }
 

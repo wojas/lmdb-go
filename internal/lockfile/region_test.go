@@ -72,7 +72,8 @@ func TestOpenArguments(t *testing.T) {
 	if _, err := Open(path, 0o644, 0, false, LockV09); err != syscall.EINVAL {
 		t.Errorf("0 readers: %v", err)
 	}
-	if _, err := Open(filepath.Join(path, "x", "lock.mdb"), 0o644, 4, false, LockV09); !errors.Is(err, syscall.ENOENT) {
+	// ENOENT; on Windows ERROR_PATH_NOT_FOUND.
+	if _, err := Open(filepath.Join(path, "x", "lock.mdb"), 0o644, 4, false, LockV09); !errors.Is(err, os.ErrNotExist) {
 		t.Errorf("missing directory: %v", err)
 	}
 }
@@ -128,7 +129,7 @@ func TestFreshTable(t *testing.T) {
 		}
 		h := r.Header()
 		if h.Magic != Magic || h.Format != l.LockFormat || h.TxnID != 7 || h.NumReaders != 4 ||
-			(h.MutexID != 0) != (l.Objects == SemaphoreHash) {
+			(h.MutexID != 0) != l.Objects.storesHash() {
 			t.Fatalf("v%d: header %+v", l.Version, h)
 		}
 		if err := r.LockWriter(noRepair); err != nil {
@@ -178,35 +179,6 @@ func TestLargerFileKeepsItsSlots(t *testing.T) {
 	defer r.Close()
 	if r.MaxReaders() != 10 {
 		t.Fatalf("max readers %d", r.MaxReaders())
-	}
-}
-
-// TestSemaphoresRemovedByLastUser: on macOS the last user's Close unlinks
-// the semaphores (mdb_env_close0).
-func TestSemaphoresRemovedByLastUser(t *testing.T) {
-	needLocks(t)
-	if runtime.GOOS != "darwin" {
-		t.Skip("named semaphores are macOS's")
-	}
-	for _, l := range layouts() {
-		r := openRegion(t, filepath.Join(t.TempDir(), "lock.mdb"), l)
-		r.Downgrade(0)
-		h := r.Header()
-		rname, wname := string(h.RName), string(h.WName)
-		if l.Objects == SemaphoreHash {
-			rname, wname = semNameV10(h.MutexID, 'r'), semNameV10(h.MutexID, 'w')
-		}
-		for _, n := range []string{rname, wname} {
-			s, err := openSemaphore(n)
-			if err != nil {
-				t.Fatalf("v%d: %s not there: %v", l.Version, n, err)
-			}
-			s.close(false)
-		}
-		r.Close()
-		if _, err := openSemaphore(rname); err != syscall.ENOENT {
-			t.Fatalf("v%d: %s still there: %v", l.Version, rname, err)
-		}
 	}
 }
 
@@ -333,6 +305,16 @@ func (h *helper) kill() {
 	}
 }
 
+// needOwnerDeath skips tests of locks that tell the next locker about a
+// dead owner: Linux's robust mutexes and Windows's mutexes, not macOS's
+// semaphores.
+func needOwnerDeath(t *testing.T) {
+	t.Helper()
+	if runtime.GOOS != "linux" && runtime.GOOS != "windows" {
+		t.Skip("robust mutexes are Linux's and Windows's")
+	}
+}
+
 // noRepair is a LockWriter callback for tests in which no writer dies.
 func noRepair() (uint64, error) { return 0, errors.New("unexpected dead owner") }
 
@@ -371,14 +353,18 @@ func TestVersionMismatchWhileHeld(t *testing.T) {
 
 		// A wrong magic is MDB_INVALID (this process holds no record locks
 		// on the file, so writing it through another descriptor is fine).
-		f, err := os.OpenFile(path, os.O_RDWR, 0)
-		if err != nil {
-			t.Fatal(err)
-		}
-		f.WriteAt([]byte{0, 0, 0, 0}, 0)
-		f.Close()
-		if _, err := Open(path, 0o644, 4, false, l); err != format.Invalid {
-			t.Fatalf("v%d bad magic: %v", l.Version, err)
+		// Not on Windows: byte 0, the lock byte, cannot be written there
+		// while a process holds the environment (locks are mandatory).
+		if runtime.GOOS != "windows" {
+			f, err := os.OpenFile(path, os.O_RDWR, 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			f.WriteAt([]byte{0, 0, 0, 0}, 0)
+			f.Close()
+			if _, err := Open(path, 0o644, 4, false, l); err != format.Invalid {
+				t.Fatalf("v%d bad magic: %v", l.Version, err)
+			}
 		}
 		h.release(t)
 	}
@@ -456,12 +442,11 @@ func TestReaderCheckClearsDeadProcess(t *testing.T) {
 
 // TestWriterOwnerDied: a process killed while holding the writer mutex
 // leaves it to the next writer, which repairs as mdb_mutex_failed does
-// (Linux; semaphores are not robust).
+// (Linux's robust mutexes, Windows's abandoned mutexes; semaphores are not
+// robust).
 func TestWriterOwnerDied(t *testing.T) {
 	needLocks(t)
-	if runtime.GOOS != "linux" {
-		t.Skip("robust mutexes are Linux's")
-	}
+	needOwnerDeath(t)
 	for _, l := range layouts() {
 		path := filepath.Join(t.TempDir(), "lock.mdb")
 		r := openRegion(t, path, l)
@@ -491,13 +476,14 @@ func TestWriterOwnerDied(t *testing.T) {
 	}
 }
 
-// TestWriterRepairFailure: a failed repair leaves the mutex not
-// recoverable, rather than letting writers work on unrepaired state.
+// TestWriterRepairFailure: a failed repair leaves a robust mutex not
+// recoverable, rather than letting writers work on unrepaired state. On
+// Windows the mutex is released normally, as C releases it, so the next
+// writer is not told about the dead owner (rlmdb KNOWN_C_BUGS.md #40, as
+// for SysV semaphores).
 func TestWriterRepairFailure(t *testing.T) {
 	needLocks(t)
-	if runtime.GOOS != "linux" {
-		t.Skip("robust mutexes are Linux's")
-	}
+	needOwnerDeath(t)
 	path := filepath.Join(t.TempDir(), "lock.mdb")
 	r := openRegion(t, path, LockV09)
 	defer r.Close()
@@ -507,7 +493,15 @@ func TestWriterRepairFailure(t *testing.T) {
 	if err := r.LockWriter(func() (uint64, error) { return 0, broken }); err != broken {
 		t.Fatalf("repair error: %v", err)
 	}
-	if err := r.LockWriter(func() (uint64, error) { return 0, nil }); err != syscall.ENOTRECOVERABLE {
+	if runtime.GOOS == "windows" {
+		called := false
+		if err := r.LockWriter(func() (uint64, error) { called = true; return 0, nil }); err != nil || called {
+			t.Fatalf("after a failed repair: %v, repair called %v", err, called)
+		}
+		r.UnlockWriter()
+		return
+	}
+	if err := r.LockWriter(func() (uint64, error) { return 0, nil }); err != errNotRecoverable {
 		t.Fatalf("after a failed repair: %v", err)
 	}
 }
@@ -516,9 +510,7 @@ func TestWriterRepairFailure(t *testing.T) {
 // mutex; the next slot allocation repairs and goes on.
 func TestReaderMutexOwnerDied(t *testing.T) {
 	needLocks(t)
-	if runtime.GOOS != "linux" {
-		t.Skip("robust mutexes are Linux's")
-	}
+	needOwnerDeath(t)
 	for _, l := range layouts() {
 		path := filepath.Join(t.TempDir(), "lock.mdb")
 		r := openRegion(t, path, l)
@@ -539,12 +531,11 @@ func TestReaderMutexOwnerDied(t *testing.T) {
 
 // TestWriterThreadExit: a goroutine that ends while holding the writer lock
 // ends its OS thread (it is pinned), and the kernel hands the robust mutex
-// to the next locker as from a dead process, also in this process.
+// (Windows: the abandoned mutex) to the next locker as from a dead
+// process, also in this process.
 func TestWriterThreadExit(t *testing.T) {
 	needLocks(t)
-	if runtime.GOOS != "linux" {
-		t.Skip("robust mutexes are Linux's")
-	}
+	needOwnerDeath(t)
 	r := openRegion(t, filepath.Join(t.TempDir(), "lock.mdb"), LockV09)
 	r.Downgrade(1)
 	done := make(chan error)
@@ -573,12 +564,11 @@ func TestWriterThreadExit(t *testing.T) {
 	r.Close()
 }
 
-// TestUnlockWriterFromAnotherThread: a robust mutex belongs to its thread.
+// TestUnlockWriterFromAnotherThread: a robust mutex (a Windows mutex)
+// belongs to its thread.
 func TestUnlockWriterFromAnotherThread(t *testing.T) {
 	needLocks(t)
-	if runtime.GOOS != "linux" {
-		t.Skip("robust mutexes are Linux's")
-	}
+	needOwnerDeath(t)
 	r := openRegion(t, filepath.Join(t.TempDir(), "lock.mdb"), LockV09)
 	defer r.Close()
 	r.Downgrade(1)
@@ -591,7 +581,7 @@ func TestUnlockWriterFromAnotherThread(t *testing.T) {
 		defer runtime.UnlockOSThread()
 		errc <- r.UnlockWriter()
 	}()
-	if err := <-errc; err != syscall.EPERM {
+	if err := <-errc; err != errNotOwner {
 		t.Fatalf("unlock from another thread: %v", err)
 	}
 	if err := r.UnlockWriter(); err != nil {

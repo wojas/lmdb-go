@@ -318,10 +318,11 @@ func TestReaderCheckAcrossImplementations(t *testing.T) {
 
 // TestWriterKilledHoldingLock: a C writer killed while it holds the writer
 // mutex is recovered from by Go, and a Go writer killed while it holds it
-// by C (robust mutexes, EOWNERDEAD and mdb_mutex_failed; Linux).
+// by C (robust mutexes, EOWNERDEAD and mdb_mutex_failed; Linux. Windows
+// mutexes are abandoned, WAIT_ABANDONED, which C handles the same way).
 func TestWriterKilledHoldingLock(t *testing.T) {
-	if runtime.GOOS != "linux" {
-		t.Skip("robust mutexes are Linux's; semaphores stay taken when the holder dies, in C too")
+	if runtime.GOOS != "linux" && runtime.GOOS != "windows" {
+		t.Skip("robust mutexes are Linux's and Windows's; semaphores stay taken when the holder dies, in C too")
 	}
 	if os.Getenv("LMDB_TEST_NO_ROBUST_MUTEX") != "" {
 		// QEMU user emulation has no robust futexes (in C too): the dead
