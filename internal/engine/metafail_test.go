@@ -1,11 +1,14 @@
 package engine
 
 // A meta page write that fails after its bytes reached the file, and
-// plain copies of a file holding such a meta page.
+// plain copies of a file holding such a meta page (rlmdb bf3a0c0,
+// KNOWN_C_BUGS.md #41).
 
 import (
 	"bytes"
 	"fmt"
+	"os"
+	"path/filepath"
 	"syscall"
 	"testing"
 
@@ -42,56 +45,175 @@ func copyAndRead(t *testing.T, env *Env, k string) ([]byte, error, error) {
 	return bytes.Clone(v), err, cp.Audit()
 }
 
-// The meta page of a commit was written, but its write or the sync after
-// it failed (macOS syncs after the O_DSYNC write: F_FULLFSYNC; Linux's
-// O_DSYNC write itself can fail after the page cache took the bytes): the
-// environment is unusable (MDB_FATAL_ERROR: transactions and copies fail
-// with MDB_PANIC) and the old txnid is written back, as C does when the
-// write fails (review finding, round 2, P2-4: after a failed sync nothing
-// of that happened, so the file held meta N+1 while N was published, and a
-// plain copy pinned N but copied meta N+1, naming pages it left out).
+// fillKeys commits keys from..from+n-1 (key%06d), each with 300 bytes of
+// its number.
+func fillKeys(t *testing.T, env *Env, from, n int) {
+	t.Helper()
+	w := beginW(t, env)
+	for i := from; i < from+n; i++ {
+		if err := w.Put(MainDBI, []byte(fmt.Sprintf("key%06d", i)), bytes.Repeat([]byte{byte(i)}, 300), 0); err != nil {
+			w.Abort()
+			t.Fatal(err)
+		}
+	}
+	must(t, w.Commit())
+}
+
+// assertKeys checks that the newest snapshot of env holds the keys keys
+// of fillKeys, with their values, and no others.
+func assertKeys(t *testing.T, env *Env, keys []int) {
+	t.Helper()
+	got := scan(t, env, MainDBI)
+	if len(got) != len(keys) {
+		t.Fatalf("%d keys, want %d", len(got), len(keys))
+	}
+	for j, i := range keys {
+		if got[j][0] != fmt.Sprintf("key%06d", i) || got[j][1] != string(bytes.Repeat([]byte{byte(i)}, 300)) {
+			t.Fatalf("item %d: key %q, want key%06d", j, got[j][0], i)
+		}
+	}
+}
+
+// snapshotID is the txnid a new read transaction of env reads.
+func snapshotID(t *testing.T, env *Env) uint64 {
+	t.Helper()
+	r := beginR(t, env)
+	defer r.Abort()
+	return r.ID()
+}
+
+// fileTxnIDs is mm_txnid of meta pages 0 and 1 as the data file of env
+// holds them (not as the map shows them).
+func fileTxnIDs(t *testing.T, env *Env, dir string) [2]uint64 {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(dir, "data.mdb"))
+	must(t, err)
+	var ids [2]uint64
+	for i := range ids {
+		off := i*env.PageSize() + env.layout.MetaOffset() + format.MetaTxnID
+		ids[i], _ = format.Get64(data, off)
+	}
+	return ids
+}
+
+// A sync that fails after the meta page reached the file (on macOS the
+// F_FULLFSYNC after the O_DSYNC write; injected here, after the write, on
+// every platform) is a failed meta page write: the environment is unusable
+// (MDB_FATAL_ERROR: transactions and copies fail with MDB_PANIC), and the
+// old txnid goes back into the page, so the file holds no commit newer
+// than the published one (review finding, round 2, P2-4: the file kept
+// meta N+1 while N was published, and a plain copy pinned N but copied
+// meta N+1, naming pages it left out). Without a lock file, the txnid the
+// file's handles share stays where it was, and another handle goes on
+// reading, copying and writing. (rlmdb robust_failed_meta_sync_is_fatal;
+// with a lock file a copy by another process is in tests/engine.)
 func TestMetaWriteFailureIsFatal(t *testing.T) {
 	for _, f := range []format.Format{format.V09, format.V10} {
 		for _, flags := range []uint32{0, format.NoLock} {
 			t.Run(fmt.Sprintf("%v/flags=%#x", f, flags), func(t *testing.T) {
-				env, dir := openTest(t, f, Options{Flags: flags})
-				putKV(t, env, "k", "old")
-				testHookMetaWritten = func(e *Env) error {
-					if e == env {
-						return syscall.EIO
-					}
-					return nil
-				}
-				err := putBig(t, env, "k", 100000)
-				testHookMetaWritten = nil
-				if err != syscall.EIO {
-					t.Fatalf("commit: %v, want EIO", err)
-				}
-				if err := env.BeginRead(new(Txn)); err != format.Panic {
-					t.Fatalf("read transaction: %v, want MDB_PANIC", err)
-				}
-				if _, err := env.BeginTxn(nil, 0); err != format.Panic {
-					t.Fatalf("write transaction: %v, want MDB_PANIC", err)
-				}
-				if _, err, _ := copyAndRead(t, env, "k"); err != format.Panic {
-					t.Fatalf("copy: %v, want MDB_PANIC", err)
-				}
-				// The failed commit's meta page has the old txnid again.
-				if info, err := env.Info(); err != nil || info.LastTxnID != 1 {
-					t.Fatalf("newest meta page: txnid %d, %v; want 1", info.LastTxnID, err)
-				}
-				env.Close()
-				env2, err := Open(dir, Options{Flags: flags | format.NoSync, OpenLock: OpenMemLock})
-				if err != nil {
-					t.Fatal(err)
-				}
-				defer env2.Close()
-				if v, err, aerr := copyAndRead(t, env2, "k"); err != nil || string(v) != "old" || aerr != nil {
-					t.Fatalf("copy after reopen: %q, %v, audit %v", v, err, aerr)
-				}
+				failedMetaSync(t, f, flags)
 			})
 		}
 	}
+}
+
+func failedMetaSync(t *testing.T, f format.Format, flags uint32) {
+	env, dir := openTest(t, f, Options{Flags: flags})
+	fillKeys(t, env, 0, 300)
+	txnid := snapshotID(t, env)
+	st, err := os.Stat(filepath.Join(dir, "data.mdb"))
+	must(t, err)
+	end := st.Size()
+	// The page the commit writes, and the old txnid it holds.
+	slot := int((txnid + 1) & 1)
+	old := fileTxnIDs(t, env, dir)[slot]
+	if old >= txnid {
+		t.Fatalf("meta page %d holds txnid %d, newer than %d", slot, old, txnid)
+	}
+	var other *Env
+	if flags&format.NoLock != 0 {
+		if other, err = Open(dir, Options{Format: f, Flags: flags | format.NoSync, MapSize: 64 << 20}); err != nil {
+			t.Fatal(err)
+		}
+		defer other.Close()
+	}
+
+	// A commit whose pages go past the snapshot's last page.
+	w := beginW(t, env)
+	for i := 300; i < 2300; i++ {
+		must(t, w.Put(MainDBI, []byte(fmt.Sprintf("key%06d", i)), bytes.Repeat([]byte{byte(i)}, 300), 0))
+	}
+	env.FailNextMetaSync(syscall.EIO)
+	if err := w.Commit(); err != syscall.EIO {
+		t.Fatalf("commit: %v, want EIO", err)
+	}
+	if st, err := os.Stat(filepath.Join(dir, "data.mdb")); err != nil || st.Size() <= end {
+		t.Fatalf("the commit wrote no new pages: %v", err)
+	}
+	// MDB_FATAL_ERROR: every transaction and copy fails with MDB_PANIC.
+	if err := env.BeginRead(new(Txn)); err != format.Panic {
+		t.Fatalf("read transaction: %v, want MDB_PANIC", err)
+	}
+	if _, err := env.BeginTxn(nil, 0); err != format.Panic {
+		t.Fatalf("write transaction: %v, want MDB_PANIC", err)
+	}
+	if _, err, _ := copyAndRead(t, env, "key000000"); err != format.Panic {
+		t.Fatalf("copy: %v, want MDB_PANIC", err)
+	}
+	// The page that was written has the old txnid again.
+	ids := fileTxnIDs(t, env, dir)
+	if ids[slot] != old || ids[slot^1] != txnid {
+		t.Fatalf("meta pages hold txnids %v, want %d in page %d and %d in the other", ids, old, slot, txnid)
+	}
+	keys := make([]int, 0, 320)
+	for i := 0; i < 300; i++ {
+		keys = append(keys, i)
+	}
+	if other != nil {
+		// A plain copy by another handle: its newest meta page is the
+		// published snapshot, whose pages it holds.
+		if id := snapshotID(t, other); id != txnid {
+			t.Fatalf("the other handle reads txnid %d, want %d", id, txnid)
+		}
+		cdir := t.TempDir()
+		must(t, other.Copy(cdir, 0))
+		cp, err := Open(cdir, Options{Format: f, Flags: format.NoLock | format.ReadOnly})
+		must(t, err)
+		if info, err := cp.Info(); err != nil || info.LastTxnID != txnid {
+			t.Fatalf("the copy's newest meta page: txnid %d, %v; want %d", info.LastTxnID, err, txnid)
+		}
+		assertKeys(t, cp, keys)
+		mustAudit(t, cp)
+		cp.Close()
+		// The other handle writes on, from the published snapshot.
+		fillKeys(t, other, 5000, 10)
+		for i := 5000; i < 5010; i++ {
+			keys = append(keys, i)
+		}
+		assertKeys(t, other, keys)
+		if ids = fileTxnIDs(t, env, dir); ids[slot] != txnid+1 {
+			t.Fatalf("meta page %d: txnid %d after the other handle's commit, want %d", slot, ids[slot], txnid+1)
+		}
+		other.Close()
+	}
+	last := max(ids[0], ids[1])
+	env.Close()
+	env2, err := Open(dir, Options{Format: f, Flags: flags | format.NoSync, OpenLock: OpenMemLock})
+	must(t, err)
+	defer env2.Close()
+	if id := snapshotID(t, env2); id != last {
+		t.Fatalf("after the re-open: txnid %d, want %d", id, last)
+	}
+	assertKeys(t, env2, keys)
+	mustAudit(t, env2)
+	if v, err, aerr := copyAndRead(t, env2, "key000001"); err != nil || len(v) != 300 || aerr != nil {
+		t.Fatalf("copy after the re-open: %d bytes, %v, audit %v", len(v), err, aerr)
+	}
+	fillKeys(t, env2, 6000, 10)
+	for i := 6000; i < 6010; i++ {
+		keys = append(keys, i)
+	}
+	assertKeys(t, env2, keys)
 }
 
 // A plain copy writes no meta page newer than the snapshot it copies: one

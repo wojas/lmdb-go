@@ -92,9 +92,12 @@ type Env struct {
 	dbis dbiRegistry
 
 	flags atomic.Uint32
-	// fatal is MDB_FATAL_ERROR: a meta page write failed; every new
-	// transaction fails with MDB_PANIC.
+	// fatal is MDB_FATAL_ERROR: a meta page write (or the sync after it)
+	// failed; every new transaction fails with MDB_PANIC.
 	fatal atomic.Bool
+	// metaSyncFault is the errno the sync after the next meta page write
+	// is to fail with (0: none), for tests (FailNextMetaSync).
+	metaSyncFault atomic.Int32
 
 	// writerMu serialises the write transactions of this handle and guards
 	// writer; the lock region's writer lock (taken after it) serialises
@@ -694,6 +697,24 @@ func (e *Env) DataFile() *os.File { return e.dataFile }
 // SetDirtyLimit lowers the dirty-list capacity for later write
 // transactions so tests can make small transactions spill (not C API).
 func (e *Env) SetDirtyLimit(pages int) { e.dirtyLimit.Store(int64(max(pages, 16))) }
+
+// FailNextMetaSync makes the sync after the next meta page write of this
+// handle fail with errno, after the page has reached the file: what a
+// failing disk does to the F_FULLFSYNC after the write on macOS, or to the
+// O_DSYNC write itself elsewhere. For tests (not C API; rlmdb's
+// Environment::fail_next_meta_sync).
+func (e *Env) FailNextMetaSync(errno syscall.Errno) { e.metaSyncFault.Store(int32(errno)) }
+
+// injectedMetaSyncError is the failure FailNextMetaSync asked for, once.
+func (e *Env) injectedMetaSyncError() error {
+	if e.metaSyncFault.Load() == 0 {
+		return nil
+	}
+	if errno := e.metaSyncFault.Swap(0); errno != 0 {
+		return syscall.Errno(errno)
+	}
+	return nil
+}
 
 // SetMapSize is mdb_env_set_mapsize on an open environment: map the data
 // file with size bytes (0: the size in the newest meta page), raised to

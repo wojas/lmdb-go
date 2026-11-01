@@ -986,5 +986,8 @@ func TestDifferential10(t *testing.T) {
 }
 
 func TestMain(m *testing.M) {
+	if src := os.Getenv(copyHelperSrc); src != "" {
+		os.Exit(copyHelper(src))
+	}
 	os.Exit(m.Run())
 }
