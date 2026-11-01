@@ -405,12 +405,21 @@ func TestVersionMismatchWhileHeld(t *testing.T) {
 		// on the file, so writing it through another descriptor is fine).
 		// Not on Windows: byte 0, the lock byte, cannot be written there
 		// while a process holds the environment (locks are mandatory).
+		// The magic is cleared through a shared mapping, as the table is
+		// always written: on OpenBSD, which has no unified buffer cache,
+		// a write(2) is not seen by the mapping the helper keeps (and so
+		// not by Open's, which shares its pages), in C as here.
 		if runtime.GOOS != "windows" {
 			f, err := os.OpenFile(path, os.O_RDWR, 0)
 			if err != nil {
 				t.Fatal(err)
 			}
-			f.WriteAt([]byte{0, 0, 0, 0}, 0)
+			m, err := mapLockFile(f.Fd(), MagicOffset+4)
+			if err != nil {
+				t.Fatal(err)
+			}
+			m.storeUint32(MagicOffset, 0)
+			m.unmap()
 			f.Close()
 			if _, err := Open(path, 0o644, 4, false, l); err != format.Invalid {
 				t.Fatalf("v%d bad magic: %v", l.Version, err)
