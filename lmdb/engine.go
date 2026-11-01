@@ -263,6 +263,9 @@ func operr(op string, err error) error {
 	if errors.Is(err, errNoSharedLocks) {
 		return ErrNoSharedLocking
 	}
+	if errors.Is(err, engine.ErrWriterUnlock) && errors.Is(err, errNotOwner) {
+		return &txnThreadError{errno: errNotOwner}
+	}
 	// A system error the os package wrapped: its errno, as above. (On
 	// Windows operrno would take a system error code such as
 	// ERROR_ACCESS_DENIED, 5, for the C runtime's errno of that number.)

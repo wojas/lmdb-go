@@ -140,5 +140,8 @@ func IsErrnoFn(err error, fn func(error) bool) bool {
 	if err, ok := err.(*OpError); ok {
 		return fn(err.Errno)
 	}
+	if err, ok := err.(*txnThreadError); ok {
+		return fn(err.errno)
+	}
 	return fn(err)
 }

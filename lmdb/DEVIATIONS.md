@@ -34,16 +34,18 @@ differently from C is in `internal/engine/PORTING.md` and in rlmdb's
   `rlmdb_env_set_pagesize`); `EINVAL` at `Open` for an LMDB 0.9 one.
 * `SharedLockingAvailable() bool` and `ErrNoSharedLocking`: see "Builds
   without cgo".
+* `ErrTxnWrongThread`: see "Write transactions and threads".
 
 ## Behaviour that differs
 
-* **Version.** `Version()` reports 0, 9, 85 and `VersionString()`
-  `LMDB 0.9.85: (lmdb-go, Go port of rlmdb)`, as rlmdb's C library does: the
-  0.9 series whose API and default format this is, with a patch level
-  above every C release so that programs can tell the two apart. v1
-  reported its bundled C library (0.9.35). `Env.EngineVersion` reports the
-  C release whose format an environment matches: 0.9.36 or 1.0.2 (lmdb-go
-  v2: the bundled engine's `mdb_version`).
+* **Version.** `Version()` reports 0, 9, 90 and `VersionString()`
+  `LMDB 0.9.90: (lmdb-go, Go port of rlmdb)`: the 0.9 series whose API
+  and default format this is, with a patch level above every C release so
+  that programs can tell the two apart (rlmdb's C library reports 0.9.85
+  for the same reason; 90 reads as "go"). v1 reported its bundled C
+  library (0.9.35). `Env.EngineVersion` reports the C release whose format
+  an environment matches: 0.9.36 or 1.0.2 (lmdb-go v2: the bundled
+  engine's `mdb_version`).
 * **Formats.** Both formats are read and written by one engine; v2 has two
   C engines. As in v2, an existing file is opened in its format,
   `SetFormat` asking for the other one is `ErrFormatConflict`, and a file
@@ -146,9 +148,14 @@ differently from C is in `internal/engine/PORTING.md` and in rlmdb's
   begin and end on one goroutine locked to its OS thread (`Update` does
   that). The lock file's writer mutex pins the goroutine itself while it
   holds the lock. A write transaction committed on another thread (a
-  program error) gets the mutex's error (Linux: `EPERM`) and the mutex
-  stays with the thread that took it, until it exits; C ignores the
-  error.
+  program error) is committed, but `Commit` returns an error wrapping
+  `ErrTxnWrongThread` and the mutex's error (Linux and FreeBSD: `EPERM`;
+  Windows: `ERROR_NOT_OWNER`), so `errors.Is` finds either and
+  `IsErrnoSys(err, syscall.EPERM)` holds; it is not an `*OpError`. The
+  mutex stays with the thread that took it, until that thread exits, and
+  the next writer recovers it as from a dead writer. C ignores the error
+  (v1's `Commit` returned nil); `Abort` reports nothing, as C. Semaphores
+  (macOS, the other BSDs) belong to no thread: no error there.
 * **`ReaderList`.** `fn` gets one line per call, as C's message function.
   `fn == nil` is `EINVAL` (v1: an `OpError` holding errno -1). Before
   `Open` and with `NoLock` the text is `(no reader locks)` (C's output
@@ -194,8 +201,9 @@ differently from C is in `internal/engine/PORTING.md` and in rlmdb's
   `Global\MDBw…`, `LockFileEx` on byte 0). As with v1 on C there, `FD`
   returns and `CopyFD` takes a `HANDLE`, and a write transaction holds a
   mutex that belongs to its thread (another thread's `Commit` gets
-  `ERROR_NOT_OWNER`). An LMDB 0.9 data file opened for writing is as long
-  as its map size (C 0.9 extends it in order to map it), and is never
+  `ErrTxnWrongThread`, wrapping `ERROR_NOT_OWNER`). An LMDB 0.9 data
+  file opened for writing is as long as its map size (C 0.9 extends it
+  in order to map it), and is never
   shrunk (C 0.9 tries when the map size shrinks; rlmdb does not); an LMDB
   1.0 file grows with its writes. Errors: LMDB's own errno values are Go's
   `syscall` constants (`syscall.EINVAL`, ...), as v1's `error_windows.go`
@@ -205,8 +213,8 @@ differently from C is in `internal/engine/PORTING.md` and in rlmdb's
   number (5 became `EIO`). `error_windows.go` is kept. `ReaderCheck`
   clears the slots of a process that has exited even while some program
   still holds a handle to it (C keeps them until the last handle closes:
-  rlmdb `KNOWN_C_BUGS.md` #42). Status: builds and vets for windows/amd64
-  and windows/arm64; the tests have not run on Windows yet.
+  rlmdb `KNOWN_C_BUGS.md` #42). The port builds and vets for
+  windows/amd64 and windows/arm64; the tests have not run on Windows.
 * **FreeBSD, OpenBSD, NetBSD, DragonFly** (64-bit) follow rlmdb's BSD
   support and C LMDB's selection there, with cgo for the locks as on
   Linux. FreeBSD: Linux's robust process-shared mutexes in the lock file
@@ -217,10 +225,10 @@ differently from C is in `internal/engine/PORTING.md` and in rlmdb's
   about one that died; `MDB_FDATASYNC` is `fsync`. On OpenBSD, which has
   no unified buffer cache, every write to the data file is followed by
   `msync(MS_INVALIDATE)` of the map, widened to whole OS pages where C's
-  call fails unnoticed (rlmdb `KNOWN_C_BUGS.md` #39). Status: builds and
+  call fails unnoticed (rlmdb `KNOWN_C_BUGS.md` #39). The port builds and
   vets (`CGO_ENABLED=0`) for amd64 and arm64 (DragonFly: amd64); the
   cgo lock files are compiled for macOS and Linux only, and nothing has
-  run on a BSD yet (rlmdb's suites run on FreeBSD in its CI, this port's
+  run on a BSD (rlmdb's suites run on FreeBSD in its CI, this port's
   do not).
 * **64-bit only.** lmdb-go v1 built and ran on 32-bit platforms with C
   LMDB, whose 32-bit data files are a format of their own (the file

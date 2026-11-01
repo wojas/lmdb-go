@@ -2,7 +2,8 @@
 
 This is a fork of [PowerDNS/lmdb-go](https://github.com/PowerDNS/lmdb-go) v1
 in which the bundled C library is replaced by an implementation of LMDB in
-Go, ported from rlmdb, a Rust rewrite of LMDB. It keeps lmdb-go v1's API and
+Go, ported from [rlmdb](https://github.com/wojas/rlmdb), a Rust rewrite of
+LMDB. It keeps lmdb-go v1's API and
 module path, so existing programs can switch with a `replace` directive, and
 adds lmdb-go v2's API for the LMDB 1.0 file format. It uses C LMDB's data and
 lock files, so C LMDB 0.9 and 1.0, rlmdb and Go processes can use one
@@ -72,7 +73,7 @@ commands in `cmd/` and `exp/cmd/`. Read the API documentation with
   reader can see are never reused, also across several `NoLock` handles
   of one environment, which share their reader table; with a lock file,
   opening one environment twice in a process fails with `EBUSY`.
-* **Version.** `lmdb.Version()` reports 0.9.85, above every C 0.9 release, so
+* **Version.** `lmdb.Version()` reports 0.9.90, above every C 0.9 release, so
   programs can tell this implementation from C.
 
 Differences from lmdb-go v1 on C (a few v1 bugs not kept, ignored flags such
@@ -119,7 +120,8 @@ nested module `tests/`. See [tests/gopeer/README.md](tests/gopeer/README.md),
 ## History and credits
 
 LMDB was written by Howard Chu of Symas Corp. The engine is ported from
-rlmdb, a Rust rewrite that follows LMDB function by function.
+[rlmdb](https://github.com/wojas/rlmdb), a Rust rewrite that follows LMDB
+function by function.
 
 The Go API and this repository's history start with Ferenc Szalai's gomdb
 (2013), which Bryan Matsuo developed into

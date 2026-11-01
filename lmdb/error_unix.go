@@ -14,3 +14,8 @@ func operrno(op string, ret int) error {
 	}
 	return &OpError{Op: op, Errno: syscall.Errno(ret)}
 }
+
+// errNotOwner is what unlocking another thread's writer mutex returns
+// (pthread_mutex_unlock of a robust mutex, Linux and FreeBSD; semaphores,
+// which belong to no thread, never fail so).
+const errNotOwner = syscall.EPERM

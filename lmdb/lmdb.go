@@ -165,7 +165,7 @@ package lmdb
 import "github.com/PowerDNS/lmdb-go/internal/format"
 
 // Version return the major, minor, and patch version numbers of the LMDB
-// implementation and a string representation of the version: 0, 9, 85
+// implementation and a string representation of the version: 0, 9, 90
 // (see versionString).
 //
 // See mdb_version.
@@ -180,10 +180,10 @@ func VersionString() string {
 	return versionString
 }
 
-// versionString is what mdb_version returns.  The numbers are 0.9.85: the 0.9
+// versionString is what mdb_version returns.  The numbers are 0.9.90: the 0.9
 // series, whose API and default data format this is, with a patch level
 // above every C release so that a program can tell this implementation from C
-// LMDB, as rlmdb's C library reports them ("LMDB 0.9.85: (rlmdb <version>)",
-// rlmdb DUAL_FORMAT.md).  Env.EngineVersion says which C release an open
-// environment's data format matches.
-const versionString = "LMDB 0.9.85: (lmdb-go, Go port of rlmdb)"
+// LMDB, as rlmdb's C library does with 0.9.85 ("LMDB 0.9.85: (rlmdb
+// <version>)", rlmdb DUAL_FORMAT.md); 90 reads as "go".  Env.EngineVersion
+// says which C release an open environment's data format matches.
+const versionString = "LMDB 0.9.90: (lmdb-go, Go port of rlmdb)"

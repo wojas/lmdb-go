@@ -337,6 +337,113 @@ func TestCursor_Get_copies(t *testing.T) {
 	}
 }
 
+// copyPair returns the key capped at its length, so that appending to it
+// reallocates and never writes into the value behind it.
+func TestCopyPair_keyCapped(t *testing.T) {
+	for _, tc := range []struct{ k, v string }{
+		{"key", "value"}, {"key", ""}, {"", "value"}, {"", ""},
+	} {
+		k, v := copyPair([]byte(tc.k), []byte(tc.v))
+		if string(k) != tc.k || string(v) != tc.v || k == nil || v == nil {
+			t.Fatalf("copyPair(%q, %q) = %q, %q", tc.k, tc.v, k, v)
+		}
+		if cap(k) != len(k) {
+			t.Errorf("copyPair(%q, %q): cap(key) = %d, len %d", tc.k, tc.v, cap(k), len(k))
+		}
+		_ = append(k, "xxxxxxxx"...)
+		if string(v) != tc.v {
+			t.Errorf("copyPair(%q, %q): value changed to %q by appending to the key", tc.k, tc.v, v)
+		}
+	}
+}
+
+// Every Cursor.Get without RawRead returns key and value in one allocation
+// (copyPair, DEVIATIONS.md "Allocations"): the key's capacity is its
+// length, appending to it moves it, and the value stays as it was.
+func TestCursor_Get_keyCapped(t *testing.T) {
+	env := setup(t)
+	defer clean(env, t)
+	dups := putDups(t, env, "dups", []byte("dk"), "d1", "d2", "d3")
+	var db DBI
+	err := env.Update(func(txn *Txn) (err error) {
+		if db, err = txn.OpenDBI("plain", Create); err != nil {
+			return err
+		}
+		if err := txn.Put(db, []byte("a"), []byte("first"), 0); err != nil {
+			return err
+		}
+		if err := txn.Put(db, []byte("b"), nil, 0); err != nil {
+			return err
+		}
+		return txn.Put(db, []byte("c"), []byte("last"), 0)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	type get struct {
+		name         string
+		dbi          DBI
+		key, val     string
+		op           uint
+		wantK, wantV string
+	}
+	gets := []get{
+		{"First", db, "", "", First, "a", "first"},
+		{"Next", db, "", "", Next, "b", ""},
+		{"Last", db, "", "", Last, "c", "last"},
+		{"Set", db, "a", "", Set, "a", "first"},
+		{"SetKey", db, "b", "", SetKey, "b", ""},
+		{"SetRange", db, "bb", "", SetRange, "c", "last"},
+		{"GetCurrent", db, "", "", GetCurrent, "c", "last"},
+		{"GetBoth", dups, "dk", "d2", GetBoth, "dk", "d2"},
+		{"GetBothRange", dups, "dk", "d20", GetBothRange, "dk", "d3"},
+		{"FirstDup", dups, "", "", FirstDup, "dk", "d1"},
+		{"GetMultiple", dups, "", "", GetMultiple, "dk", "d1d2d3"},
+	}
+	err = env.View(func(txn *Txn) error {
+		curs := map[DBI]*Cursor{}
+		for _, dbi := range []DBI{db, dups} {
+			cur, err := txn.OpenCursor(dbi)
+			if err != nil {
+				return err
+			}
+			defer cur.Close()
+			curs[dbi] = cur
+		}
+		for _, g := range gets {
+			var setkey, setval []byte
+			if g.key != "" {
+				setkey = []byte(g.key)
+			}
+			if g.val != "" {
+				setval = []byte(g.val)
+			}
+			k, v, err := curs[g.dbi].Get(setkey, setval, g.op)
+			if err != nil {
+				return fmt.Errorf("%s: %w", g.name, err)
+			}
+			if string(k) != g.wantK || string(v) != g.wantV {
+				t.Errorf("%s: got %q=%q, want %q=%q", g.name, k, v, g.wantK, g.wantV)
+				continue
+			}
+			if cap(k) != len(k) {
+				t.Errorf("%s: cap(key) = %d, len %d", g.name, cap(k), len(k))
+			}
+			k2 := append(k, "xxxxxxxx"...)
+			if &k2[0] == &k[0] {
+				t.Errorf("%s: appending to the key did not reallocate it", g.name)
+			}
+			if string(v) != g.wantV {
+				t.Errorf("%s: value changed to %q by appending to the key", g.name, v)
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
 // A read transaction that ends leaves its reader slot idle and owned by
 // the process, as C's default (TLS) mode leaves a thread's slot, and the
 // next one reuses it (slot pool, DEVIATIONS.md): ReaderList shows the idle

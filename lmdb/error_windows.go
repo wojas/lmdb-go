@@ -36,3 +36,7 @@ func operrno(op string, ret int) error {
 	}
 	return &OpError{Op: op, Errno: errno}
 }
+
+// errNotOwner is what releasing another thread's writer mutex returns
+// (ReleaseMutex: ERROR_NOT_OWNER).
+const errNotOwner = syscall.Errno(288)

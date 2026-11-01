@@ -20,6 +20,8 @@ package engine
 
 import (
 	"bytes"
+	"errors"
+	"fmt"
 	"syscall"
 
 	"github.com/PowerDNS/lmdb-go/internal/format"
@@ -36,6 +38,12 @@ const (
 	// txnBlocked is MDB_TXN_BLOCKED: most operations are illegal.
 	txnBlocked = txnFinished | txnError | txnHasChild
 )
+
+// ErrWriterUnlock wraps the error of the writer lock's unlock at the end of
+// a top-level write transaction (see Txn.end): with the thread-owned locks
+// (Linux and FreeBSD robust mutexes, Windows mutexes) the transaction ended
+// on another OS thread than the one that began it.
+var ErrWriterUnlock = errors.New("writer lock not released")
 
 // droppedDBI is a handle closed by Drop in this transaction (or a
 // committed child): slot index, the environment slot and its sequence
@@ -244,8 +252,9 @@ func (e *Env) lockWriter(m *sys.DataMap) error {
 // close the handles of databases this transaction created
 // (mdb_dbis_update), drop the dirty pages and cursors, unlock.
 //
-// The error is the writer mutex's unlock failing: the transaction ended on
-// another OS thread than the one that began it (Linux: EPERM). The mutex
+// The error is the writer mutex's unlock failing, wrapped with
+// ErrWriterUnlock: the transaction ended on another OS thread than the one
+// that began it (Linux: EPERM; Windows: ERROR_NOT_OWNER). The mutex
 // stays held by the beginning thread; C ignores this (UNLOCK_MUTEX). The
 // in-process lock is released all the same, so that once that thread ends
 // (its goroutine exits while still pinned) the next writer recovers the
@@ -303,7 +312,10 @@ func (t *Txn) end(keep bool) error {
 			testHookWriterUnlocked(e)
 		}
 		m.Release()
-		return err
+		if err != nil {
+			return fmt.Errorf("%w: %w", ErrWriterUnlock, err)
+		}
+		return nil
 	}
 	return nil
 }

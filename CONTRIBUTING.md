@@ -55,5 +55,5 @@ contributors to follow.
     errors from `go test`, `go vet`, or `golint`.
 
 By submitting a pull request for this project, you are asserting that you have
-the rights to provide it and agree to license your contribution under the MIT
-license to this project.
+the rights to provide it and agree to license your contribution under the BSD
+3-clause license (LICENSE.md) to this project.
