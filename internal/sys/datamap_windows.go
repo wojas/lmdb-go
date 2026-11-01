@@ -283,6 +283,10 @@ func (m *DataMap) unmap() {
 	windows.CloseHandle(m.file)
 }
 
+// Invalidate does nothing on Windows: MapNeedsInvalidate is false, the map
+// and the file share one cache there (MDB_Invalidate is OpenBSD's).
+func (m *DataMap) Invalidate(off uint64, n int) {}
+
 // CommitPages commits n bytes at off of a reserved view, the pages a write
 // transaction takes from the end of the map (C 1.0's mdb_page_alloc,
 // mdb10.c line 2876: VirtualAlloc(MEM_COMMIT, PAGE_READONLY)). That extends

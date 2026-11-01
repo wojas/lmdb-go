@@ -21,13 +21,14 @@ changes; the API for the LMDB 1.0 data format is that of lmdb-go v2.
 DEVIATIONS.md lists where behaviour differs from lmdb-go v1 on C LMDB.
 
 Everything but the two locks that LMDB shares between processes (the writer
-lock and the reader-table lock: pthread mutexes on Linux, POSIX semaphores on
-macOS) is Go.  The locks are libc objects, taken in package internal/lockfile:
-on Linux through cgo; on macOS through cgo in a cgo build (the default) and
-through libSystem directly in a build without cgo.  A Linux program built
-without cgo (CGO_ENABLED=0) can only open environments with the NoLock flag;
-Env.Open without it returns ErrNoSharedLocking.  SharedLockingAvailable tells
-which kind of build this is.
+lock and the reader-table lock: pthread mutexes on Linux and FreeBSD, POSIX
+semaphores on macOS, POSIX or SysV semaphores on OpenBSD, NetBSD and
+DragonFly) is Go.  The locks are libc objects, taken in package
+internal/lockfile: on Linux and the BSDs through cgo; on macOS through cgo in
+a cgo build (the default) and through libSystem directly in a build without
+cgo.  A Linux or BSD program built without cgo (CGO_ENABLED=0) can only open
+environments with the NoLock flag; Env.Open without it returns
+ErrNoSharedLocking.  SharedLockingAvailable tells which kind of build this is.
 
 # LMDB versions
 
@@ -146,7 +147,7 @@ runtime.LockOSThread.  Futhermore, all methods on such transactions must be
 called from the goroutine which created them.  This is a fundamental limitation
 of LMDB even when using the NoTLS flag (which the package always uses): the
 writer lock shared with other processes belongs to the OS thread that took it
-(on Linux a robust pthread mutex).  The
+(on Linux and FreeBSD a robust pthread mutex).  The
 Env.Update method assists the programmer by calling runtime.LockOSThread
 automatically but it cannot sufficiently abstract write transactions to make
 them completely safe in Go.

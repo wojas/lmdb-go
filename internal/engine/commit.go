@@ -169,6 +169,7 @@ func (t *Txn) writeRuns(runs []flushEntry) error {
 			if err := t.writeBatch(f, batch[:n], wpos); err != nil {
 				return err
 			}
+			t.invalidateMap(wpos, wsize)
 			n, wpos, wsize = 0, pos, 0
 		}
 		buf := d.at(r.slot, r.pgno)
@@ -183,6 +184,7 @@ func (t *Txn) writeRuns(runs []flushEntry) error {
 	if err := t.writeBatch(f, batch[:n], wpos); err != nil {
 		return err
 	}
+	t.invalidateMap(wpos, wsize)
 	// Drop the written pages from the dirty list (both ascending).
 	j := 0
 	d.retain(func(pgno uint64, _ []byte) bool {
@@ -211,6 +213,16 @@ func (t *Txn) writeBatch(f *os.File, bufs [][]byte, pos uint64) error {
 	}
 	t.w.flushBuf = b
 	return sys.WriteAt(f, b, int64(pos))
+}
+
+// invalidateMap is MDB_Invalidate: after n bytes at pos were written to
+// the data file, it drops the map's copy of them where the OS does not
+// keep the two in step (OpenBSD: sys.MapNeedsInvalidate, a constant, so
+// this is nothing elsewhere).
+func (t *Txn) invalidateMap(pos uint64, n int) {
+	if sys.MapNeedsInvalidate && n > 0 {
+		t.dmap.Invalidate(pos, n)
+	}
 }
 
 // testHookMetaWrite, if set (tests only), runs in writeMeta just before
@@ -287,6 +299,7 @@ func (t *Txn) writeMeta() error {
 		e.fatal.Store(true)
 		return err
 	}
+	t.invalidateMap(uint64(toggle*ps), ps)
 	e.lock.SetTxnID(txnid)
 	t.wroteMeta(meta)
 	return nil

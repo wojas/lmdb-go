@@ -31,29 +31,39 @@
 //   - Slots are claimed under the reader-table lock in mdb_txn_renew0's
 //     publication order (reset, publish in mti_numreaders, claim with the
 //     pid); a process reuses its slots without the lock.
-//   - The writer lock is held for a whole write transaction. On Linux both
-//     locks are process-shared robust pthread mutexes inside the lock file,
-//     and the owner dying while holding one is repaired as mdb_mutex_failed
-//     does; on macOS they are POSIX named semaphores (not robust, as in C),
-//     whose names are stored in the file (version 1) or derived from a hash
-//     stored there (version 2), and read, never recomputed. On Windows they
+//   - The writer lock is held for a whole write transaction. On Linux and
+//     FreeBSD both locks are process-shared robust pthread mutexes inside
+//     the lock file, and the owner dying while holding one is repaired as
+//     mdb_mutex_failed does; on macOS they are POSIX named semaphores (not
+//     robust, as in C), whose names are stored in the file (version 1) or
+//     derived from a hash stored there (version 2), and read, never
+//     recomputed. OpenBSD, NetBSD and DragonFly use named semaphores for
+//     version 1 as macOS does, and for version 2 a SysV semaphore set whose
+//     id is stored in the file (C 1.0's MDB_USE_SYSV_SEM), with flags in
+//     the file that tell the next holder about a dead one. On Windows they
 //     are named kernel mutexes, kept in the file as the macOS semaphores
 //     are; a mutex whose owner died is abandoned and repaired as on Linux.
 //
 // On Unix the two locks are libc objects; everything else here (the
-// mapping, the record locks, the table) is Go. On Linux they are taken through cgo, in
-// one file pair (shared_cgo.go, shared_nocgo.go); built without cgo, the
-// package compiles but Open returns ErrNoSharedLocks. The size of
-// pthread_mutex_t, which decides the Linux layouts, also comes from cgo, so
-// glibc and musl builds each get their libc's layout: interoperation is
-// with C processes of the same libc (on aarch64, glibc and musl lock files
-// differ). On macOS (sem_darwin.go) the semaphore calls go through cgo in a
-// cgo build (sem_cgo_darwin.go, the default) and through libSystem
-// directly, with assembly trampolines, in a build without cgo
-// (sem_libsystem_darwin.go), so macOS builds have shared locks either way.
-// On Windows nothing needs cgo: the mutexes, the LockFileEx locks and the
-// mapping go through golang.org/x/sys/windows (mutex_windows.go,
-// filelock_windows.go, whose comments list every Windows decision).
+// mapping, the record locks, the table) is Go. On Linux and FreeBSD they
+// are taken through cgo, in one file pair (shared_cgo.go, shared_nocgo.go);
+// built without cgo, the package compiles but Open returns
+// ErrNoSharedLocks. The size of pthread_mutex_t, which decides those
+// layouts, also comes from cgo, so glibc and musl builds each get their
+// libc's layout: interoperation is with C processes of the same libc (on
+// aarch64, glibc and musl lock files differ). On macOS (sem.go) the
+// semaphore calls go through cgo in a cgo build (sem_cgo.go, the default)
+// and through libSystem directly, with assembly trampolines, in a build
+// without cgo (sem_libsystem_darwin.go), so macOS builds have shared locks
+// either way. OpenBSD, NetBSD and DragonFly take the named semaphores
+// (sem.go, sem_cgo.go) and the SysV set (sysv.go, sysv_cgo.go) through
+// cgo, and have no shared locks without it (shared_nocgo.go). The layouts
+// of all platforms are computed with C's formulas and checked on every
+// host (layout.go); the SysV code is also built on macOS, so that its
+// tests run on a real kernel. On Windows nothing needs cgo: the mutexes,
+// the LockFileEx locks and the mapping go through golang.org/x/sys/windows
+// (mutex_windows.go, filelock_windows.go, whose comments list every
+// Windows decision).
 //
 // A process must not open one environment twice, in C or here: closing any
 // descriptor of the lock file drops all of the process's record locks on

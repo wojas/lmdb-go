@@ -1,22 +1,27 @@
-//go:build linux && cgo
+//go:build (linux || freebsd) && cgo
 
-// The libc half of the two shared locks on Linux: what mdb.c calls for
-// LOCK_MUTEX0, UNLOCK_MUTEX and mdb_mutex_consistent, for creating the
-// locks in mdb_env_setup_locks and for closing them in mdb_env_close0.
-// rlmdb's os/shared_lock.rs makes the same calls through the libc crate.
+// The libc half of the two shared locks on Linux and FreeBSD: what mdb.c
+// calls for LOCK_MUTEX0, UNLOCK_MUTEX and mdb_mutex_consistent, for
+// creating the locks in mdb_env_setup_locks and for closing them in
+// mdb_env_close0. rlmdb's os/shared_lock.rs makes the same calls through
+// the libc crate.
 //
-// On Linux (MDB_USE_POSIX_MUTEX with MDB_USE_ROBUST) the locks are
-// process-shared robust pthread_mutex_ts inside the lock file. Going
-// through libc keeps interoperation exact with C processes of the same
-// libc (glibc or musl): the mutex protocol, the robust-list handling that
-// lets the kernel mark a dead owner's mutex, and sizeof(pthread_mutex_t),
-// which moves the reader table, are libc's.
+// On Linux and FreeBSD 11+ (MDB_USE_POSIX_MUTEX with MDB_USE_ROBUST) the
+// locks are process-shared robust pthread_mutex_ts inside the lock file.
+// Going through libc keeps interoperation exact with C processes of the
+// same libc (glibc, musl, FreeBSD's libthr): the mutex protocol, the
+// robust-list handling that lets the kernel mark a dead owner's mutex, and
+// sizeof(pthread_mutex_t), which moves the reader table, are libc's. On
+// FreeBSD the pthread_mutex_t in the file is a pointer-sized word, and
+// libthr keeps the process-shared mutex in a kernel object keyed by its
+// address.
 //
 // A robust mutex belongs to the thread that locked it: the caller keeps the
 // goroutine on one OS thread (runtime.LockOSThread) from lock to unlock.
 //
-// shared_nocgo.go is its counterpart for Linux builds without cgo, which
-// have no shared locks. macOS's semaphores are in sem_darwin.go.
+// shared_nocgo.go is its counterpart for builds without cgo, which have no
+// shared locks. The semaphores of macOS and the other BSDs are in sem.go
+// and sysv.go.
 
 package lockfile
 
@@ -55,6 +60,7 @@ static int lmdbgo_mutex_consistent(void *p) { return pthread_mutex_consistent(p)
 import "C"
 
 import (
+	"os"
 	"syscall"
 	"unsafe"
 )
@@ -62,8 +68,9 @@ import (
 const (
 	// sharedLocksAvailable: this build can take the shared locks.
 	sharedLocksAvailable = true
-	// mutexSize is sizeof(pthread_mutex_t): MNAME_LEN of a Linux lock file
-	// (glibc 40 bytes on x86-64, 48 on aarch64; musl 40).
+	// mutexSize is sizeof(pthread_mutex_t): MNAME_LEN of a Linux or
+	// FreeBSD lock file (glibc 40 bytes on x86-64, 48 on aarch64; musl 40;
+	// FreeBSD 8).
 	mutexSize = C.sizeof_pthread_mutex_t
 	// mutexAlign is alignof(pthread_mutex_t).
 	mutexAlign = C.lmdbgo_mutex_align
@@ -94,11 +101,16 @@ func attachMutex(m *lockMap, off int) (*sharedMutex, error) {
 	return &sharedMutex{p: m.at(off, mutexSize, mutexAlign)}, nil
 }
 
-// createSemaphore, openSemaphore, unlinkSemaphore: Linux lock files have
-// no named semaphores.
+// createSemaphore, openSemaphore, unlinkSemaphore, createSysVLocks,
+// attachSysVLocks: these lock files have no semaphores.
 func createSemaphore(string, uint32) (*sharedMutex, error) { return nil, syscall.ENOTSUP }
 func openSemaphore(string) (*sharedMutex, error)           { return nil, syscall.ENOTSUP }
 func unlinkSemaphore(string) error                         { return syscall.ENOTSUP }
+
+func createSysVLocks(*lockMap, uintptr, os.FileMode, *Layout) (*sharedLocks, error) {
+	return nil, syscall.ENOTSUP
+}
+func attachSysVLocks(*lockMap, *Layout) (*sharedLocks, error) { return nil, syscall.ENOTSUP }
 
 // lock takes the lock, blocking (pthread_mutex_lock). lockOwnerDied is
 // EOWNERDEAD: the previous owner of the robust mutex died holding it.

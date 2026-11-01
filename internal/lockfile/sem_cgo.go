@@ -1,16 +1,22 @@
-//go:build cgo
+//go:build (darwin || openbsd || netbsd || dragonfly) && cgo
 
-// macOS's named semaphores through cgo: the semaphore calls listed in
-// sem_darwin.go, made in C. This is the default on macOS, because Go
-// enables cgo for native builds when a C compiler is found; builds without
-// cgo use sem_libsystem_darwin.go, which makes the same calls in libSystem
-// directly. Keeping this path means that an ordinary build does not depend
-// on the runtime internals the libSystem stubs use; if a Go release ever
-// breaks those, cgo builds keep working.
+// Named semaphores through cgo: the semaphore calls listed in sem.go, made
+// in C. This is the default on macOS, because Go enables cgo for native
+// builds when a C compiler is found; macOS builds without cgo use
+// sem_libsystem_darwin.go, which makes the same calls in libSystem
+// directly. Keeping this path means that an ordinary macOS build does not
+// depend on the runtime internals the libSystem stubs use; if a Go release
+// ever breaks those, cgo builds keep working. OpenBSD, NetBSD and
+// DragonFly use it for the named semaphores of LMDB 0.9 lock files (they
+// have no shared locks without cgo). The calls are in the C library, or in
+// libpthread, which every cgo program links (runtime/cgo), except on
+// NetBSD, where they are in librt.
 
 package lockfile
 
 /*
+#cgo netbsd LDFLAGS: -lrt
+
 #include <errno.h>
 #include <fcntl.h>
 #include <pthread.h>
@@ -18,7 +24,7 @@ package lockfile
 #include <stdint.h>
 #include <stdlib.h>
 
-// Handles cross to Go as integers, never as pointers (sem_darwin.go), and
+// Handles cross to Go as integers, never as pointers (sem.go), and
 // through *h, so that failure is told by the return value alone: a handle
 // of 0 is valid. sem_open is variadic, which cgo cannot call directly.
 static int lmdbgo_sem_create(const char *name, unsigned int mode, unsigned int value, uintptr_t *h) {

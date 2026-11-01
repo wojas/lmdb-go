@@ -55,9 +55,9 @@ differently from C is in `internal/engine/PORTING.md` and in rlmdb's
   format, where v2's 1.0 engine opens the previous snapshot.
 * **Builds without cgo.** lmdb-go v1 did not build without cgo. Here only
   the writer and reader-table locks shared with other processes are libc
-  objects (`internal/lockfile`). On Linux they are reached through cgo:
-  built with `CGO_ENABLED=0`, `Env.Open` without `NoLock` returns
-  `ErrNoSharedLocking` before touching the file system; `NoLock`
+  objects (`internal/lockfile`). On Linux and the BSDs they are reached
+  through cgo: built with `CGO_ENABLED=0`, `Env.Open` without `NoLock`
+  returns `ErrNoSharedLocking` before touching the file system; `NoLock`
   environments work. On macOS a build without cgo calls the semaphores in
   libSystem directly and works fully. Windows builds need no cgo at all
   (see Windows). `SharedLockingAvailable` says which kind of build is
@@ -207,6 +207,21 @@ differently from C is in `internal/engine/PORTING.md` and in rlmdb's
   still holds a handle to it (C keeps them until the last handle closes:
   rlmdb `KNOWN_C_BUGS.md` #42). Status: builds and vets for windows/amd64
   and windows/arm64; the tests have not run on Windows yet.
+* **FreeBSD, OpenBSD, NetBSD, DragonFly** (64-bit) follow rlmdb's BSD
+  support and C LMDB's selection there, with cgo for the locks as on
+  Linux. FreeBSD: Linux's robust process-shared mutexes in the lock file
+  (8 bytes there), `fdatasync`. OpenBSD, NetBSD, DragonFly: POSIX named
+  semaphores for LMDB 0.9 lock files, as on macOS (NetBSD's names are 14
+  characters, as C's), and for LMDB 1.0 lock files the SysV semaphore set
+  of C 1.0 (`semget(ftok(lockfile, 'M'))`), which tells the next writer
+  about one that died; `MDB_FDATASYNC` is `fsync`. On OpenBSD, which has
+  no unified buffer cache, every write to the data file is followed by
+  `msync(MS_INVALIDATE)` of the map, widened to whole OS pages where C's
+  call fails unnoticed (rlmdb `KNOWN_C_BUGS.md` #39). Status: builds and
+  vets (`CGO_ENABLED=0`) for amd64 and arm64 (DragonFly: amd64); the
+  cgo lock files are compiled for macOS and Linux only, and nothing has
+  run on a BSD yet (rlmdb's suites run on FreeBSD in its CI, this port's
+  do not).
 * **64-bit only.** lmdb-go v1 built and ran on 32-bit platforms with C
   LMDB, whose 32-bit data files are a format of their own (the file
   depends on `sizeof(size_t)`), not shared with 64-bit processes. This

@@ -20,7 +20,7 @@ var optNoLock = &lmdbtest.EnvOptions{Flags: lmdb.NoLock}
 func requireLockFile(t *testing.T) {
 	t.Helper()
 	if !lmdb.SharedLockingAvailable() {
-		t.Skip("needs a lock file: shared locking (on Linux, a cgo build)")
+		t.Skip("needs a lock file: shared locking (on Linux and the BSDs, a cgo build)")
 	}
 }
 

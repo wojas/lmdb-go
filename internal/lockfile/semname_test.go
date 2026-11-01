@@ -1,6 +1,6 @@
-// Tests of the semaphore and Windows mutex names, ported from rlmdb
-// os/shared_lock.rs and os/windows.rs (fnv1a_and_names); they run on every
-// platform.
+// Tests of the semaphore and Windows mutex names and of the SysV key,
+// ported from rlmdb os/shared_lock.rs and os/windows.rs (fnv1a_and_names,
+// lock_file_id_layout, v09_name_length); they run on every platform.
 
 package lockfile
 
@@ -23,7 +23,7 @@ func TestFNV1aReferenceValues(t *testing.T) {
 }
 
 func TestNamesV09(t *testing.T) {
-	e := hashEnc(lockFileID(0x01000004, 123456))
+	e := hashEnc(lockFileID(0x01000004, 4, 123456))
 	if len(e) != 10 || strings.Trim(e, a85) != "" {
 		t.Fatalf("encoding %q", e)
 	}
@@ -31,9 +31,16 @@ func TestNamesV09(t *testing.T) {
 	if got := string(pack85V09(85*2+1, nil)); got != "12000" {
 		t.Fatalf("pack85 = %q", got)
 	}
-	r, w := semNamesV09(lockFileID(1, 2))
+	id := lockFileID(1, 4, 2)
+	r, w := semNamesV09(id, false)
 	if !strings.HasPrefix(r, "/MDBr") || !strings.HasPrefix(w, "/MDBw") || r[5:] != w[5:] || len(r) != 15 {
 		t.Fatalf("names %q %q", r, w)
+	}
+	// NetBSD (MDB_SHORT_SEMNAMES): the encoding's tenth character is cut,
+	// for 14-character names; with the NUL they fit mti_rmname easily.
+	rs, ws := semNamesV09(id, true)
+	if len(rs) != 14 || rs != r[:14] || ws != w[:14] || len(rs)+1 > semNameLen {
+		t.Fatalf("short names %q %q (long %q %q)", rs, ws, r, w)
 	}
 }
 
@@ -69,10 +76,37 @@ func TestNamesV10(t *testing.T) {
 	}
 }
 
+// TestLockFileID: struct { dev_t dev; ino_t ino; }, ino at 8; a 4-byte
+// dev_t (macOS, OpenBSD, DragonFly) is followed by zeroed padding, an
+// 8-byte one (NetBSD) fills the first 8 bytes.
 func TestLockFileID(t *testing.T) {
-	b := lockFileID(0xffffffff01020304, 0x1122334455667788)
+	b := lockFileID(0xffffffff01020304, 4, 0x1122334455667788)
 	if len(b) != 16 || ne.Uint32(b) != 0x01020304 || ne.Uint32(b[4:]) != 0 || ne.Uint64(b[8:]) != 0x1122334455667788 {
 		t.Fatalf("%x", b)
+	}
+	b = lockFileID(0xffffffff01020304, 8, 0x1122334455667788)
+	if len(b) != 16 || ne.Uint64(b) != 0xffffffff01020304 || ne.Uint64(b[8:]) != 0x1122334455667788 {
+		t.Fatalf("%x", b)
+	}
+}
+
+// TestSysVKey: ftok(path, 'M') of the BSD libcs from st_dev and st_ino:
+// 'M' in the top byte, the low byte of the device, the low 16 bits of the
+// inode (tests/lockfile compares it with the host's ftok).
+func TestSysVKey(t *testing.T) {
+	for _, c := range []struct {
+		dev, ino uint64
+		want     int64
+	}{
+		{0, 0, 0x4d000000},
+		{0x1234, 0xabcdef, 0x4d34cdef},
+		{^uint64(0), ^uint64(0), 0x4dffffff},
+		// A negative 32-bit dev_t (macOS, OpenBSD), sign-extended.
+		{0xfffffffffffffffe, 1, 0x4dfe0001},
+	} {
+		if got := SysVKey(c.dev, c.ino); got != c.want || got <= 0 || got >= 1<<31 {
+			t.Errorf("SysVKey(%#x, %#x) = %#x, want %#x", c.dev, c.ino, got, c.want)
+		}
 	}
 }
 

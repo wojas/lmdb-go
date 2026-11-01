@@ -1,9 +1,9 @@
 //go:build !cgo
 
 // macOS's named semaphores without cgo: the semaphore calls listed in
-// sem_darwin.go (sem_open, sem_wait, sem_trywait, sem_post, sem_close,
+// sem.go (sem_open, sem_wait, sem_trywait, sem_post, sem_close,
 // sem_unlink, and pthread_self for mr_tid), made in libSystem directly.
-// Builds with cgo use sem_cgo_darwin.go instead.
+// Builds with cgo use sem_cgo.go instead.
 //
 // # Why
 //
@@ -105,7 +105,7 @@
 //
 // Handles are uintptr throughout and never become a Go pointer: macOS's
 // sem_t * values are descriptor numbers, which the garbage collector would
-// crash on as invalid pointers (sem_darwin.go).
+// crash on as invalid pointers (sem.go).
 //
 // # Linkname
 //
@@ -118,7 +118,7 @@
 // they exist for golang.org/x/sys/unix, so removing them would break x/sys
 // on macOS. Only those two are used here. Should a Go release restrict
 // them anyway, CGO_ENABLED=0 macOS builds fail to link ("invalid
-// reference to syscall.syscall"), and cgo builds (sem_cgo_darwin.go), the
+// reference to syscall.syscall"), and cgo builds (sem_cgo.go), the
 // default, are unaffected.
 //
 // # Tests

@@ -20,8 +20,14 @@ var (
 	// Windows x64 (MSVC and MinGW-w64): named mutexes, int pid, HANDLE
 	// pthread_t, no pid locks.
 	win64 = platform{windowsMutexes: true, hashAlign: 8, pidSize: 4, pthreadSize: 8}
+	// FreeBSD: robust mutexes, pthread_mutex_t a pointer.
+	freeBSD = platform{mutexSize: 8, mutexAlign: 8, pidSize: 4, pthreadSize: 8}
+	// OpenBSD and DragonFly: named semaphores in version 1, a SysV set in
+	// version 2; NetBSD the same with 14-character semaphore names.
+	semBSD = platform{namedSemaphores: true, sysvV2: true, hashAlign: 8, pidSize: 4, pthreadSize: 8}
+	netBSD = platform{namedSemaphores: true, sysvV2: true, shortSemNames: true, hashAlign: 8, pidSize: 4, pthreadSize: 8}
 
-	allPlatforms = []platform{macOS, glibcAarch64, mutex40, win64}
+	allPlatforms = []platform{macOS, glibcAarch64, mutex40, win64, freeBSD, semBSD, netBSD}
 )
 
 // want is one column of the table in layout.go.
@@ -61,6 +67,27 @@ func TestLayoutsPerPlatform(t *testing.T) {
 	v1, v2 = win64.layouts()
 	checkLayout(t, "Windows v1", v1, want{0x1, MutexNames, 40, 48, 8, 32, 64, 56, 64, 128})
 	checkLayout(t, "Windows v2", v2, want{0x08138002, MutexHash, 8, 16, 24, 8, -1, 32, 64, 64})
+	// The BSDs: rlmdb's table (DESIGN.md "The BSDs", its freebsd_layout
+	// and bsd_semaphore_layout tests), computed from the C declarations;
+	// no layout_dump has run on a BSD yet. FreeBSD: Linux's layout with an
+	// 8-byte mutex. OpenBSD, NetBSD, DragonFly: version 1 as on macOS;
+	// version 2 with semid at 20, rlocked at 24, wlocked in mt2 at 64.
+	v1, v2 = freeBSD.layouts()
+	checkLayout(t, "FreeBSD v1", v1, want{0x10001, PthreadMutexes, 16, 24, 8, 8, 64, 32, 64, 128})
+	checkLayout(t, "FreeBSD v2", v2, want{0x2986c002, PthreadMutexes, 8, 16, 24, 8, 64, 32, 64, 128})
+	for _, p := range []platform{semBSD, netBSD} {
+		v1, v2 = p.layouts()
+		checkLayout(t, "OpenBSD, NetBSD, DragonFly v1", v1, want{0x10001, SemaphoreNames, 40, 48, 8, 32, 64, 56, 64, 128})
+		checkLayout(t, "OpenBSD, NetBSD, DragonFly v2", v2, want{0x2889a002, SysVSemaphores, 8, 16, 20, 8, 64, 32, 64, 128})
+		if v1.shortSemNames != p.shortSemNames || v2.shortSemNames {
+			t.Errorf("short semaphore names: v1 %v, v2 %v", v1.shortSemNames, v2.shortSemNames)
+		}
+	}
+	for _, p := range []platform{macOS, glibcAarch64, mutex40, win64, freeBSD} {
+		if v1, v2 := p.layouts(); v1.shortSemNames || v2.shortSemNames {
+			t.Errorf("%+v: short semaphore names", p)
+		}
+	}
 
 	if v1, v2 := (platform{}).layouts(); v1 != nil || v2 != nil {
 		t.Error("a platform with an unknown mutex size has layouts")
@@ -92,6 +119,26 @@ func TestHostLayout(t *testing.T) {
 		t.Logf("sizeof(pthread_mutex_t) = %d: readers at %d (v1), %d (v2)", mutexSize, v1.Readers, v2.Readers)
 	case "windows":
 		v1, v2 := win64.layouts()
+		if *LockV09 != *v1 || *LockV10 != *v2 {
+			t.Fatalf("host layouts %+v %+v, want %+v %+v", LockV09, LockV10, v1, v2)
+		}
+	case "freebsd":
+		if !sharedLocksAvailable {
+			if LockV09 != nil || LockV10 != nil || LayoutFor(format.V09) != nil {
+				t.Fatal("layouts without cgo on FreeBSD")
+			}
+			return
+		}
+		v1, v2 := freeBSD.layouts()
+		if *LockV09 != *v1 || *LockV10 != *v2 {
+			t.Fatalf("host layouts %+v %+v, want %+v %+v (sizeof(pthread_mutex_t) = %d)", LockV09, LockV10, v1, v2, mutexSize)
+		}
+	case "openbsd", "netbsd", "dragonfly":
+		ref := semBSD
+		if runtime.GOOS == "netbsd" {
+			ref = netBSD
+		}
+		v1, v2 := ref.layouts()
 		if *LockV09 != *v1 || *LockV10 != *v2 {
 			t.Fatalf("host layouts %+v %+v, want %+v %+v", LockV09, LockV10, v1, v2)
 		}
@@ -166,6 +213,15 @@ func TestLockDesc(t *testing.T) {
 	if lt := lockTypePosixMutex(40, 8); lt != 63 || lockFormatV2(in(64, lt)) != 0x2c2f6002 {
 		t.Error("40-byte mutex lock description")
 	}
+	// FreeBSD (rlmdb lock_format_v2_per_platform): MDB_LOCK_TYPE of an
+	// 8-byte, 8-aligned mutex, MDB_txbody 32. OpenBSD, NetBSD, DragonFly:
+	// SysV semaphores, MDB_LOCK_TYPE 8, MDB_txbody 32.
+	if lt := lockTypePosixMutex(8, 8); lt != 23 || lockFormatV2(in(32, lt)) != 0x2986c002 {
+		t.Error("FreeBSD lock description")
+	}
+	if lockTypeSysVSem != 8 || lockFormatV2(in(32, lockTypeSysVSem)) != 0x2889a002 {
+		t.Error("SysV semaphore lock description")
+	}
 	// Windows x64: MDB_LOCK_TYPE 1, MDB_txbody 32, no pid locks.
 	win := in(32, lockTypeWin32(8))
 	win.pidlock = false
@@ -195,6 +251,7 @@ func TestObjectKinds(t *testing.T) {
 		{SemaphoreHash, true, false, true},
 		{MutexNames, false, true, false},
 		{MutexHash, false, false, true},
+		{SysVSemaphores, true, false, false},
 	} {
 		if c.o.removedByLastUser() != c.removed || c.o.storesNames() != c.names || c.o.storesHash() != c.hash {
 			t.Errorf("objects %d: removed %v, names %v, hash %v", c.o, c.o.removedByLastUser(), c.o.storesNames(), c.o.storesHash())

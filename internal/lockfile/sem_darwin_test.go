@@ -1,5 +1,5 @@
-// Tests of macOS's semaphore calls (sem_darwin.go), against the
-// implementation the build has: cgo (sem_cgo_darwin.go) by default, the
+// Tests of macOS's semaphore calls (sem.go), against the
+// implementation the build has: cgo (sem_cgo.go) by default, the
 // libSystem stubs (sem_libsystem_darwin.go) with CGO_ENABLED=0. Both must
 // pass the same tests. The cross-process tests against C are in
 // tests/lockfile.

@@ -1,10 +1,10 @@
 // The pair of shared locks of an environment, created or attached as the
 // lock-file version says: the lock part of mdb_env_setup_locks and of
 // mdb_env_close0 in mdb.c (0.9.36 lines 4964-5079, 5250-5270; 1.0 lines
-// 6064-6165); rlmdb os/shared_lock.rs and os/windows.rs (SharedLocks).
-// createLocks and attachLocks are per OS: locks_unix.go (pthread mutexes
-// and named semaphores, whose libc calls are in shared_cgo.go and
-// sem_darwin.go) and locks_windows.go (named mutexes).
+// 6064-6182); rlmdb os/shared_lock.rs and os/windows.rs (SharedLocks).
+// createLocks and attachLocks are per OS: locks_unix.go (pthread mutexes,
+// named semaphores and SysV semaphores, whose libc calls are in
+// shared_cgo.go, sem.go and sysv.go) and locks_windows.go (named mutexes).
 
 package lockfile
 
@@ -17,7 +17,8 @@ const (
 	// lockAcquired: taken normally.
 	lockAcquired lockStatus = iota
 	// lockOwnerDied: taken, but the previous owner died holding it
-	// (EOWNERDEAD of a robust mutex; WAIT_ABANDONED of a Windows mutex).
+	// (EOWNERDEAD of a robust mutex; WAIT_ABANDONED of a Windows mutex; the
+	// flag a dead holder of a SysV semaphore left set).
 	// The protected state must be repaired and the mutex marked consistent
 	// before it is unlocked; unlocking a robust mutex without that makes it
 	// unusable for everyone (ENOTRECOVERABLE).

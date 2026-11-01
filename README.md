@@ -24,13 +24,15 @@ go mod edit -replace github.com/PowerDNS/lmdb-go=../lmdb-go
 The module declares Go 1.22; development and testing use Go 1.25.
 
 cgo is used only for the two locks LMDB shares between processes, the writer
-lock and the reader-table lock: libc pthread mutexes on Linux, POSIX named
-semaphores on macOS. Everything else is Go. On Linux, shared locking needs
-cgo: a build without cgo (`CGO_ENABLED=0`) can only open environments with
-the `NoLock` flag; `Env.Open` without it returns `ErrNoSharedLocking`, and
-`SharedLockingAvailable` reports which kind of build is running. Go turns cgo
-off by default when cross-compiling or when no C compiler is found: such a
-Linux build compiles, but fails at `Env.Open`. On macOS, a cgo build (the
+lock and the reader-table lock: libc pthread mutexes on Linux and FreeBSD,
+POSIX named semaphores on macOS, POSIX named or SysV semaphores on OpenBSD,
+NetBSD and DragonFly. Everything else is Go. On Linux and the BSDs, shared
+locking needs cgo: a build without cgo (`CGO_ENABLED=0`) can only open
+environments with the `NoLock` flag; `Env.Open` without it returns
+`ErrNoSharedLocking`, and `SharedLockingAvailable` reports which kind of
+build is running. Go turns cgo off by default when cross-compiling or when
+no C compiler is found: such a Linux or BSD build compiles, but fails at
+`Env.Open`. On macOS, a cgo build (the
 default) takes the semaphores through cgo, and a build without cgo calls them
 in libSystem directly, as `golang.org/x/sys/unix` does for system calls; both
 work fully, so cross-compiling to macOS needs no C toolchain. On Windows the
@@ -51,13 +53,20 @@ commands in `cmd/` and `exp/cmd/`. Read the API documentation with
 * **Sharing.** Go processes share environments with C LMDB 0.9 and 1.0 and
   with rlmdb: writers exclude each other, readers see each other in the
   reader table, and on Linux and Windows a writer that dies holding the
-  lock is recovered from, as between C processes.
+  lock is recovered from, as between C processes (by the same design on
+  FreeBSD, and with LMDB 1.0 lock files on the other BSDs).
 * **Platforms.** Linux (glibc and musl; arm64 and x86-64) and macOS.
   Windows (x86-64; arm64 by the same rules) is implemented after rlmdb's
-  Windows port and builds, but has not run on Windows yet. 64-bit only:
-  32-bit builds stop with a compile error; 64-bit big-endian targets
-  build, and s390x is tested under emulation (QEMU user mode), against C
-  peers built for it.
+  Windows port and builds, but has not run on Windows yet. FreeBSD,
+  OpenBSD, NetBSD and DragonFly (64-bit) are implemented after rlmdb's BSD
+  support, with C's lock primitives and lock-file layouts there: they
+  build and are untested. (rlmdb's own suites pass on FreeBSD in its CI;
+  this port has not run on any BSD yet. The parts macOS's kernel can run,
+  the SysV semaphore set of LMDB 1.0 lock files and NetBSD's semaphore
+  names, run in the lock-file tests on macOS.) 64-bit only: 32-bit builds
+  stop with a compile error; 64-bit big-endian targets build, and s390x
+  is tested under emulation (QEMU user mode), against C peers built for
+  it.
 * **`NoLock`** only removes the locking between processes. Within the
   process, write transactions are still serialised and pages that a live
   reader can see are never reused, also across several `NoLock` handles

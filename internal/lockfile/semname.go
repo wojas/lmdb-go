@@ -1,9 +1,11 @@
-// Names of the macOS semaphores and the Windows mutexes: mdb_hash_val,
-// mdb_pack85 and mdb_hash_enc of mdb.c 0.9.36 (lines 4823-4880), mdb_hash,
-// mdb_pack85 and mdb_env_mname_init / MUTEXNAME of mdb.c 1.0 (lines
-// 5920-5945); rlmdb os/shared_lock.rs and os/windows.rs (hash_val, pack85,
-// hash_enc, mutex_name_v10, lock_file_id_bytes). Plain computation, so it
-// is built and tested on every platform.
+// Names of the named semaphores (macOS; OpenBSD, NetBSD and DragonFly in
+// version 1) and the Windows mutexes: mdb_hash_val, mdb_pack85 and
+// mdb_hash_enc of mdb.c 0.9.36 (lines 4823-4880), mdb_hash, mdb_pack85 and
+// mdb_env_mname_init / MUTEXNAME of mdb.c 1.0 (lines 5920-5945); and the
+// key of the BSDs' SysV semaphore set (ftok, mdb.c 1.0 line 6098). rlmdb
+// os/shared_lock.rs and os/windows.rs (hash_val, pack85, hash_enc,
+// NAME_HASH_LEN, mutex_name_v10, lock_file_id_bytes, ftok_key). Plain
+// computation, so it is built and tested on every platform.
 
 package lockfile
 
@@ -54,9 +56,14 @@ func hashEnc(b []byte) string {
 
 // semNamesV09 are the names LMDB 0.9's exclusive opener writes into
 // mti_rmname and mti_wmname: "/MDBr" and "/MDBw" followed by
-// mdb_hash_enc of the lock file's identity.
-func semNamesV09(id []byte) (r, w string) {
+// mdb_hash_enc of the lock file's identity. With short (NetBSD's
+// MDB_SHORT_SEMNAMES, mdb.c 0.9.36 lines 4999-5011) the encoding is cut to
+// nine characters, for names of 14 characters.
+func semNamesV09(id []byte, short bool) (r, w string) {
 	enc := hashEnc(id)
+	if short {
+		enc = enc[:9]
+	}
 	return "/MDBr" + enc, "/MDBw" + enc
 }
 
@@ -67,17 +74,43 @@ func semNameV10(mutexID uint64, ch byte) string {
 }
 
 // lockFileID is what C hashes for the semaphore names: struct { dev_t dev;
-// ino_t ino; } of the lock file. On macOS dev_t is 4 bytes and ino_t 8, so
-// the struct has 4 bytes of padding. LMDB 0.9 leaves them uninitialised,
-// so its names are not reproducible, which is why every later opener reads
-// them from the lock file; LMDB 1.0 zeroes the struct first (mdb.c 1.0
-// line 6075) but still stores the hash rather than have others recompute
-// it. Here the padding is zero.
-func lockFileID(dev uint64, ino uint64) []byte {
+// ino_t ino; } of the lock file. ino_t has 8 bytes on every platform with
+// named semaphores, so ino is at offset 8; dev_t has devSize bytes, 4 on
+// macOS, OpenBSD and DragonFly (then 4 bytes of padding follow) and 8 on
+// NetBSD. LMDB 0.9 leaves the padding uninitialised, so its names are not
+// reproducible, which is why every later opener reads them from the lock
+// file; LMDB 1.0 zeroes the struct first (mdb.c 1.0 line 6075) but still
+// stores the hash rather than have others recompute it. Here the padding
+// is zero.
+func lockFileID(dev uint64, devSize int, ino uint64) []byte {
 	b := make([]byte, 16)
-	ne.PutUint32(b[0:], uint32(dev))
+	if devSize == 8 {
+		ne.PutUint64(b[0:], dev)
+	} else {
+		ne.PutUint32(b[0:], uint32(dev))
+	}
 	ne.PutUint64(b[8:], ino)
 	return b
+}
+
+// SysVKey is the key under which the exclusive opener of a version 2 lock
+// file on OpenBSD, NetBSD and DragonFly creates (or finds again) the SysV
+// semaphore set: ftok(lockfile, 'M') (MDB_USE_SYSV_SEM, mdb.c 1.0 line
+// 6098), computed from the lock file's device and inode numbers (its
+// fstat; the path is not at hand where the set is made, as in rlmdb). The
+// BSD libcs' ftok computes
+//
+//	FreeBSD, NetBSD, macOS: (unsigned)id << 24 | (st_dev & 0xff) << 16 | (st_ino & 0xffff)
+//	OpenBSD:                (id & 0xff) << 24  | (st_dev & 0xff) << 16 | (st_ino & 0xffff)
+//	DragonFly:              id << 24           | (st_dev & 0xff) << 16 | (st_ino & 0xffff)
+//
+// (gen/ftok.c of each libc; tests/lockfile compares this with the host's
+// ftok), which agree for any id below 128, such as 'M'. The value is
+// positive and below 2^31, so it is the same key_t whether key_t is a long
+// (the BSDs) or a 32-bit int (macOS). Only the exclusive opener uses it;
+// every other opener takes the set's id from the lock file.
+func SysVKey(dev, ino uint64) int64 {
+	return int64('M')<<24 | int64(dev&0xff)<<16 | int64(ino&0xffff)
 }
 
 // Windows: the names of the two kernel mutexes. "Global\MDB" is

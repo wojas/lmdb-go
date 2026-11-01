@@ -14,7 +14,7 @@ The initial port maps rlmdb's modules onto Go packages roughly like this
 | Go package | rlmdb source | contents |
 |---|---|---|
 | `internal/format` | `rlmdb/src/format/*` (minus lock file), `consts.rs`, `flags.rs`, `cmp.rs`, `idl.rs` | page, node, meta, DB record layouts for 0.9 and 1.0 (`Layout`), constants, comparators, ID lists |
-| `internal/lockfile` | `format/lockfile.rs`, `os/shared_lock.rs`, `core/reader.rs`, the lock-file parts of `os/unix.rs` (`LockMap`, `fcntl` record locks) | lock-file layouts (both versions, per platform), the lock-file map, open / first-opener protocol, record locks, reader table, writer and reader mutexes shared with C (Linux: the cgo pair `shared_cgo.go` / `shared_nocgo.go`; macOS: `sem_darwin.go`, through cgo or, without cgo, libSystem stubs) |
+| `internal/lockfile` | `format/lockfile.rs`, `os/shared_lock.rs`, `core/reader.rs`, the lock-file parts of `os/unix.rs` (`LockMap`, `fcntl` record locks) | lock-file layouts (both versions, per platform), the lock-file map, open / first-opener protocol, record locks, reader table, writer and reader mutexes shared with C (Linux and FreeBSD: the cgo pair `shared_cgo.go` / `shared_nocgo.go`; macOS: `sem.go`, through cgo or, without cgo, libSystem stubs; OpenBSD, NetBSD, DragonFly: `sem.go` and `sysv.go` through cgo) |
 | `internal/sys` | `os/unix.rs`, `os/mod.rs` | mmap, file I/O, fsync, the data map (`DataMap`), page-size and platform queries (the record locks are the lock file's, in `internal/lockfile`) |
 | `internal/engine` | `rlmdb/src/core/*` minus `reader.rs` | env, read and write txns, cursors, put/del, split, rebalance, spill, free list, commit, nested txns, copy, audit |
 | `lmdb` | lmdb-go's `lmdb` (API), rlmdb-capi's behaviour | the public API on top of `engine` |
@@ -193,22 +193,55 @@ on a Windows machine (a git-archive copy, its own work directory and
 toolchain), and `tests/cmd/build-c-oracles` builds the C oracles there
 with MinGW-w64.
 
+## The BSDs
+
+Ported from rlmdb's BSD support (`e4a5ad9`, `bfef7e6`, `12a6731`; the
+rows are in `internal/engine/PORTING.md`), following C LMDB's selection
+on each BSD: FreeBSD takes Linux's robust process-shared mutexes (8 bytes
+there; `shared_cgo.go`, `layout_freebsd.go`); OpenBSD, NetBSD and
+DragonFly take POSIX named semaphores for LMDB 0.9 lock files, as macOS
+(`sem.go`, `sem_cgo.go`; NetBSD's names are 14 characters), and the SysV
+semaphore set of C 1.0 for LMDB 1.0 lock files (`sysv.go`,
+`sysv_cgo.go`: `semget(ftok(lockfile, 'M'))`, the id stored at offset 20,
+`SEM_UNDO` and flags in the file for a dead holder). The locks go through
+cgo, as on Linux; without cgo these builds have `NoLock` only. The rest
+is Go: `MDB_FDATASYNC` (`fdatasync` on FreeBSD, `fsync` elsewhere),
+`MDB_DSYNC` (`O_SYNC` on DragonFly), and on OpenBSD, which has no unified
+buffer cache, `msync(MS_INVALIDATE)` of the map after each write to the
+data file (`sys.DataMap.Invalidate`, widened to whole OS pages: rlmdb
+ledger #39). The layouts are computed with C's formulas (rlmdb's numbers,
+not yet measured on a BSD) and tested on every host.
+
+Status: builds and untested. All four build, vet and compile their test
+binaries (`go test -c`) with `CGO_ENABLED=0` for amd64 and arm64
+(DragonFly: amd64 only, as Go); the cgo files are compiled for macOS and
+Linux only (no BSD sysroot or `zig` here), and nothing has run on a BSD.
+On macOS the lock-file tests also run the BSDs' LMDB 1.0 layout (the SysV
+set, including a writer that dies) and NetBSD's LMDB 0.9 layout,
+`tests/lockfile` compares the `ftok` formula with libc's, and
+`internal/sys` tests the invalidation. rlmdb's own suites run on FreeBSD
+in its CI (a VM job); this port's do not yet. To run: a FreeBSD VM (as
+rlmdb's `bsd.yml`, `vmactions/freebsd-vm`) with Go and the base system's
+`cc`, running `go test ./...` and the `tests` module against the C oracles
+built there (`tests/cmd/build-c-oracles`); the other BSDs likewise, with
+`-lrt` on NetBSD coming from `sem_cgo.go`.
+
 ## Deferred decisions (owner, revisit before a release)
 
 * **Linux builds without cgo.** Go disables cgo by default when
   cross-compiling or when no C compiler is found, so a plain
   `GOOS=linux go build` from a Mac silently gets the `NoLock`-only build,
-  which fails only at `Env.Open`. Option: make Linux `!cgo` builds fail to
-  compile unless they opt in with a tag (e.g. `lmdb_nocgo`). Today: runtime
-  error at `Open` without `NoLock`. (macOS builds without cgo have shared
-  locks, see below.)
+  which fails only at `Env.Open` (the same holds for the BSDs). Option:
+  make Linux `!cgo` builds fail to compile unless they opt in with a tag
+  (e.g. `lmdb_nocgo`). Today: runtime error at `Open` without `NoLock`.
+  (macOS builds without cgo have shared locks, see below.)
 * **macOS locks without cgo: resolved (owner).** cgo stays the default on
-  macOS (`darwin && cgo`: `sem_cgo_darwin.go`); a build without cgo
+  macOS (`darwin && cgo`: `sem_cgo.go`); a build without cgo
   (`darwin && !cgo`) calls the semaphores in libSystem directly
   (`sem_libsystem_darwin.go`, arm64 and amd64 trampolines, the mechanism
   of `x/sys/unix`, no third-party package), so `CGO_ENABLED=0` macOS
   builds and cross-compiles to macOS share locks with C fully. Both sit
-  behind one set of calls (`sem_darwin.go`) and pass the same unit tests
+  behind one set of calls (`sem.go`) and pass the same unit tests
   and the `tests/lockfile` suite against C 0.9 and 1.0, on arm64 and on
   amd64 under Rosetta. `sem_open` is variadic: Apple's arm64 ABI passes
   its mode and value on the stack, which its trampoline handles (and
@@ -223,11 +256,6 @@ with MinGW-w64.
   its `5773e0a`; ppc64 and mips64 are untested. Later big-endian work of
   rlmdb is ported here (the
   same way as any rlmdb change, see "Following rlmdb").
-* **BSDs.** rlmdb supports FreeBSD, OpenBSD, NetBSD and DragonFly as an
-  untested tier (e4a5ad9, ledger #39; C 1.0 uses SysV semaphores on
-  OpenBSD/NetBSD/DragonFly, FreeBSD's robust mutex is 8 bytes). Port in
-  the next rlmdb sync round, together with rlmdb's versions of #38 and the
-  meta-sync fix, then big-endian when it lands there (Windows: see
-  above).
+* **BSDs: ported** (see "The BSDs"). Next: run them, a FreeBSD VM first.
 * Cross-compiling cgo builds: `zig cc` as `CC` (bundled glibc, musl and
   macOS headers) is the suggested toolchain; document and test it.
