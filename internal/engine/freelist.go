@@ -127,6 +127,12 @@ func (t *Txn) pageAllocWith(num int, init pageInit) (uint64, pageSlot, error) {
 			w.flags |= txnError
 			return 0, noSlot, format.MapFull
 		}
+		// C 1.0 on Windows commits the pages in its view, so that every
+		// process's view shows them (sys.MapData; a no-op elsewhere).
+		if err := t.dmap.CommitPages(int(pgno)*t.pageSize, num*t.pageSize); err != nil {
+			w.flags |= txnError
+			return 0, noSlot, err
+		}
 		t.nextPgno = pgno + uint64(num)
 	}
 	n := t.pageSize * num
