@@ -199,6 +199,12 @@ func (txn *Txn) runOp(fn TxnOp) error {
 // Commit persists all transaction operations to the database and clears the
 // finalizer on txn.  A Txn cannot be used again after Commit is called.
 //
+// A write transaction committed on another OS thread than the one that
+// began it is committed, but Commit returns an error wrapping
+// ErrTxnWrongThread (and syscall.EPERM, on Windows ERROR_NOT_OWNER) on
+// Linux, FreeBSD and Windows, whose writer mutex stays with the thread that
+// began the transaction until that thread exits.
+//
 // See mdb_txn_commit.
 func (txn *Txn) Commit() error {
 	if txn.managed {
@@ -235,6 +241,11 @@ func (txn *Txn) commit() error {
 
 // Abort discards pending writes in the transaction and clears the finalizer on
 // txn.  A Txn cannot be used again after Abort is called.
+//
+// Abort reports no error, as mdb_txn_abort: a write transaction aborted on
+// another OS thread than the one that began it is aborted, and on Linux,
+// FreeBSD and Windows its writer mutex stays with the beginning thread
+// until that thread exits (see ErrTxnWrongThread).
 //
 // See mdb_txn_abort.
 func (txn *Txn) Abort() {

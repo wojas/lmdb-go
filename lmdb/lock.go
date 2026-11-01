@@ -7,6 +7,7 @@ package lmdb
 import (
 	"errors"
 	"os"
+	"syscall"
 
 	"github.com/PowerDNS/lmdb-go/internal/engine"
 	"github.com/PowerDNS/lmdb-go/internal/format"
@@ -57,3 +58,30 @@ func openLock(path string, mode os.FileMode, maxReaders uint32, readOnly bool, f
 	}
 	return r, nil
 }
+
+// ErrTxnWrongThread is the error of Txn.Commit (and Env.Update) for a write
+// transaction committed on another OS thread than the one that began it,
+// a program error (see Env.BeginTxn and runtime.LockOSThread).  The
+// changes are committed, but the lock file's writer mutex, which belongs
+// to the thread that took it on Linux, FreeBSD and Windows, stays held
+// until that thread exits; then the next writer recovers it as from a
+// writer that died.  The error returned wraps ErrTxnWrongThread and the
+// mutex's error, syscall.EPERM (Windows: ERROR_NOT_OWNER), so
+// errors.Is(err, ErrTxnWrongThread), errors.Is(err, syscall.EPERM) and
+// IsErrnoSys(err, syscall.EPERM) all hold.  It is not an *OpError.  C
+// LMDB (and lmdb-go v1) ignores the failed unlock; there is no error on
+// macOS and the other BSDs, whose locks are semaphores.
+var ErrTxnWrongThread = errors.New("lmdb: write transaction committed on another OS thread than the one that began it")
+
+// txnThreadError is the error ErrTxnWrongThread describes: it wraps that
+// and the writer mutex's errno.
+type txnThreadError struct {
+	errno syscall.Errno
+}
+
+func (e *txnThreadError) Error() string {
+	return ErrTxnWrongThread.Error() + ": " + e.errno.Error()
+}
+
+// Unwrap makes errors.Is and errors.As see ErrTxnWrongThread and the errno.
+func (e *txnThreadError) Unwrap() []error { return []error{ErrTxnWrongThread, e.errno} }

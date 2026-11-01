@@ -20,6 +20,11 @@ func TestMain(m *testing.M) {
 	if mode := os.Getenv("LMDB_TEST_HELPER"); mode != "" {
 		os.Exit(runHelper(mode, os.Getenv("LMDB_TEST_HELPER_PATH")))
 	}
+	// Keep the main thread to this goroutine, so no test goroutine runs on
+	// it: Go never ends the main thread, so a writer mutex that a goroutine
+	// holds there when it exits is never released
+	// (TestTxn_Commit_wrongThread).
+	runtime.LockOSThread()
 	os.Exit(m.Run())
 }
 

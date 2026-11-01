@@ -34,6 +34,7 @@ differently from C is in `internal/engine/PORTING.md` and in rlmdb's
   `rlmdb_env_set_pagesize`); `EINVAL` at `Open` for an LMDB 0.9 one.
 * `SharedLockingAvailable() bool` and `ErrNoSharedLocking`: see "Builds
   without cgo".
+* `ErrTxnWrongThread`: see "Write transactions and threads".
 
 ## Behaviour that differs
 
@@ -147,9 +148,14 @@ differently from C is in `internal/engine/PORTING.md` and in rlmdb's
   begin and end on one goroutine locked to its OS thread (`Update` does
   that). The lock file's writer mutex pins the goroutine itself while it
   holds the lock. A write transaction committed on another thread (a
-  program error) gets the mutex's error (Linux: `EPERM`) and the mutex
-  stays with the thread that took it, until it exits; C ignores the
-  error.
+  program error) is committed, but `Commit` returns an error wrapping
+  `ErrTxnWrongThread` and the mutex's error (Linux and FreeBSD: `EPERM`;
+  Windows: `ERROR_NOT_OWNER`), so `errors.Is` finds either and
+  `IsErrnoSys(err, syscall.EPERM)` holds; it is not an `*OpError`. The
+  mutex stays with the thread that took it, until that thread exits, and
+  the next writer recovers it as from a dead writer. C ignores the error
+  (v1's `Commit` returned nil); `Abort` reports nothing, as C. Semaphores
+  (macOS, the other BSDs) belong to no thread: no error there.
 * **`ReaderList`.** `fn` gets one line per call, as C's message function.
   `fn == nil` is `EINVAL` (v1: an `OpError` holding errno -1). Before
   `Open` and with `NoLock` the text is `(no reader locks)` (C's output
@@ -195,8 +201,9 @@ differently from C is in `internal/engine/PORTING.md` and in rlmdb's
   `Global\MDBw…`, `LockFileEx` on byte 0). As with v1 on C there, `FD`
   returns and `CopyFD` takes a `HANDLE`, and a write transaction holds a
   mutex that belongs to its thread (another thread's `Commit` gets
-  `ERROR_NOT_OWNER`). An LMDB 0.9 data file opened for writing is as long
-  as its map size (C 0.9 extends it in order to map it), and is never
+  `ErrTxnWrongThread`, wrapping `ERROR_NOT_OWNER`). An LMDB 0.9 data
+  file opened for writing is as long as its map size (C 0.9 extends it
+  in order to map it), and is never
   shrunk (C 0.9 tries when the map size shrinks; rlmdb does not); an LMDB
   1.0 file grows with its writes. Errors: LMDB's own errno values are Go's
   `syscall` constants (`syscall.EINVAL`, ...), as v1's `error_windows.go`
