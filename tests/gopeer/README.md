@@ -4,9 +4,9 @@
 (rlmdb `interop/README.md`, "The peer command protocol"): the same
 commands, options, output lines and exit codes as the C peer `cpeer`,
 whose source (`interop/c/cpeer*.c`) it ports file by file to
-lmdb-go's API. rlmdb's harness runs it as `Peer::Go` next to C LMDB 0.9
-(`cpeer`), C LMDB 1.0 (`cpeer10`), rlmdb (`rpeer`) and C on rlmdb
-(`cpeer_capi`), as separate processes on one environment.
+lmdb-go's API. rlmdb's harness runs it as `Peer::External` next to C
+LMDB 0.9 (`cpeer`), C LMDB 1.0 (`cpeer10`), rlmdb (`rpeer`) and C on
+rlmdb (`cpeer_capi`), as separate processes on one environment.
 
 ```sh
 cd tests
@@ -79,15 +79,16 @@ C's, gopeer does this:
 
 ## Running rlmdb's interop tests with gopeer
 
-rlmdb's interop crate (branch `t3/interop-gopeer-v2`, `Peer::Go` on top
-of rlmdb's main; not merged into it) finds gopeer through
-`INTEROP_GOPEER` (its path) and `INTEROP_GOPEER_IMPL` (`cgo` or `port`,
-passed as `--impl`); without `INTEROP_GOPEER` the Go tests are skipped.
+rlmdb's interop crate (branch `t3/interop-gopeer-v2`, `Peer::External`
+on top of rlmdb's main; not merged into it) finds gopeer through
+`INTEROP_PEER` (its path), `INTEROP_PEER_ARGS` (`--impl cgo` or `--impl
+port`) and `INTEROP_PEER_NAME` (`Go`); without `INTEROP_PEER` the tests
+are skipped.
 In the rlmdb checkout:
 
 ```sh
-INTEROP_GOPEER=/tmp/gopeer INTEROP_GOPEER_IMPL=cgo cargo test -p rlmdb-interop \
-    --test go_peer --test go_pairs --test go_pairs10
+INTEROP_PEER=/tmp/gopeer INTEROP_PEER_ARGS='--impl cgo' INTEROP_PEER_NAME=Go \
+    cargo test -p rlmdb-interop --test external_peer --test external_pairs --test external_pairs10
 ```
 
 On Linux, rlmdb's `scripts/linux-test.sh` runs cargo in a
@@ -99,12 +100,13 @@ cargo's `--config env`:
 
 ```sh
 # in this checkout
+mkdir -p <rlmdb>/interop/external
 scripts/linux-test.sh sh -c 'cd tests && go build -o /tmp/gopeer ./gopeer >&2 && cat /tmp/gopeer' \
-    > <rlmdb>/interop/gopeer-linux && chmod +x <rlmdb>/interop/gopeer-linux
-# in the rlmdb checkout (gopeer-linux is git-ignored there)
-scripts/linux-test.sh test -p rlmdb-interop --test go_peer --test go_pairs \
-    --config 'env.INTEROP_GOPEER="/work/interop/gopeer-linux"' \
-    --config 'env.INTEROP_GOPEER_IMPL="cgo"'
+    > <rlmdb>/interop/external/gopeer-linux && chmod +x <rlmdb>/interop/external/gopeer-linux
+# in the rlmdb checkout (interop/external is git-ignored there)
+scripts/linux-test.sh test -p rlmdb-interop --test external_peer --test external_pairs \
+    --config 'env.INTEROP_PEER="/work/interop/external/gopeer-linux"' \
+    --config 'env.INTEROP_PEER_ARGS="--impl cgo"' --config 'env.INTEROP_PEER_NAME="Go"'
 ```
 
 gopeer builds and runs on musl too:
@@ -125,25 +127,27 @@ the C tools against musl there, from the C sources rlmdb vendors
 printf 'FROM rust:1-alpine\nRUN apk add -q build-base\n' | docker build -q -t rlmdb-interop-musl -
 docker run --rm -i --tmpfs /tmp:exec,size=4g -v <rlmdb>:/work \
     -v lmdb-rs-target-musl:/work/target -v lmdb-rs-cargo-registry:/usr/local/cargo/registry \
-    -w /work -e INTEROP_GOPEER=/work/interop/gopeer-linux -e INTEROP_GOPEER_IMPL=port \
-    rlmdb-interop-musl cargo test -p rlmdb-interop --test go_peer --test go_pairs --test go_pairs10
+    -w /work -e INTEROP_PEER=/work/interop/external/gopeer-linux -e INTEROP_PEER_ARGS='--impl port' \
+    -e INTEROP_PEER_NAME=Go rlmdb-interop-musl \
+    cargo test -p rlmdb-interop --test external_peer --test external_pairs --test external_pairs10
 ```
 
 ### Results with `--impl port` (the Go implementation)
 
-Every Go test of rlmdb's interop matrix passes: `go_pairs` (165 tests:
-every scenario with Go and C 0.9, Go and Rust both ways, and Go on both
-sides, on LMDB 0.9 environments), `go_pairs10` (231: Go with C 1.0, Rust
-and C on Rust both ways, and Go on both sides, on LMDB 1.0 environments)
-and `go_peer` (5, among them `four_writers` and `four_writers10`: writer
-and reader loops of C, Rust, C on Rust and Go at once). That covers
+Every Go test of rlmdb's interop matrix passes: `external_pairs` (165
+tests: every scenario with Go and C 0.9, Go and Rust both ways, and Go on
+both sides, on LMDB 0.9 environments), `external_pairs10` (231: Go with
+C 1.0, Rust and C on Rust both ways, and Go on both sides, on LMDB 1.0
+environments) and `external_peer` (5, among them `four_writers` and
+`four_writers10`: writer and reader loops of C, Rust, C on Rust and Go
+at once). That covers
 writers of all implementations excluding each other, readers seeing each
 other in the reader table, MVCC, killed writers (robust mutex recovery on
 Linux), copies, and C's page audit and page-by-page comparison of what Go
 wrote. The DUPSORT page-count failures of `--impl cgo` are gone (the port
 counts as C 0.9.36 and later do), and `delete` needs no workaround.
 
-| | `go_pairs` | `go_pairs10` | `go_peer` |
+| | `external_pairs` | `external_pairs10` | `external_peer` |
 |---|---:|---:|---:|
 | macOS 15 (arm64) | 165 / 165 | 231 / 231 | 5 / 5 |
 | Linux arm64, glibc (Debian bookworm) | 165 / 165 | 231 / 231 | 5 / 5 |
@@ -156,17 +160,17 @@ after its restructuring (`t3/interop-gopeer-v2`, whose scenarios include
 audit follow them). The x86-64 row ran in an x86-64 container under
 Rosetta (`--platform linux/amd64`, `rust:1-bookworm`, the gopeer built
 in the same platform's golang container, a target volume of its own);
-there `go_pairs10` and `go_peer` ran with `-- --test-threads=1`: with
-parallel tests the harness process itself stopped twice after 93 and
-166 tests, in different scenarios, with every thread of the test binary
-waiting in the kernel on a priority-inheritance futex (which neither C
-LMDB, rlmdb nor the harness uses) and no peer process running, which
-points at the emulator rather than at a peer.
+there `external_pairs10` and `external_peer` ran with
+`-- --test-threads=1`: with parallel tests the harness process itself
+stopped twice after 93 and 166 tests, in different scenarios, with every
+thread of the test binary waiting in the kernel on a priority-inheritance
+futex (which neither C LMDB, rlmdb nor the harness uses) and no peer
+process running, which points at the emulator rather than at a peer.
 
 ### Results with `--impl cgo` (lmdb-go v1.9.4, C LMDB 0.9.35)
 
-`go_peer` passes on macOS and Linux: gopeer knows the same commands as
-`cpeer`, `gen` is byte-identical, and `verify`, `dump --all`, `stat` and
+`external_peer` passes on macOS and Linux: gopeer knows the same
+commands as `cpeer`, `gen` is byte-identical, and `verify`, `dump --all`, `stat` and
 `check-freelist` print exactly what `cpeer` prints on an environment C
 wrote; writer loops of C, Rust, C on Rust and Go at once keep `#commits`
 exact. On the 0.9 pairs (Go and C, Go and Rust both ways, Go and Go; 165
@@ -188,6 +192,6 @@ recovery on Linux), copies and all data checks pass. Run on macOS 15
 | macOS | 127 | 34 | 4 |
 | Linux | 125 | 36 | 4 |
 
-The 1.0 pairs (`go_pairs10`) and `four_writers10` are skipped: the cgo
-peer does not open LMDB 1.0 environments. They become meaningful with
+The 1.0 pairs (`external_pairs10`) and `four_writers10` are skipped: the
+cgo peer does not open LMDB 1.0 environments. They become meaningful with
 `--impl port`.
