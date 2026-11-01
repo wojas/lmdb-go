@@ -84,7 +84,7 @@ func TestLayoutMatchesC(t *testing.T) {
 func TestCTableGoAttaches(t *testing.T) {
 	for _, c := range sides(t) {
 		env, txnid := c.newEnv(t)
-		cr := startC(t, c.peer, "hold-reader", env, "60", "--until-stdin").mustBeReady(t)
+		cr := startC(t, c.peer, "hold-reader", env, holdSecs, "--until-stdin").mustBeReady(t)
 		r := openGo(t, env, c.layout)
 		if r.IsExclusive() {
 			t.Fatalf("%s: Go is the first opener while C holds the environment", c.format)
@@ -223,11 +223,11 @@ func TestInitBytesMatchC(t *testing.T) {
 func TestWritersExcludeEachOther(t *testing.T) {
 	for _, c := range sides(t) {
 		env, _ := c.newEnv(t)
-		holder := startC(t, c.peer, "hold-env", env, "60", "--until-stdin").mustBeReady(t)
+		holder := startC(t, c.peer, "hold-env", env, holdSecs, "--until-stdin").mustBeReady(t)
 		r := openGo(t, env, c.layout)
 
 		// C holds the writer lock, Go waits.
-		cw := startC(t, c.peer, "hold-writer", env, "60", "--until-stdin").mustBeReady(t)
+		cw := startC(t, c.peer, "hold-writer", env, holdSecs, "--until-stdin").mustBeReady(t)
 		got := make(chan error, 1)
 		go func() {
 			err := r.LockWriter(noRepair)
@@ -301,7 +301,7 @@ func TestReaderCheckAcrossImplementations(t *testing.T) {
 			t.Fatalf("%s: readers left: %v", c.format, got)
 		}
 
-		cr := startC(t, c.peer, "hold-reader", env, "60", "--until-stdin").mustBeReady(t)
+		cr := startC(t, c.peer, "hold-reader", env, holdSecs, "--until-stdin").mustBeReady(t)
 		if n, err := r.ReaderCheck(); n != 0 || err != nil {
 			t.Fatalf("%s: Go cleared a live C reader: %d %v", c.format, n, err)
 		}
@@ -324,6 +324,11 @@ func TestWriterKilledHoldingLock(t *testing.T) {
 	if runtime.GOOS != "linux" && runtime.GOOS != "windows" {
 		t.Skip("robust mutexes are Linux's and Windows's; semaphores stay taken when the holder dies, in C too")
 	}
+	if os.Getenv("LMDB_TEST_NO_ROBUST_MUTEX") != "" {
+		// QEMU user emulation has no robust futexes (in C too): the dead
+		// owner is never reported (scripts/linux-test.sh).
+		t.Skip("no robust mutexes here (LMDB_TEST_NO_ROBUST_MUTEX)")
+	}
 	for _, c := range sides(t) {
 		env, txnid := c.newEnv(t)
 		r := openGo(t, env, c.layout)
@@ -332,7 +337,7 @@ func TestWriterKilledHoldingLock(t *testing.T) {
 		}
 
 		// C dies holding the writer mutex; Go repairs.
-		startC(t, c.peer, "hold-writer", env, "60", "--until-stdin").mustBeReady(t).kill()
+		startC(t, c.peer, "hold-writer", env, holdSecs, "--until-stdin").mustBeReady(t).kill()
 		called := false
 		err := r.LockWriter(func() (uint64, error) { called = true; return txnid, nil })
 		if err != nil || !called {
@@ -363,7 +368,7 @@ func TestWriterKilledHoldingLock(t *testing.T) {
 func TestOtherVersionHeld(t *testing.T) {
 	for _, c := range sides(t) {
 		env, txnid := c.newEnv(t)
-		holder := startC(t, c.peer, "hold-env", env, "60", "--until-stdin").mustBeReady(t)
+		holder := startC(t, c.peer, "hold-env", env, holdSecs, "--until-stdin").mustBeReady(t)
 		if _, err := lockfile.Open(filepath.Join(env, "lock.mdb"), 0o644, 126, false, c.otherLayout); err != format.VersionMismatch {
 			t.Fatalf("%s held by C, Go opens v%d: %v", c.format, c.otherLayout.Version, err)
 		}

@@ -64,8 +64,9 @@ commands in `cmd/` and `exp/cmd/`. Read the API documentation with
   this port has not run on any BSD yet. The parts macOS's kernel can run,
   the SysV semaphore set of LMDB 1.0 lock files and NetBSD's semaphore
   names, run in the lock-file tests on macOS.) 64-bit only: 32-bit builds
-  stop with a compile error; 64-bit big-endian targets build but are
-  untested.
+  stop with a compile error; 64-bit big-endian targets build, and s390x
+  is tested under emulation (QEMU user mode), against C peers built for
+  it.
 * **`NoLock`** only removes the locking between processes. Within the
   process, write transactions are still serialised and pages that a live
   reader can see are never reused, also across several `NoLock` handles

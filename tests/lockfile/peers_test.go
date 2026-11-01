@@ -139,6 +139,14 @@ func (c cside) lastTxnID(t *testing.T, env string) uint64 {
 	return atoi(t, field(t, mustRun(t, c.peer, "stat", env), "last_txnid"))
 }
 
+// holdSecs is the deadline of the C peers' hold-* commands that the tests
+// start with --until-stdin (rlmdb interop hold_secs, 3df6995). The test
+// releases them; the deadline only ends the hold of a test that is gone.
+// It must outlast the slowest test (emulated runs take minutes): a
+// hold-env keeper that left early lets the next opener of the
+// environment reset the reader table.
+const holdSecs = "600"
+
 // proc is a running process with a READY line protocol: C peers'
 // hold-reader, hold-writer, hold-env (interop/README.md), or a Go helper.
 type proc struct {

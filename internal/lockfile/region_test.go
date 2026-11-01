@@ -352,6 +352,7 @@ func ownerDeathLayouts(t *testing.T) []*Layout {
 	if len(ls) == 0 {
 		t.Skip("no lock here tells about a dead owner: named semaphores are not robust")
 	}
+	skipUnderQEMU(t)
 	return ls
 }
 
@@ -361,6 +362,7 @@ func needThreadOwned(t *testing.T) {
 	if !threadOwned(LockV09) {
 		t.Skip("the locks are semaphores, which belong to no thread")
 	}
+	skipUnderQEMU(t)
 }
 
 // noRepair is a LockWriter callback for tests in which no writer dies.

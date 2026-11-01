@@ -228,8 +228,9 @@ differently from C is in `internal/engine/PORTING.md` and in rlmdb's
   implementation has only the 64-bit format, as rlmdb: a build for a
   32-bit `GOARCH` (386, arm, mips, mipsle) fails with `undefined:
   lmdb_requires_a_64_bit_platform` (`internal/format/arch_unsupported.go`).
-  64-bit big-endian targets (s390x, ppc64, mips64) build but are untested;
-  like C, files are in the host's byte order.
+  64-bit big-endian targets (s390x, ppc64, mips64) build; s390x is tested
+  under emulation (QEMU user mode, with C peers built for it), ppc64 and
+  mips64 are not. Like C, files are in the host's byte order.
 
 ## Tests of lmdb-go v1 that were changed
 
