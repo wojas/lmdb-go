@@ -4,7 +4,9 @@
 // initialise every byte it writes (node padding, the gap between mp_lower
 // and mp_upper, free space of sub-pages, the tail of an overflow run), so
 // this compares a canonical form of every page reachable from the newest
-// meta page: page headers (with 1.0's mp_txnid), node pointers, node
+// meta page: page headers (with 1.0's mp_txnid; without mp_pad of an
+// ordinary 0.9 branch or leaf page, which nothing reads there and which C
+// 0.9 leaves as a page buffer it reuses had it), node pointers, node
 // headers, keys and data (sub-pages recursively; F_BIGDATA nodes by their
 // overflow reference), P_LEAF2 keys, overflow values, and both meta pages'
 // MDB_meta. The parsing is independent of internal/format on purpose.
@@ -20,6 +22,15 @@ import (
 )
 
 var ne = binary.NativeEndian
+
+// nodeLo and nodeHi are the offsets of MDB_node's mn_lo and mn_hi, which C
+// declares in the other order on big-endian hosts.
+var nodeLo, nodeHi = func() (int, int) {
+	if ne.Uint16([]byte{1, 0}) == 1 {
+		return 0, 2
+	}
+	return 2, 0
+}()
 
 type cmpFormat struct {
 	name     string
@@ -168,7 +179,7 @@ func (img *image) walk(pgno uint64) error {
 	}
 	var children []uint64
 	var big [][2]uint64
-	canon, err := canonical(img.f, page, &children, &big)
+	canon, err := canonical(img.f, page, false, &children, &big)
 	if err != nil {
 		return fmt.Errorf("page %d: %w", pgno, err)
 	}
@@ -196,7 +207,8 @@ func (img *image) walk(pgno uint64) error {
 	return nil
 }
 
-func canonical(f *cmpFormat, page []byte, children *[]uint64, big *[][2]uint64) ([]byte, error) {
+// canonical is the comparison form of page (a sub-page if sub).
+func canonical(f *cmpFormat, page []byte, sub bool, children *[]uint64, big *[][2]uint64) ([]byte, error) {
 	hdr := f.hdr
 	flags, err := u16(page, hdr-6)
 	if err != nil {
@@ -211,6 +223,12 @@ func canonical(f *cmpFormat, page []byte, children *[]uint64, big *[][2]uint64) 
 		return nil, err
 	}
 	out := append([]byte(nil), h...)
+	if f == cmpV09 && !sub && flags&(cmpBranch|cmpLeaf) != 0 && flags&cmpLeaf2 == 0 {
+		// C 0.9 hands out a page buffer it freed earlier in the
+		// transaction as it is (mdb_page_malloc, me_dpages; 1.0 clears
+		// it), and mdb_page_new does not set mp_pad.
+		out[8], out[9] = 0, 0
+	}
 	empty := hdr - f.base
 	if lower < empty {
 		return nil, fmt.Errorf("mp_lower %d below the header", lower)
@@ -232,8 +250,8 @@ func canonical(f *cmpFormat, page []byte, children *[]uint64, big *[][2]uint64) 
 	for i := 0; i < nkeys; i++ {
 		p, _ := u16(page, hdr+2*i)
 		ptr := p + f.base
-		lo, err1 := u16(page, ptr)
-		hi, err2 := u16(page, ptr+2)
+		lo, err1 := u16(page, ptr+nodeLo)
+		hi, err2 := u16(page, ptr+nodeHi)
 		nflags, err3 := u16(page, ptr+4)
 		ksize, err4 := u16(page, ptr+6)
 		if err1 != nil || err2 != nil || err3 != nil || err4 != nil {
@@ -276,7 +294,7 @@ func canonical(f *cmpFormat, page []byte, children *[]uint64, big *[][2]uint64) 
 			*children = append(*children, root)
 			out = append(out, data...)
 		case nflags&cmpDup != 0:
-			c, err := canonical(f, data, children, big)
+			c, err := canonical(f, data, true, children, big)
 			if err != nil {
 				return nil, err
 			}

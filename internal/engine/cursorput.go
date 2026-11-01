@@ -12,7 +12,9 @@
 //  3. for an existing key: overwrite in place where possible (putCurrent),
 //     or for MDB_DUPSORT prepare the node that will hold the duplicates
 //     (dupPrepare): convert a single item into a sub-page, grow a
-//     sub-page, or promote it to a sub-DB;
+//     sub-page, or promote it to a sub-DB; where C's in-place replacement
+//     goes wrong, delete the item and insert the new one instead
+//     (replaceCurrent);
 //  4. insert the node, splitting the leaf if it is full (insertLeafNode),
 //     and fix up the other cursors;
 //  5. for duplicates, store the item(s) through the sub-cursor (putSub)
@@ -119,6 +121,55 @@ func branchSizeOf(l *format.Layout, ksize int) int {
 	return sz
 }
 
+// overflowsNode: does mdb_node_add put dsize bytes of leaf data under a
+// key of ksize bytes on overflow pages (F_BIGDATA)? Header, key (1.0:
+// padded to an even length) and data, the data not padded, larger than
+// nodemax. (LEAFSIZE, which decides whether a new MDB_DUPSORT key's first
+// item goes straight to a sub-DB, also pads the data in 1.0, so an item
+// that overflows a node always goes there.) rlmdb's overflows_node.
+func overflowsNode(l *format.Layout, nodemax, ksize, dsize int) bool {
+	return format.NodeSize+l.NodeKeyLen(ksize)+dsize > nodemax
+}
+
+// currentSingleOverflows: for MDB_CURRENT on a MDB_DUPSORT key, is the
+// cursor on the key's only item (a node without duplicates), and would an
+// item of dsize bytes under a key of ksize bytes go to overflow pages if
+// it replaced it there (overflowsNode)?
+func (t *Txn) currentSingleOverflows(mc cref, ksize, dsize int) (bool, error) {
+	if !overflowsNode(t.l, t.env.nodeMax, ksize, dsize) {
+		return false, nil
+	}
+	page, err := t.topPage(mc)
+	if err != nil {
+		return false, err
+	}
+	if page.IsLeaf2() {
+		return false, nil
+	}
+	node, ok := page.Node(t.cur(mc).kiTop())
+	if !ok {
+		return false, format.Corrupted
+	}
+	return !node.IsDupData(), nil
+}
+
+// replaceCurrent is MDB_CURRENT as lmdb.h describes it for an item of
+// another size: delete the item under mc, then put data under key through
+// mc (which ends on it), as mdb_cursor_del + mdb_cursor_put would. For the
+// replacements C gets wrong in place (KNOWN_C_BUGS.md #15, #38). Once the
+// delete is done a failed insert leaves the transaction half changed, so
+// it fails. rlmdb's RwTxn::replace_current.
+func (t *Txn) replaceCurrent(mc cref, key []byte, data putData) error {
+	if err := t.delAt(mc, 0); err != nil {
+		return err
+	}
+	if _, err := t.putAt(mc, key, data, 0); err != nil {
+		t.w.flags |= txnError
+		return err
+	}
+	return nil
+}
+
 // currentDupFits: for MDB_CURRENT on a duplicate in sub-page fp, does the
 // new item of size bytes fit where the sub-cursor's current item is?
 func (t *Txn) currentDupFits(mc cref, fp []byte, size int) bool {
@@ -208,6 +259,22 @@ func (t *Txn) putAt0(mc cref, key []byte, data putData, flags uint32) (int, erro
 	if dupsort && uint32(db.Flags)&format.DupFixed != 0 && pos == posFound {
 		if err := t.checkDupFixedSize(mc, data.size); err != nil {
 			return 0, err
+		}
+	}
+	if dupsort && flags == format.Current {
+		over, err := t.currentSingleOverflows(mc, len(key), data.size)
+		if err != nil {
+			return 0, err
+		}
+		if over {
+			// C overwrites the key's only item in place (goto current) and
+			// stores the new one on overflow pages: an F_BIGDATA node in a
+			// DUPSORT DB, which no other put makes and which C's next
+			// duplicate put reads as inline data. Delete and insert
+			// instead, before anything else, as mdb_cursor_del and
+			// mdb_cursor_put would: the item goes to a sub-DB, as a new
+			// key's first item of that size does (KNOWN_C_BUGS.md #38).
+			return 0, t.replaceCurrent(mc, key, data)
 		}
 	}
 	// Cursor is positioned, check for room in the dirty list.
@@ -480,18 +547,29 @@ func (t *Txn) putItem(mc cref, db *format.DB, key []byte, item nodeVal, flags *u
 			}
 			switch st.kind {
 			case dupCurrent:
+				if overflowsNode(t.l, t.env.nodeMax, len(key), item.size) {
+					// Overwriting the key's only item with one the
+					// comparator calls equal (a C-made F_BIGDATA item, or
+					// one of another size) that does not fit a node: C
+					// would leave it on overflow pages (KNOWN_C_BUGS.md
+					// #38). Delete and insert (putAt counts the item); an
+					// MDB_MULTIPLE batch goes on with its next item.
+					if err := t.replaceCurrent(mc, key, putBytes(item.bytes)); err != nil {
+						return false, nil, false, err
+					}
+					return *flags&format.Multiple == 0, nil, false, nil
+				}
 				goCurrent = true
 			case dupPutSub:
 				rc, ins := t.putSub(mc, item, *flags, nil, false, 0, false, false)
 				return t.afterSub(mc, rc, ins, false)
 			case dupReplace:
-				if err := t.delAt(mc, 0); err != nil {
-					return false, nil, false, err
-				}
 				// putAt counts the item itself. (Never MDB_MULTIPLE: its
 				// MDB_DUPFIXED items have the size of the key's only one.)
-				_, rc := t.putAt(mc, key, putBytes(item.bytes), 0)
-				return true, rc, false, nil
+				if err := t.replaceCurrent(mc, key, putBytes(item.bytes)); err != nil {
+					return false, nil, false, err
+				}
+				return true, nil, false, nil
 			case dupNewSub:
 				sub = &st
 			}
@@ -723,10 +801,6 @@ func (t *Txn) dupPrepare(mc cref, item nodeVal, flags *uint32, insertKey, bigNew
 	offset := 0
 	toSubDB := bigNew
 	xsize := 0
-	// bigPgno is the overflow run of a lone item on overflow pages, freed
-	// when it becomes a duplicate (ledger: rlmdb KNOWN_C_BUGS.md #38).
-	var bigPgno uint64
-	hasBig := false
 	if bigNew {
 		// Set up an empty "old sub-page" for prep_subDB to expand to a
 		// full page (P_DIRTY: the sub-DB root built from it is a dirty
@@ -749,11 +823,14 @@ func (t *Txn) dupPrepare(mc cref, item nodeVal, flags *uint32, insertKey, bigNew
 		}
 		nflags, ksize := n.Flags(), n.KeySize()
 		var od []byte
+		// bigPgno is the overflow run of a lone item on overflow pages.
+		var bigPgno uint64
+		hasBig := false
 		if nflags&(format.FBigData|format.FDupData) == format.FBigData {
-			// A lone item on overflow pages, which C 1.0 writes for an
-			// MDB_CURRENT item too big for a node (rlmdb KNOWN_C_BUGS.md
-			// #38): read it through them (C reads the node as if the item
-			// were inline); converting it to duplicates frees them below.
+			// A single item on overflow pages, which only C's MDB_CURRENT
+			// stores in a DUPSORT DB (KNOWN_C_BUGS.md #38). C reads the
+			// overflow reference and what follows it in the page as the
+			// item; read the item.
 			if bigPgno, ok = n.OverflowPgno(); !ok {
 				return st, format.Corrupted
 			}
@@ -767,16 +844,8 @@ func (t *Txn) dupPrepare(mc cref, item nodeVal, flags *uint32, insertKey, bigNew
 		olddata := copyInto(&t.w.dupOld, od)
 		switch {
 		case nflags&format.FDupData == 0:
-			// Was a single item before, must convert now. An item that
-			// replaces it but does not fit a node takes the route of a
-			// new key's (a sub-DB): C would store it on overflow pages,
-			// an F_BIGDATA node in a DUPSORT database, which its next
-			// duplicate corrupts (rlmdb KNOWN_C_BUGS.md #38).
-			tooBig := l.LeafSize(ksize, item.size) > nodemax
+			// Was a single item before, must convert now.
 			if *flags == format.Current {
-				if tooBig {
-					return dupStep{kind: dupReplace}, nil
-				}
 				return dupStep{kind: dupCurrent}, nil
 			}
 			e := t.dbe(t.cur(mc).dbi)
@@ -792,11 +861,20 @@ func (t *Txn) dupPrepare(mc cref, item nodeVal, flags *uint32, insertKey, bigNew
 				if *flags&(format.NoDupData|format.AppendDup) != 0 {
 					return st, format.KeyExist
 				}
-				if tooBig {
-					return dupStep{kind: dupReplace}, nil
-				}
 				// Overwrite it.
 				return dupStep{kind: dupCurrent}, nil
+			}
+			if hasBig {
+				// The item becomes the first duplicate (a key of the
+				// sub-tree, so at most the maximum key size, as C's
+				// MDB_CURRENT checked): its overflow pages are free. C's
+				// mdb_node_del leaves them allocated and counted: a leak.
+				if len(olddata) == 0 || len(olddata) > t.env.maxKey {
+					return st, format.Corrupted
+				}
+				if err := t.ovpageFree(mc, bigPgno); err != nil {
+					return st, err
+				}
 			}
 			// Make sub-page header for the dup items, with dummy body.
 			size := l.PageHdr + len(olddata) + item.size
@@ -942,13 +1020,6 @@ func (t *Txn) dupPrepare(mc cref, item nodeVal, flags *uint32, insertKey, bigNew
 	}
 	*flags |= uint32(format.FDupData)
 	if !insertKey {
-		if hasBig {
-			// C's mdb_node_del leaves the run allocated and counted: a leak
-			// (rlmdb KNOWN_C_BUGS.md #38).
-			if err := t.ovpageFree(mc, bigPgno); err != nil {
-				return st, err
-			}
-		}
 		if err := t.nodeDel(mc, 0); err != nil {
 			return st, err
 		}
@@ -1223,7 +1294,7 @@ func (t *Txn) nodeAddTo(mc cref, scratch []byte, indx int, key []byte, data *nod
 				return format.Corrupted
 			}
 			body = nodeBody{kind: bodyOverflow, ovref: r, size: d.size}
-		case nodeSize+d.size > nodemax:
+		case overflowsNode(l, nodemax, len(key), d.size):
 			// Put data on overflow page.
 			ovpages := l.OverflowPagesFor(d.size, ps)
 			nodeSize = format.Even(nodeSize + l.OvpageSize)
@@ -1322,8 +1393,9 @@ func (t *Txn) updateKey(mc cref, key []byte) error {
 // "if (mp != fp)" block of mdb_cursor_put): same header with mp_upper +=
 // offset, the nodes moved to the end and their pointers shifted, or the
 // P_LEAF2 keys copied. offset is negative when a P_LEAF2 fake sub-page
-// larger than a page becomes a sub-DB root. dirty is the P_DIRTY bit the
-// page gets. ok is false if a result is out of range (corrupt input).
+// larger than a page becomes a sub-DB root, whose mp_upper is then
+// computed in 16 bits, as C does. dirty is the P_DIRTY bit the page gets.
+// ok is false if a result is out of range (corrupt input).
 func buildSubpage(l *format.Layout, mp, fp []byte, olddataSize int, fpFlags, fpPad uint16, offset int, dirty uint16) bool {
 	nkeys := numKeys(l, fp)
 	fpUpper := pUpper(l, fp)
@@ -1331,7 +1403,13 @@ func buildSubpage(l *format.Layout, mp, fp []byte, olddataSize int, fpFlags, fpP
 	setPad(l, mp, fpPad)
 	setLower(l, mp, pLower(l, fp))
 	mpUpper := fpUpper + offset
-	if mpUpper < 0 {
+	if fpFlags&format.PLeaf2 != 0 {
+		// MP_UPPER(mp) = MP_UPPER(fp) + offset in C's 16 bits: the fake
+		// sub-page of a single item of more than 16 KiB (64 KiB pages) is
+		// larger than 64 KiB, so its mp_upper wrapped, and the sum wraps
+		// back to the new page's.
+		mpUpper = l.PtrBase + (fpUpper-l.PtrBase+offset)&0xffff
+	} else if mpUpper < 0 {
 		return false
 	}
 	setUpper(l, mp, mpUpper)

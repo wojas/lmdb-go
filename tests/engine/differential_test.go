@@ -37,6 +37,11 @@ type oracle struct {
 	// spill where C's do not (0: C's limit). Spilling must not change what
 	// is written.
 	dirtyLimit int
+	// dataFile, if set, is the data file both sides start from instead of
+	// a new environment (a 0.9 file with a page size C 0.9 cannot create
+	// but opens); both open it as it is, without a page size request
+	// (rlmdb's Oracle::data_file).
+	dataFile []byte
 }
 
 // oracle09 is C 0.9.36. It skips t where C's pages are not this process's
@@ -611,7 +616,7 @@ func (d *driver) compare(op, cl, rlRaw string) bool {
 func cursorOf(op string) (int, bool) {
 	f := strings.Split(op, ":")
 	switch f[0] {
-	case "g", "cp", "cd":
+	case "g", "cp", "cd", "cr":
 		n, err := strconv.Atoi(f[1])
 		return n, err == nil
 	}
@@ -661,6 +666,10 @@ func (d *driver) goStep(txn *eng.Txn, dbi eng.DBI, cur []*eng.Cursor, op string)
 		err = txn.Del(dbi, unhex(f[1]), data)
 	case "cd":
 		err = cur[atoi(f[1])].Del(uint32(atoi(f[2])))
+	case "cr":
+		// C deletes and puts (writeops.c), which is what the Go writer's
+		// MDB_CURRENT does where C's in-place replacement goes wrong.
+		err = cur[atoi(f[1])].Put(unhex(f[2]), unhex(f[3]), format.Current)
 	case "g":
 		var k, v []byte
 		if len(f) > 3 {
@@ -795,6 +804,13 @@ func (o *oracle) beginChild(txn *eng.Txn) (*eng.Txn, error) {
 // committed result agreed (false: C stopped on a known C bug).
 func runRound(t testing.TB, o *oracle, p *profile, ncur int, g *gen, nops int, list []string, tag string, mapSize int) bool {
 	cdir, gdir := t.TempDir(), t.TempDir()
+	if o.dataFile != nil {
+		for _, dir := range []string{cdir, gdir} {
+			if err := os.WriteFile(filepath.Join(dir, "data.mdb"), o.dataFile, 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
 	env, err := eng.Open(gdir, eng.Options{
 		Format: o.f, PageSize: o.pageSize, MapSize: int64(mapSize), MaxDBs: 8,
 		Flags: format.NoSync, OpenLock: eng.OpenMemLock,

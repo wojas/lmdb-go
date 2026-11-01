@@ -14,15 +14,21 @@ package engine
 // me_nodemax); not in 0.9 files with 4 KiB or larger pages (items and
 // keys of at most 511 bytes).
 //
-// rlmdb's decision, ported: the writer never creates an F_BIGDATA node in
-// a DUPSORT database. Such a put deletes the item and puts the new one as
-// a fresh put would (a sub-DB, or MDB_BAD_VALSIZE), as for a sub-page item
-// that does not fit (#15); and a lone F_BIGDATA item that C 1.0 wrote is
-// read through its overflow pages when the key gets a duplicate, and the
-// pages are freed (tests/engine TestRepairCBigDataDupsort).
+// rlmdb's decision (its commit dc90f21), ported: the writer never creates
+// an F_BIGDATA node in a DUPSORT database. Such a MDB_CURRENT deletes the
+// item and puts the new one, before anything else, as mdb_cursor_del +
+// mdb_cursor_put would (a sub-DB; one over the maximum size is
+// MDB_BAD_VALSIZE before anything changes), as for a sub-page item that
+// does not fit (#15); so does a put of an item the duplicate order calls
+// equal, also in a MDB_MULTIPLE batch. A lone F_BIGDATA item that C wrote
+// is read through its overflow pages when the key gets a duplicate, and
+// the pages are freed. tests/engine compares the files with C's
+// mdb_cursor_del + mdb_cursor_put (TestDifferential*CurrentSingleItem) and
+// repairs C-made files (TestSingleItemOnOverflowPages*).
 
 import (
 	"bytes"
+	"fmt"
 	"testing"
 
 	"github.com/PowerDNS/lmdb-go/internal/format"
@@ -104,4 +110,68 @@ func TestDupsortTooBigReplacements(t *testing.T) {
 		must(t, txn.Commit())
 		mustAudit(t, env)
 	})
+}
+
+// TestDupsortCurrentReplacesThroughASubDB: rlmdb's reproducer of #38
+// (format_v10.rs current_with_an_item_too_big_for_a_node), with 4 KiB
+// pages: MDB_CURRENT replaces the only item of a 103-byte key between two
+// other keys with one of 1978 bytes (the maximum), which does not fit a
+// node with the key. One byte more is refused (MDB_BAD_VALSIZE) before
+// anything changes; the maximum deletes the item and inserts the new one,
+// into a sub-DB, with the cursor on it, so the second duplicate goes next
+// to it and no overflow page is left.
+func TestDupsortCurrentReplacesThroughASubDB(t *testing.T) {
+	env, _ := openTest(t, format.V10, Options{PageSize: 4096, MaxDBs: 4})
+	if env.MaxKeySize() != 1978 {
+		t.Fatalf("MaxKeySize %d, want 1978", env.MaxKeySize())
+	}
+	ka, key, kz := bytes.Repeat([]byte("a"), 103), bytes.Repeat([]byte("k"), 103), bytes.Repeat([]byte("z"), 103)
+	big := make([]byte, 1978)
+	for i := range big {
+		big[i] = byte(i*7 + 1)
+	}
+	txn, err := env.BeginTxn(nil, 0)
+	must(t, err)
+	defer txn.Abort()
+	dbi, err := txn.OpenDBI([]byte("d"), format.Create|format.DupSort)
+	must(t, err)
+	for _, kv := range [][2][]byte{{ka, []byte("before")}, {key, []byte("first")}, {kz, []byte("after")}} {
+		must(t, txn.Put(dbi, kv[0], kv[1], 0))
+	}
+	c, err := txn.OpenCursor(dbi)
+	must(t, err)
+	_, _, err = c.Get(key, nil, format.Set)
+	must(t, err)
+	if err := c.Put(key, append(bytes.Clone(big), 0), format.Current); err != format.BadValSize {
+		t.Fatalf("MDB_CURRENT of %d bytes: %v, want MDB_BAD_VALSIZE", len(big)+1, err)
+	}
+	if v, err := txn.Get(dbi, key); err != nil || string(v) != "first" {
+		t.Fatalf("after the refused put: %q, %v", v, err)
+	}
+	must(t, c.Put(key, big, format.Current))
+	if k, v, err := c.Get(nil, nil, format.GetCurrent); err != nil || !bytes.Equal(k, key) || !bytes.Equal(v, big) {
+		t.Fatalf("cursor after the replacement: %d-byte key, %d-byte item, %v", len(k), len(v), err)
+	}
+	st, err := txn.Stat(dbi)
+	must(t, err)
+	if st.OverflowPages != 0 || st.Entries != 3 {
+		t.Fatalf("after the replacement: %+v", st)
+	}
+	must(t, txn.Put(dbi, key, []byte("second"), 0))
+	c.Close()
+	must(t, txn.Commit())
+	want := [][2]string{{string(ka), "before"}, {string(key), string(big)}, {string(key), "second"}, {string(kz), "after"}}
+	if got := scan(t, env, dbi); fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Fatalf("items: %d, want %d", len(got), len(want))
+	}
+	r, err := env.BeginTxn(nil, format.ReadOnly)
+	must(t, err)
+	defer r.Abort()
+	st, err = r.Stat(dbi)
+	must(t, err)
+	// The leaf pages include the sub-DB's.
+	if st.OverflowPages != 0 || st.Entries != 4 || st.LeafPages != 2 {
+		t.Fatalf("committed: %+v", st)
+	}
+	mustAudit(t, env)
 }
