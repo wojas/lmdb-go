@@ -137,4 +137,5 @@ Except where noted otherwise, files in this repository are licensed under
 the BSD 3-clause license ([LICENSE.md](LICENSE.md)). The engine, a
 derivative of LMDB through rlmdb, and the copy of LMDB's C sources in
 `tests/cgolmdb` are covered by the OpenLDAP Public License
-([LICENSE.mdb.md](LICENSE.mdb.md)).
+([LICENSE.mdb.md](LICENSE.mdb.md)). [COPYRIGHT](COPYRIGHT) lists which
+parts fall under which license and the copyright notices they carry.

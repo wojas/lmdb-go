@@ -1,0 +1,51 @@
+Copyright 2026 lmdb-go contributors.
+All rights reserved.
+
+This repository holds two kinds of code under two licenses.
+
+The Go API (package lmdb's exported interface, lmdbscan, exp/lmdbsync,
+cmd, exp/cmd) is lmdb-go, licensed under the BSD 3-clause license in
+LICENSE.md:
+
+    Copyright (c) 2015-now, Bryan Matsuo & contributors
+
+The Go implementation of LMDB underneath it (internal/engine,
+internal/format, internal/lockfile, internal/sys) is a derivative work of
+rlmdb, a Rust rewrite of LMDB, and through it of the LMDB C library
+(https://github.com/LMDB/lmdb). Its B-tree, free-list, transaction and
+copy logic follows mdb.c, and its data file and lock file formats are
+those of LMDB 0.9 and 1.0. The directory tests/cgolmdb holds a copy of
+lmdb-go v1.9.4 with LMDB's C sources, used as a test oracle; those files
+keep their own notices.
+
+rlmdb (https://github.com/wojas/rlmdb) is
+
+    Copyright 2026 Konrad Wojas.
+    All rights reserved.
+
+The LMDB C library is
+
+    Copyright 2011-2021 Howard Chu, Symas Corp.
+    All rights reserved.
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted only as authorized by the OpenLDAP Public
+License, Version 2.8. A copy of this license is available in the file
+LICENSE.mdb.md in this directory or, alternatively, at
+<http://www.OpenLDAP.org/license.html>.
+
+LMDB's B-tree code is derived from btree.c written by Martin Hedenfalk:
+
+    Copyright (c) 2009, 2010 Martin Hedenfalk <martin@bzero.se>
+
+    Permission to use, copy, modify, and distribute this software for any
+    purpose with or without fee is hereby granted, provided that the above
+    copyright notice and this permission notice appear in all copies.
+
+    THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
+    WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
+    MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR
+    ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
+    WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
+    ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
+    OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
