@@ -411,7 +411,7 @@ func TestMeta(t *testing.T) {
 		}
 	}
 	bad := slices.Clone(buf[:4096])
-	bad[10] = 2
+	Put16(bad, LayoutV09.FlagsOffset(), PLeaf) // P_LEAF instead of P_META
 	if _, err := ReadMetaPage(bad, LayoutV09); err != Invalid {
 		t.Error("not a meta page")
 	}
@@ -421,7 +421,7 @@ func TestMeta(t *testing.T) {
 		t.Error("bad magic")
 	}
 	bad = slices.Clone(buf[:4096])
-	bad[20] = 2
+	Put32(bad, 20, 2)
 	if _, err := ReadMetaPage(bad, LayoutV09); err != VersionMismatch {
 		t.Error("bad version")
 	}
@@ -457,6 +457,18 @@ func TestMeta(t *testing.T) {
 	}
 	if _, _, err := SniffFormat(make([]byte, SniffLen)); err != Invalid {
 		t.Error("sniff zeros")
+	}
+	// A file written on a host of the other byte order: its magic reads
+	// byte-swapped (MDB_INVALID, as in C).
+	for _, c := range []struct {
+		src []byte
+		l   *Layout
+	}{{buf, LayoutV09}, {v10, LayoutV10}} {
+		b := slices.Clone(c.src[:SniffLen])
+		slices.Reverse(b[c.l.MetaOffset() : c.l.MetaOffset()+4])
+		if _, _, err := SniffFormat(b); err != Invalid {
+			t.Errorf("%v: byte-swapped magic: %v", c.l.Format, err)
+		}
 	}
 	b := slices.Clone(buf[:SniffLen])
 	Put32(b, 20, 3)
@@ -506,54 +518,63 @@ func TestComparators(t *testing.T) {
 	if Clong.Compare(q(1<<33), q(1)) <= 0 || Clong.Compare(q(5), q(5)) != 0 {
 		t.Error("clong")
 	}
+	sign := func(x int) int {
+		switch {
+		case x < 0:
+			return -1
+		case x > 0:
+			return 1
+		}
+		return 0
+	}
+	for _, c := range [][2][]byte{
+		{{1, 0, 0, 0, 0, 0}, {0, 0, 0, 0, 0, 1}},
+		{{0, 0, 0, 0, 0, 1}, {1, 0, 0, 0, 0, 0}},
+		{{9, 9, 2, 0, 7, 7}, {1, 1, 3, 0, 7, 7}},
+		{{5, 0}, {4, 0}},
+		{{3, 4, 5, 6, 7, 8}, {3, 4, 5, 6, 7, 8}},
+	} {
+		if CmpCintBytes(c[0], c[1]) != sign(cintCLoop(c[0], c[1])) {
+			t.Errorf("cint %v %v", c[0], c[1])
+		}
+	}
+	// Only len(a) bytes of b take part (b longer than a).
+	if CmpCintBytes([]byte{1, 0}, []byte{1, 0, 9, 9}) != 0 {
+		t.Error("cint b longer")
+	}
+	if Memn.CompareInPage([]byte("ab"), []byte("a"), []byte("abc")) <= 0 {
+		t.Error("memn in page")
+	}
+	// Odd sizes do not panic.
+	_ = CmpCintBytes([]byte{1, 2, 3}, []byte{1, 2, 4})
+	_ = CmpCintBytes(nil, nil)
 	if littleEndian {
-		// The little-endian C loop, literally.
-		cle := func(a, b []byte) int {
-			w := func(buf []byte, i int) int { return int(binary.LittleEndian.Uint16(buf[2*i:])) }
-			i := len(a) / 2
-			for {
-				i--
-				x := w(a, i) - w(b, i)
-				if x != 0 || i == 0 {
-					return x
-				}
-			}
-		}
-		sign := func(x int) int {
-			switch {
-			case x < 0:
-				return -1
-			case x > 0:
-				return 1
-			}
-			return 0
-		}
-		for _, c := range [][2][]byte{
-			{{1, 0, 0, 0, 0, 0}, {0, 0, 0, 0, 0, 1}},
-			{{0, 0, 0, 0, 0, 1}, {1, 0, 0, 0, 0, 0}},
-			{{9, 9, 2, 0, 7, 7}, {1, 1, 3, 0, 7, 7}},
-			{{5, 0}, {4, 0}},
-			{{3, 4, 5, 6, 7, 8}, {3, 4, 5, 6, 7, 8}},
-		} {
-			if CmpCintBytes(c[0], c[1]) != sign(cle(c[0], c[1])) {
-				t.Errorf("cint %v %v", c[0], c[1])
-			}
-		}
-		if CmpCintBytes([]byte{1, 0}, []byte{1, 0, 9, 9}) != 0 {
-			t.Error("cint b longer")
-		}
+		// b shorter than a: missing bytes count as zero...
 		if CmpCintBytes([]byte{0, 0, 0, 0, 0, 1}, []byte{5, 0}) <= 0 {
 			t.Error("cint b shorter")
 		}
+		// ...unless the bytes after the key in its page are known, which C
+		// would read.
 		tail := []byte{5, 0, 0, 0, 0, 7}
 		if Cint.CompareInPage([]byte{0, 0, 0, 0, 0, 1}, tail[:2], tail) >= 0 {
 			t.Error("cint in page")
 		}
-		if Memn.CompareInPage([]byte("ab"), []byte("a"), []byte("abc")) <= 0 {
-			t.Error("memn in page")
+	} else {
+		// b shorter than a: the first word decides on big-endian hosts...
+		if CmpCintBytes([]byte{0, 5, 0, 0, 0, 0}, []byte{0, 5}) != 0 ||
+			CmpCintBytes([]byte{0, 6, 0, 0, 0, 0}, []byte{0, 5}) <= 0 {
+			t.Error("cint b shorter, first word")
 		}
-		_ = CmpCintBytes([]byte{1, 2, 3}, []byte{1, 2, 4})
-		_ = CmpCintBytes(nil, nil)
+		// ...then the missing bytes count as zero, unless the bytes after
+		// the key in its page are known, which C would read: here the tail
+		// makes b's last word 7 > 1.
+		if CmpCintBytes([]byte{0, 5, 0, 0, 0, 1}, []byte{0, 5}) <= 0 {
+			t.Error("cint b shorter")
+		}
+		tail := []byte{0, 5, 0, 0, 0, 7}
+		if Cint.CompareInPage([]byte{0, 5, 0, 0, 0, 1}, tail[:2], tail) >= 0 {
+			t.Error("cint in page")
+		}
 	}
 	if DefaultKeyCmp(0).Kind != CmpMemn || DefaultKeyCmp(IntegerKey).Kind != CmpCint || DefaultKeyCmp(ReverseKey|IntegerKey).Kind != CmpMemnr {
 		t.Error("default key")
@@ -742,5 +763,32 @@ func TestStrerror(t *testing.T) {
 		FormatReaderList([]ReaderInfo{{PID: 12, Thread: 0xab, TxnID: 7, InTxn: true}, {PID: 3, Thread: 1}}) !=
 			"    pid     thread     txnid\n        12 ab 7\n         3 1 -\n" {
 		t.Error("reader list")
+	}
+}
+
+// cintCLoop is both loops of mdb_cmp_cint over operands of len(a) bytes,
+// literally: the host's, from the last 16-bit word backwards on
+// little-endian hosts, from the first forwards on big-endian ones (rlmdb
+// cmp.rs c_cint).
+func cintCLoop(a, b []byte) int {
+	n := len(a) / 2
+	w := func(buf []byte, i int) int { return int(binary.NativeEndian.Uint16(buf[2*i:])) }
+	if littleEndian {
+		i := n
+		for {
+			i--
+			x := w(a, i) - w(b, i)
+			if x != 0 || i == 0 {
+				return x
+			}
+		}
+	}
+	i := 0
+	for {
+		x := w(a, i) - w(b, i)
+		i++
+		if x != 0 || i == n {
+			return x
+		}
 	}
 }

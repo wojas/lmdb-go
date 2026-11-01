@@ -476,17 +476,9 @@ func FuzzCompare(f *testing.F) {
 		if CmpMemnrBytes(a, b) != bytes.Compare(ra, rb) {
 			t.Fatalf("memnr on %x, %x", a, b)
 		}
-		if littleEndian && len(a) >= 2 && len(a)%2 == 0 && len(b) >= len(a) {
-			// mdb_cmp_cint, literally (little-endian).
-			w := func(buf []byte, i int) int { return int(binary.LittleEndian.Uint16(buf[2*i:])) }
-			i, x := len(a)/2, 0
-			for {
-				i--
-				x = w(a, i) - w(b, i)
-				if x != 0 || i == 0 {
-					break
-				}
-			}
+		if len(a) >= 2 && len(a)%2 == 0 && len(b) >= len(a) {
+			// mdb_cmp_cint, literally (the host's loop).
+			x := cintCLoop(a, b)
 			if CmpCintBytes(a, b) != sign(x) {
 				t.Fatalf("cint on %x, %x: %d, C %d", a, b, CmpCintBytes(a, b), x)
 			}

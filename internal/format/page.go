@@ -97,9 +97,12 @@ func (p Page) Lower() uint16 { return p.hdr16(fieldLower) }
 // Upper is mp_upper as stored (PAGEBASE-relative).
 func (p Page) Upper() uint16 { return p.hdr16(fieldUpper) }
 
-// OverflowPages is mp_pages: the length of an overflow run.
+// OverflowPages is mp_pages: the length of an overflow run, a native
+// 32-bit word over mp_lower and mp_upper (the halves are the other way
+// round on big-endian hosts).
 func (p Page) OverflowPages() uint32 {
-	return uint32(p.hdr16(fieldLower)) | uint32(p.hdr16(fieldUpper))<<16
+	v, _ := Get32(p.B, p.L.PagesOffset())
+	return v
 }
 
 // NumKeys is NUMKEYS: the number of nodes (or P_LEAF2 keys).
