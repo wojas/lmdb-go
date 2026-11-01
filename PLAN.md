@@ -214,11 +214,14 @@ with MinGW-w64.
   its mode and value on the stack, which its trampoline handles (and
   tests prove). The cgo path is the fallback if a Go release ever breaks
   the `syscall.syscall` linkname.
-* **64-bit big-endian (s390x, ppc64, mips64).** Supported in principle
-  (native byte order throughout, as C LMDB) but untested. Test later in
-  an emulated Docker container (`LINUX_TEST_PLATFORM=linux/s390x`) with C
-  peers built there. rlmdb is adding support for more architectures first
-  (owner, 2026-10-31); when its thread reports, port that work here (the
+* **64-bit big-endian (s390x, ppc64, mips64): tested on s390x under
+  emulation.** Native byte order throughout, as C LMDB. The root module
+  and the tests module, with C peers built in the container, pass on
+  s390x under QEMU user emulation (`LINUX_TEST_IMAGE=golang:1.25-trixie
+  LINUX_TEST_PLATFORM=linux/s390x scripts/linux-test.sh`; owner-death
+  tests skip, QEMU has no robust futexes), as rlmdb's suites do since
+  its `5773e0a`; ppc64 and mips64 are untested. Later big-endian work of
+  rlmdb is ported here (the
   same way as any rlmdb change, see "Following rlmdb").
 * **BSDs.** rlmdb supports FreeBSD, OpenBSD, NetBSD and DragonFly as an
   untested tier (e4a5ad9, ledger #39; C 1.0 uses SysV semaphores on

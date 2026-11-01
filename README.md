@@ -55,8 +55,9 @@ commands in `cmd/` and `exp/cmd/`. Read the API documentation with
 * **Platforms.** Linux (glibc and musl; arm64 and x86-64) and macOS.
   Windows (x86-64; arm64 by the same rules) is implemented after rlmdb's
   Windows port and builds, but has not run on Windows yet. 64-bit only:
-  32-bit builds stop with a compile error; 64-bit big-endian targets build
-  but are untested.
+  32-bit builds stop with a compile error; 64-bit big-endian targets
+  build, and s390x is tested under emulation (QEMU user mode), against C
+  peers built for it.
 * **`NoLock`** only removes the locking between processes. Within the
   process, write transactions are still serialised and pages that a live
   reader can see are never reused, also across several `NoLock` handles

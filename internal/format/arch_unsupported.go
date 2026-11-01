@@ -13,10 +13,11 @@
 // compile_error! (format/mod.rs). lmdb-go v1, on C LMDB, also ran on
 // 32-bit platforms, with their 32-bit format.
 //
-// 64-bit big-endian targets (mips64, ppc64, s390x) build, and are
-// untested: LMDB stores integers in the host's byte order and so does this
-// implementation, so files are shared with C processes on the same kind
-// of machine, as between C processes.
+// 64-bit big-endian targets (mips64, ppc64, s390x) build; s390x is tested
+// under emulation (QEMU user mode, scripts/linux-test.sh), mips64 and
+// ppc64 are not: LMDB stores integers in the host's byte order and so does
+// this implementation, so files are shared with C processes on the same
+// kind of machine, as between C processes.
 
 package format
 
