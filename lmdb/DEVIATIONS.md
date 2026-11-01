@@ -132,7 +132,9 @@ differently from C is in `internal/engine/PORTING.md` and in rlmdb's
   the last such transaction (active or reset) has ended, and is torn down
   then. Until that moment, opening the same path again in this process
   fails with `EBUSY` with a lock file; a `NoLock` handle opened meanwhile
-  shares the closed one's reader table. `Commit` of a write transaction after `Close` aborts
+  shares the closed one's reader table. On Windows, where open files
+  cannot be removed, the environment's files can be removed only then.
+  `Commit` of a write transaction after `Close` aborts
   it and returns `EINVAL`. `Close` waits for no commit or copy: a commit
   in progress, and a copy that has taken its snapshot, finish; a copy that
   has not fails with `EINVAL`.
@@ -253,6 +255,10 @@ unchanged except:
   (`testflags_test.go` is new.)
 * `internal/lmdbtest.NewEnv` adds `NoLock` in a build without shared
   locking (`lmdbscan`'s tests use it).
+* `lmdb/env_test.go`, `clean`: on Windows, removing the environment's
+  directory is retried for up to five seconds (with a garbage
+  collection), since a transaction that outlives `Close` keeps the files
+  open until a finalizer ends it (`TestTxn_finalizer`).
 * `exp/lmdbsync` tests: `newEnv` takes the `*testing.T` and skips without
   shared locking unless the test asks for `NoLock` (with `NoLock`, `lmdbsync.Env`
   serialises its own transactions, which changes what those tests check;

@@ -174,10 +174,19 @@ func buildFuzzSeed(tb testing.TB, dir string, f Format, ps int) []byte {
 			tb.Fatal(err)
 		}
 	}
+	info, err := env.Info()
+	if err != nil {
+		tb.Fatal(err)
+	}
 	env.Close()
 	data, err := os.ReadFile(path)
 	if err != nil {
 		tb.Fatal(err)
+	}
+	// The pages in use: on Windows a 0.9 file opened for writing is as long
+	// as its map, the rest zeros.
+	if used := (info.LastPNO + 1) * int64(ps); int64(len(data)) > used {
+		data = data[:used]
 	}
 	return data
 }

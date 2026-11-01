@@ -552,7 +552,7 @@ func clean(env *Env, t T) {
 		t.Errorf("close: %s", err)
 	}
 	if path != "" {
-		err = os.RemoveAll(path)
+		err = removeEnvDir(path)
 		if err != nil {
 			t.Errorf("remove: %v", err)
 		}
