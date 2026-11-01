@@ -440,6 +440,38 @@ Divergences from rlmdb on Windows (none changes a file):
   (rlmdb on Windows: the system's empty message).
 * The OS page size is `GetSystemInfo`'s, cached once per process.
 
+## The BSDs: rlmdb's BSD commits (up to `3df6995`)
+
+rlmdb's BSD support, ported on branch `stage7-bsd`. The decisions are in
+the file comments of `internal/lockfile/layout.go` (the per-BSD table),
+`layout_freebsd.go`, `layout_bsd.go`, `sem.go`, `sysv.go`, `semname.go`
+(`SysVKey`) and `internal/sys/sync_freebsd.go`, `sync_bsd.go`,
+`sync_dragonfly.go`, `datamap_unix.go` (`Invalidate`).
+
+| rlmdb | what | here |
+|---|---|---|
+| `e4a5ad9` | FreeBSD, OpenBSD, NetBSD and DragonFly with C's lock primitives (#39) | ported: FreeBSD's robust mutexes (the cgo pair covers `linux \|\| freebsd`; `layout_freebsd.go`); named semaphores for 0.9 lock files on the other three (macOS's files shared: `sem.go`, `sem_cgo.go`, `-lrt` on NetBSD), NetBSD's 14-character names and 8-byte `dev_t` in the hashed struct (`semNamesV09`, `lockFileID`); the SysV set of 1.0 lock files (`SysVSemaphores`, `sysv.go`, `sysv_cgo.go`, `SysVKey` = rlmdb's `ftok_key`); the last user removes semaphores and the set (`removedByLastUser`); `MDB_FDATASYNC`, `MDB_DSYNC` and `madvise` per BSD; OpenBSD's `MDB_Invalidate` at rlmdb's three call sites (`Txn.invalidateMap`, `sys.DataMap.Invalidate`, widened to whole OS pages: #39); rlmdb's tests (layouts and lock formats of every platform, names, the SysV protocol on macOS, `ftok` against libc in `tests/lockfile`, `data_map_invalidate`); the C API link lines and the interop lock-line helper: not applicable |
+| `bfef7e6` | CI and docs for the BSDs | docs here (`PLAN.md` "The BSDs", `README.md`, `AGENTS.md`, `lmdb/DEVIATIONS.md`); no CI in this repository |
+| `12a6731` | the OpenBSD `msync` row is #39 | the comments cite #39 |
+| `1009bbd` | FreeBSD tested in rlmdb's CI | rlmdb's status; this port has not run on a BSD |
+
+Divergences from rlmdb on the BSDs (none changes a file):
+
+* The locks are taken through cgo, as on Linux: a BSD build without cgo
+  has `NoLock` only (`shared_nocgo.go`). rlmdb always has them (Rust
+  links libc either way).
+* The SysV code is built on macOS in cgo builds too (rlmdb: in its test
+  builds only), so the Region tests run the BSDs' 1.0 layout, and
+  NetBSD's 0.9 layout, against macOS's kernel (`bsd_darwin_test.go`); no
+  macOS lock file uses it.
+* The SysV flag is read and set with two atomic operations under the
+  semaphore, as C does (rlmdb: one swap); only the holder touches it.
+* FreeBSD's `fdatasync` is called by its system call number and its
+  `O_DSYNC` (`0x01000000`) is a constant here: neither package `syscall`
+  nor `golang.org/x/sys/unix` v0.30.0 has them for FreeBSD.
+* OpenBSD has no `O_DIRECT` for copies: nothing to do, the copy target is
+  never opened with it here ("Design decisions").
+
 ## Open items
 
 * `MemLock` doubles as the test stand-in for the lock file; the real
@@ -452,6 +484,10 @@ Divergences from rlmdb on Windows (none changes a file):
 * Performance: see `tests/bench/RESULTS.md` (stage 3).
 * Windows: built, vetted and cross-compiled (`go test -c`) for amd64 and
   arm64, not run yet; `scripts/windows-test.sh` is ready for the first run.
+* The BSDs: built, vetted and cross-compiled (`go test -c`, without cgo)
+  for amd64 and arm64 (DragonFly: amd64), not run yet; their cgo lock
+  files have not been compiled against a BSD's headers (PLAN.md "The
+  BSDs").
 * Big-endian: the root module and the tests module (C oracles built in
   the container) pass on s390x under QEMU user emulation
   (`LINUX_TEST_IMAGE=golang:1.25-trixie LINUX_TEST_PLATFORM=linux/s390x

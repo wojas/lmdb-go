@@ -62,20 +62,25 @@ messages) until that is established.
 ## Hard rules
 
 1. **cgo only for the shared locks.** The writer and reader-table locks
-   are libc objects (Linux: process-shared robust `pthread_mutex_t`s inside
-   the lock file; macOS: POSIX named semaphores), taken and released
-   through libc, which keeps interop exact on glibc, musl and macOS. They
+   are libc objects (Linux, FreeBSD: process-shared robust
+   `pthread_mutex_t`s inside the lock file; macOS: POSIX named semaphores;
+   OpenBSD, NetBSD, DragonFly: POSIX named semaphores for 0.9 lock files,
+   a SysV semaphore set for 1.0 ones), taken and released through libc,
+   which keeps interop exact on glibc, musl, macOS and the BSDs. They
    live in `internal/lockfile`, selected by the standard `cgo` build
    constraint only (no extra build tags):
-   * Linux: cgo, in one small file pair (`shared_cgo.go` /
-     `shared_nocgo.go`: `//go:build linux && cgo` / `linux && !cgo`). The
-     size of `pthread_mutex_t` (which moves the reader table) comes from
-     cgo, not from a table. Built with `CGO_ENABLED=0`, the library
+   * Linux and FreeBSD: cgo, in one small file pair (`shared_cgo.go` /
+     `shared_nocgo.go`: `//go:build (linux || freebsd) && cgo` / `!cgo`).
+     The size of `pthread_mutex_t` (which moves the reader table) comes
+     from cgo, not from a table. Built with `CGO_ENABLED=0`, the library
      compiles and works with `NoLock` (C's `MDB_NOLOCK`: no lock file at
      all); `Env.Open` without `NoLock` returns a clear error saying that
-     shared locking on Linux needs a cgo build.
-   * macOS: `sem_darwin.go` on one small set of semaphore calls with two
-     implementations, cgo in a cgo build (`sem_cgo_darwin.go`, the
+     shared locking on Linux and the BSDs needs a cgo build.
+   * OpenBSD, NetBSD, DragonFly: cgo for the named semaphores (`sem.go`,
+     `sem_cgo.go`) and the SysV set (`sysv.go`, `sysv_cgo.go`); without
+     cgo, `NoLock` only (`shared_nocgo.go`), as on Linux.
+   * macOS: `sem.go` on one small set of semaphore calls with two
+     implementations, cgo in a cgo build (`sem_cgo.go`, the
      default) and libSystem stubs in a build without cgo
      (`sem_libsystem_darwin.go` and its `.s` trampolines: the
      `golang.org/x/sys/unix` mechanism, `//go:cgo_import_dynamic` plus
