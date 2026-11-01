@@ -192,6 +192,12 @@ func (env *Env) close() bool {
 // Close shuts down the environment, releases the memory map, and clears the
 // finalizer on env.
 //
+// Transactions should end before Close, as C requires.  One that outlives it
+// can only end: its other methods and those of its cursors return EINVAL.
+// The environment is torn down (map, reader slots, files) when the last of
+// them ends (Abort, Commit or its finalizer); until then the slices a read
+// transaction returned with RawRead before Close stay valid.
+//
 // See mdb_env_close.
 func (env *Env) Close() error {
 	if env.close() {

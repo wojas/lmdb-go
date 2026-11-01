@@ -65,7 +65,7 @@ type Cursor struct {
 }
 
 func openCursor(txn *Txn, db DBI) (*Cursor, error) {
-	if txn.ended() {
+	if txn.invalid() {
 		return nil, errInvalid("mdb_cursor_open")
 	}
 	c := &Cursor{txn: txn, gen: txn.gen}
@@ -96,10 +96,11 @@ func openCursor(txn *Txn, db DBI) (*Cursor, error) {
 //
 // See mdb_cursor_renew.
 func (c *Cursor) Renew(txn *Txn) error {
-	if c._c == nil || txn == nil || txn.ended() || !c.pooled || !txn.readonly || txn.env != c.txn.env {
-		// Closed cursors and transactions, cursors of write transactions,
-		// write transactions, and another environment's transactions (C
-		// does not check that one and corrupts memory).
+	if c._c == nil || txn == nil || txn.invalid() || !c.pooled || !txn.readonly || txn.env != c.txn.env {
+		// Closed cursors and transactions (also of a closed environment),
+		// cursors of write transactions, write transactions, and another
+		// environment's transactions (C does not check that one and
+		// corrupts memory).
 		return errInvalid("mdb_cursor_renew")
 	}
 	// mdb_cursor_renew is mdb_cursor_open into the cursor; not through
