@@ -18,9 +18,13 @@
 // Step 3 races with writers: a writer committing N+2 rewrites the meta
 // page our N uses. C accepts the torn read; here mti_txnid is re-checked
 // after the copy and the snapshot retried if it moved (KNOWN_C_BUGS.md
-// #31), so a process's snapshots never go back. If the snapshot's pages
-// extend past the map (another process grew the database beyond our map
-// size), begin fails with MDB_MAP_RESIZED.
+// #31), so a process's snapshots never go back. The same holds for a copy
+// that fails validation: only if mti_txnid moved can a commit have torn
+// it, and then the snapshot is retried too (a bounded number of times,
+// maxTornCopies); if it did not move, the page is bad and begin fails
+// (rlmdb 3811bea). If the snapshot's pages extend past the map (another
+// process grew the database beyond our map size), begin fails with
+// MDB_MAP_RESIZED.
 
 package engine
 
@@ -169,6 +173,33 @@ func (e *Env) BeginRead(t *Txn) error {
 	return nil
 }
 
+// maxTornCopies is how many copies of a meta page that fail validation
+// one snapshot makes before it gives up (rlmdb MAX_TORN_COPIES).
+//
+// A reader copies the meta page of the txnid it published (mti_txnid, or
+// without a lock file the committed txnid the file's handles share). A
+// commit rewrites that page only once the published txnid has moved past
+// it, so a copy can be torn only if the txnid moved by the time the copy
+// is done. A copy that fails validation is therefore retried if the txnid
+// moved, as a consistent copy is, and reported if it did not: then the
+// page really is bad. (Validation checks magic and version, which no
+// writer, ours or C's, rewrites, so a torn copy passes it today; the rule
+// keeps a check of rewritten fields from failing a begin on a race.)
+const maxTornCopies = 16
+
+// testHookSnapshotMeta, if set (tests only), copies and validates the
+// meta page of a read transaction's snapshot instead of readMetaIn.
+var testHookSnapshotMeta func(e *Env, m *sys.DataMap, i int) (format.Meta, error)
+
+// snapshotMeta copies and validates meta page i for a read transaction's
+// snapshot (readMetaIn, or the test hook).
+func (e *Env) snapshotMeta(m *sys.DataMap, i int) (format.Meta, error) {
+	if testHookSnapshotMeta != nil {
+		return testHookSnapshotMeta(e, m, i)
+	}
+	return e.readMetaIn(m, i)
+}
+
 // takeSnapshot is the read-only branch of mdb_txn_renew0, through the
 // transaction's map.
 func (t *Txn) takeSnapshot() error {
@@ -183,6 +214,7 @@ func (t *Txn) takeSnapshot() error {
 		}
 		return t.setSnapshot(meta.TxnID, &meta)
 	}
+	torn := 0
 	for {
 		txnid = e.lock.PublishCurrentTxnID(t.slot)
 		if txnid == 0 && e.isReadOnly() {
@@ -193,7 +225,12 @@ func (t *Txn) takeSnapshot() error {
 			txnid = meta.TxnID
 			break
 		}
-		if meta, err = e.readMetaIn(m, int(txnid&1)); err != nil {
+		if meta, err = e.snapshotMeta(m, int(txnid&1)); err != nil {
+			if torn+1 < maxTornCopies && e.lock.TxnID() != txnid {
+				// Torn by a commit meanwhile (maxTornCopies): again.
+				torn++
+				continue
+			}
 			return err
 		}
 		// If no commit happened while we copied the meta page, no writer
@@ -237,16 +274,22 @@ func (t *Txn) takeSnapshot() error {
 // while its transaction renews, so it adopts the newest txnid first
 // (copyPlain).
 func (e *Env) noLockSnapshot(m *sys.DataMap, slot int) (format.Meta, error) {
+	torn := 0
 	for {
 		txnid := e.lock.PublishCurrentTxnID(slot)
-		meta, err := e.readMetaIn(m, int(txnid&1))
-		if e.lock.TxnID() != txnid {
-			// A commit of ours meanwhile (a failed read may have been a
-			// torn page): again.
-			continue
-		}
+		meta, err := e.snapshotMeta(m, int(txnid&1))
 		if err != nil {
+			if torn+1 < maxTornCopies && e.lock.TxnID() != txnid {
+				// Torn by a commit of ours meanwhile (maxTornCopies):
+				// again.
+				torn++
+				continue
+			}
 			return meta, err
+		}
+		if e.lock.TxnID() != txnid {
+			// A commit of ours meanwhile: again.
+			continue
 		}
 		if !e.newerCommitOnFile(m, txnid, &meta) || !e.mem.TryLockWriter() {
 			return meta, nil
