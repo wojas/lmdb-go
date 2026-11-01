@@ -323,6 +323,11 @@ func TestWriterKilledHoldingLock(t *testing.T) {
 	if runtime.GOOS != "linux" {
 		t.Skip("robust mutexes are Linux's; semaphores stay taken when the holder dies, in C too")
 	}
+	if os.Getenv("LMDB_TEST_NO_ROBUST_MUTEX") != "" {
+		// QEMU user emulation has no robust futexes (in C too): the dead
+		// owner is never reported (scripts/linux-test.sh).
+		t.Skip("no robust mutexes here (LMDB_TEST_NO_ROBUST_MUTEX)")
+	}
 	for _, c := range sides(t) {
 		env, txnid := c.newEnv(t)
 		r := openGo(t, env, c.layout)

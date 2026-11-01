@@ -4,6 +4,7 @@ package lmdb
 
 import (
 	"fmt"
+	"os"
 	"syscall"
 	"testing"
 	"time"
@@ -20,6 +21,11 @@ import (
 // engine's TestOwnerDeathRepairAfterClose is the deterministic version.
 func TestCloseDuringOwnerDeathRecovery(t *testing.T) {
 	requireLockFile(t)
+	if os.Getenv("LMDB_TEST_NO_ROBUST_MUTEX") != "" {
+		// QEMU user emulation has no robust futexes (in C too): the dead
+		// owner is never reported (scripts/linux-test.sh).
+		t.Skip("no robust mutexes here (LMDB_TEST_NO_ROBUST_MUTEX)")
+	}
 	for _, f := range []Format{V09, V10} {
 		t.Run(fmt.Sprint(f), func(t *testing.T) {
 			env, path := openFormat(t, f, 0)
