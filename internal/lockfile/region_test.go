@@ -13,6 +13,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -35,11 +37,16 @@ func TestMain(m *testing.M) {
 func needLocks(t *testing.T) {
 	t.Helper()
 	if !sharedLocksAvailable {
-		t.Skip("shared locks need cgo on Linux")
+		t.Skip("shared locks need cgo on Linux and the BSDs")
 	}
 }
 
-func layouts() []*Layout { return []*Layout{LockV09, LockV10} }
+// testLayouts are layouts of other platforms that this host runs too, in
+// addition to its own: on macOS the BSDs' (bsd_darwin_test.go).
+var testLayouts []*Layout
+
+// layouts are the layouts the tests run: this platform's, then testLayouts.
+func layouts() []*Layout { return append([]*Layout{LockV09, LockV10}, testLayouts...) }
 
 func openRegion(t *testing.T, path string, l *Layout) *Region {
 	t.Helper()
@@ -185,18 +192,22 @@ func TestLargerFileKeepsItsSlots(t *testing.T) {
 // --- helper processes -------------------------------------------------------
 
 // runHelper runs a helper process: it opens the lock file of
-// LOCKFILE_TEST_PATH in LOCKFILE_TEST_VERSION, does what mode says, prints
-// "READY pid=<pid>" and waits for a line (or EOF) on stdin.
+// LOCKFILE_TEST_PATH with layouts()[LOCKFILE_TEST_LAYOUT], does what mode
+// says, prints "READY pid=<pid>" and waits for a line (or EOF) on stdin.
 func runHelper(mode string) int {
-	l := LockV09
-	if os.Getenv("LOCKFILE_TEST_VERSION") == "2" {
-		l = LockV10
+	i, err := strconv.Atoi(os.Getenv("LOCKFILE_TEST_LAYOUT"))
+	if err != nil || i < 0 || i >= len(layouts()) {
+		fmt.Fprintln(os.Stderr, "helper: bad LOCKFILE_TEST_LAYOUT")
+		return 2
 	}
-	r, err := Open(os.Getenv("LOCKFILE_TEST_PATH"), 0o644, 8, false, l)
+	r, err := Open(os.Getenv("LOCKFILE_TEST_PATH"), 0o644, 8, false, layouts()[i])
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "helper: open:", err)
 		return 3
 	}
+	// A helper that is let finish closes the environment, so that the
+	// last user removes semaphores (a killed one stands for a crash).
+	defer r.Close()
 	if r.IsExclusive() {
 		r.Downgrade(0)
 	}
@@ -236,13 +247,18 @@ type helper struct {
 	lines chan string
 }
 
-// spawnHelper starts a helper process in mode on the lock file path of
-// version l, without waiting for it to be ready (see ready).
+// spawnHelper starts a helper process in mode on the lock file path with
+// layout l (one of layouts()), without waiting for it to be ready (see
+// ready).
 func spawnHelper(t *testing.T, mode, path string, l *Layout) *helper {
 	t.Helper()
+	i := slices.Index(layouts(), l)
+	if i < 0 {
+		t.Fatalf("layout %+v is not one of layouts()", l)
+	}
 	cmd := exec.Command(os.Args[0], "-test.run=^$")
 	cmd.Env = append(os.Environ(), "LOCKFILE_TEST_HELPER="+mode, "LOCKFILE_TEST_PATH="+path,
-		fmt.Sprintf("LOCKFILE_TEST_VERSION=%d", l.Version))
+		fmt.Sprintf("LOCKFILE_TEST_LAYOUT=%d", i))
 	cmd.Stderr = os.Stderr
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
@@ -305,13 +321,45 @@ func (h *helper) kill() {
 	}
 }
 
-// needOwnerDeath skips tests of locks that tell the next locker about a
-// dead owner: Linux's robust mutexes and Windows's mutexes, not macOS's
-// semaphores.
-func needOwnerDeath(t *testing.T) {
+// threadOwned reports whether the locks of layout l belong to the thread
+// that took them, and tell the next locker when that thread or its process
+// ended holding them: the robust mutexes of Linux and FreeBSD and
+// Windows's mutexes.
+func threadOwned(l *Layout) bool {
+	switch l.Objects {
+	case PthreadMutexes, MutexNames, MutexHash:
+		return true
+	}
+	return false
+}
+
+// tellsOwnerDeath reports whether the locks of layout l tell the next
+// locker about a process that died holding them: the thread-owned ones and
+// the SysV semaphores of the other BSDs (SEM_UNDO and the flags in the lock
+// file), not named semaphores.
+func tellsOwnerDeath(l *Layout) bool { return threadOwned(l) || l.Objects == SysVSemaphores }
+
+// ownerDeathLayouts are the layouts of layouts() whose locks tell about a
+// dead owner; the test is skipped if there are none.
+func ownerDeathLayouts(t *testing.T) []*Layout {
 	t.Helper()
-	if runtime.GOOS != "linux" && runtime.GOOS != "windows" {
-		t.Skip("robust mutexes are Linux's and Windows's")
+	var ls []*Layout
+	for _, l := range layouts() {
+		if tellsOwnerDeath(l) {
+			ls = append(ls, l)
+		}
+	}
+	if len(ls) == 0 {
+		t.Skip("no lock here tells about a dead owner: named semaphores are not robust")
+	}
+	return ls
+}
+
+// needThreadOwned skips tests of locks owned by a thread.
+func needThreadOwned(t *testing.T) {
+	t.Helper()
+	if !threadOwned(LockV09) {
+		t.Skip("the locks are semaphores, which belong to no thread")
 	}
 }
 
@@ -442,12 +490,11 @@ func TestReaderCheckClearsDeadProcess(t *testing.T) {
 
 // TestWriterOwnerDied: a process killed while holding the writer mutex
 // leaves it to the next writer, which repairs as mdb_mutex_failed does
-// (Linux's robust mutexes, Windows's abandoned mutexes; semaphores are not
-// robust).
+// (robust mutexes, Windows's abandoned mutexes, SysV semaphores; named
+// semaphores are not robust).
 func TestWriterOwnerDied(t *testing.T) {
 	needLocks(t)
-	needOwnerDeath(t)
-	for _, l := range layouts() {
+	for _, l := range ownerDeathLayouts(t) {
 		path := filepath.Join(t.TempDir(), "lock.mdb")
 		r := openRegion(t, path, l)
 		r.Downgrade(1)
@@ -477,32 +524,31 @@ func TestWriterOwnerDied(t *testing.T) {
 }
 
 // TestWriterRepairFailure: a failed repair leaves a robust mutex not
-// recoverable, rather than letting writers work on unrepaired state. On
-// Windows the mutex is released normally, as C releases it, so the next
-// writer is not told about the dead owner (rlmdb KNOWN_C_BUGS.md #40, as
-// for SysV semaphores).
+// recoverable, rather than letting writers work on unrepaired state. A
+// Windows mutex or a SysV semaphore is released normally, as C releases
+// it, so the next writer is not told about the dead owner (rlmdb
+// KNOWN_C_BUGS.md #40).
 func TestWriterRepairFailure(t *testing.T) {
 	needLocks(t)
-	needOwnerDeath(t)
-	path := filepath.Join(t.TempDir(), "lock.mdb")
-	r := openRegion(t, path, LockV09)
-	defer r.Close()
-	r.Downgrade(1)
-	startHelper(t, "hold-writer", path, LockV09).kill()
-	broken := errors.New("cannot read the meta pages")
-	if err := r.LockWriter(func() (uint64, error) { return 0, broken }); err != broken {
-		t.Fatalf("repair error: %v", err)
-	}
-	if runtime.GOOS == "windows" {
-		called := false
-		if err := r.LockWriter(func() (uint64, error) { called = true; return 0, nil }); err != nil || called {
-			t.Fatalf("after a failed repair: %v, repair called %v", err, called)
+	for _, l := range ownerDeathLayouts(t) {
+		path := filepath.Join(t.TempDir(), "lock.mdb")
+		r := openRegion(t, path, l)
+		r.Downgrade(1)
+		startHelper(t, "hold-writer", path, l).kill()
+		broken := errors.New("cannot read the meta pages")
+		if err := r.LockWriter(func() (uint64, error) { return 0, broken }); err != broken {
+			t.Fatalf("v%d: repair error: %v", l.Version, err)
 		}
-		r.UnlockWriter()
-		return
-	}
-	if err := r.LockWriter(func() (uint64, error) { return 0, nil }); err != errNotRecoverable {
-		t.Fatalf("after a failed repair: %v", err)
+		if l.Objects != PthreadMutexes {
+			called := false
+			if err := r.LockWriter(func() (uint64, error) { called = true; return 0, nil }); err != nil || called {
+				t.Fatalf("v%d: after a failed repair: %v, repair called %v", l.Version, err, called)
+			}
+			r.UnlockWriter()
+		} else if err := r.LockWriter(func() (uint64, error) { return 0, nil }); err != errNotRecoverable {
+			t.Fatalf("v%d: after a failed repair: %v", l.Version, err)
+		}
+		r.Close()
 	}
 }
 
@@ -510,8 +556,7 @@ func TestWriterRepairFailure(t *testing.T) {
 // mutex; the next slot allocation repairs and goes on.
 func TestReaderMutexOwnerDied(t *testing.T) {
 	needLocks(t)
-	needOwnerDeath(t)
-	for _, l := range layouts() {
+	for _, l := range ownerDeathLayouts(t) {
 		path := filepath.Join(t.TempDir(), "lock.mdb")
 		r := openRegion(t, path, l)
 		r.Downgrade(1)
@@ -535,7 +580,7 @@ func TestReaderMutexOwnerDied(t *testing.T) {
 // process, also in this process.
 func TestWriterThreadExit(t *testing.T) {
 	needLocks(t)
-	needOwnerDeath(t)
+	needThreadOwned(t)
 	r := openRegion(t, filepath.Join(t.TempDir(), "lock.mdb"), LockV09)
 	r.Downgrade(1)
 	done := make(chan error)
@@ -568,7 +613,7 @@ func TestWriterThreadExit(t *testing.T) {
 // belongs to its thread.
 func TestUnlockWriterFromAnotherThread(t *testing.T) {
 	needLocks(t)
-	needOwnerDeath(t)
+	needThreadOwned(t)
 	r := openRegion(t, filepath.Join(t.TempDir(), "lock.mdb"), LockV09)
 	defer r.Close()
 	r.Downgrade(1)

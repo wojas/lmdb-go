@@ -22,16 +22,17 @@ import (
 	"github.com/PowerDNS/lmdb-go/internal/format"
 )
 
-// ErrNoSharedLocks is returned by Open in a Linux build without cgo: the
-// shared writer and reader-table locks are pthread mutexes there, reached
+// ErrNoSharedLocks is returned by Open in a Linux or BSD build without cgo:
+// the shared writer and reader-table locks are pthread mutexes (Linux,
+// FreeBSD) or semaphores (OpenBSD, NetBSD, DragonFly) there, reached
 // through cgo. Without cgo only environments without a lock file
 // (MDB_NOLOCK) can be used. (macOS and Windows builds have the locks with
 // and without cgo.)
-var ErrNoSharedLocks = errors.New("lockfile: shared locking on Linux needs a cgo build (CGO_ENABLED=1); without cgo use NoLock")
+var ErrNoSharedLocks = errors.New("lockfile: shared locking on Linux and the BSDs needs a cgo build (CGO_ENABLED=1); without cgo use NoLock")
 
 // SharedLocksAvailable reports whether this build can take the shared
 // locks, i.e. whether Open can succeed: true on macOS and Windows, and on
-// Linux in a cgo build.
+// Linux and the BSDs in a cgo build.
 func SharedLocksAvailable() bool { return sharedLocksAvailable }
 
 // Region is an open lock file: its mapping, the two shared locks and this
@@ -209,27 +210,30 @@ func (r *Region) MaxReaders() uint32 { return r.maxReaders }
 // for a write transaction: other writers, threads or processes, C or Go,
 // wait until UnlockWriter.
 //
-// The writer lock is a robust pthread mutex on Linux and a named mutex on
-// Windows, each of which belongs to the OS thread that locked it.
-// LockWriter therefore pins the calling goroutine to its OS thread
-// (runtime.LockOSThread; pins nest, so a caller that pinned already is
-// fine) until UnlockWriter, which must be called by the same goroutine. On
-// macOS the lock is a semaphore and the pin is not needed, but it is kept
-// for the same semantics everywhere. If the goroutine exits holding the
-// lock, its thread ends (Linux, Windows), and the next locker anywhere
-// recovers as from a dead process; but Go never ends the main thread, so a
-// goroutine that exits there holding the lock leaves it held until the
-// process exits.
+// The writer lock is a robust pthread mutex on Linux and FreeBSD and a
+// named mutex on Windows, each of which belongs to the OS thread that
+// locked it. LockWriter therefore pins the calling goroutine to its OS
+// thread (runtime.LockOSThread; pins nest, so a caller that pinned already
+// is fine) until UnlockWriter, which must be called by the same goroutine.
+// On macOS and the other BSDs the lock is a semaphore and the pin is not
+// needed, but it is kept for the same semantics everywhere. If the
+// goroutine exits holding a mutex, its thread ends (Linux, FreeBSD,
+// Windows), and the next locker anywhere recovers as from a dead process;
+// but Go never ends the main thread, so a goroutine that exits there
+// holding the lock leaves it held until the process exits.
 //
-// If the previous owner died holding the lock (Linux, EOWNERDEAD; Windows,
-// WAIT_ABANDONED), this
-// repairs the state as mdb_mutex_failed does for the writer: it publishes
-// newestTxnid() (the txnid of the newest meta page) in mti_txnid, so that
-// the next writer cannot overwrite pages that meta refers to, clears the
-// slots of dead readers, and marks the mutex consistent. If any step
-// fails, the lock is released without being marked consistent, which
-// leaves it permanently unusable (ENOTRECOVERABLE) rather than letting a
-// writer work on unrepaired state.
+// If the previous owner died holding the lock (Linux and FreeBSD,
+// EOWNERDEAD; Windows, WAIT_ABANDONED; the SysV semaphores of version 2
+// lock files on OpenBSD, NetBSD and DragonFly, the flag the holder left
+// set), this repairs the state as mdb_mutex_failed does for the writer: it
+// publishes newestTxnid() (the txnid of the newest meta page) in mti_txnid,
+// so that the next writer cannot overwrite pages that meta refers to,
+// clears the slots of dead readers, and marks the mutex consistent. If any
+// step fails, the lock is released without being marked consistent, which
+// leaves a robust mutex permanently unusable (ENOTRECOVERABLE) rather than
+// letting a writer work on unrepaired state (a Windows mutex or a SysV
+// semaphore is released normally, as C releases it: rlmdb KNOWN_C_BUGS.md
+// #40).
 func (r *Region) LockWriter(newestTxnid func() (uint64, error)) error {
 	runtime.LockOSThread()
 	st, err := r.locks.w.lock()

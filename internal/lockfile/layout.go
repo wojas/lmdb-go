@@ -22,9 +22,10 @@
 //	    u64  mtb_txnid
 //	    u32  mtb_numreaders
 //	    pthread_mutex_t mtb_rmutex | u64 mtb_mutexid (aligned)
-//	  mt2 (Linux only, not with named semaphores or Windows mutexes;
-//	       sizeof(pthread_mutex_t) padded to a multiple of 64):
-//	    pthread_mutex_t mt2_wmutex
+//	      | i32 mtb_semid, i32 mtb_rlocked (SysV semaphores)
+//	  mt2 (not with named semaphores or Windows mutexes; MNAME_LEN padded
+//	       to a multiple of 64):
+//	    pthread_mutex_t mt2_wmutex | i32 mt2_wlocked (SysV semaphores)
 //	  MDB_reader mti_readers[maxreaders]
 //
 //	MDB_reader, both versions (64 bytes each):
@@ -34,10 +35,12 @@
 //	                  DWORD thread id, at offset 12)
 //
 // MNAME_LEN is sizeof(pthread_mutex_t) with mutexes (glibc: 40 on x86-64,
-// 48 on aarch64; musl: 40) and 32 with named semaphores (macOS) and
-// Windows mutexes, whose names are kept like the semaphores' (version 1:
-// the names, version 2: the hash; no mt2 in version 2). The numbers, which
-// tests check against C's layout_dump on each platform:
+// 48 on aarch64; musl: 40; FreeBSD: 8), 32 with named semaphores (macOS,
+// and version 1 on the other BSDs) and Windows mutexes, whose names are
+// kept like the semaphores' (version 1: the names, version 2: the hash; no
+// mt2 in version 2), and sizeof(int) with SysV semaphores (version 2 on
+// OpenBSD, NetBSD and DragonFly). The numbers, which tests check against
+// C's layout_dump on each platform:
 //
 //	                      macOS v1  macOS v2    glibc arm64 v1  v2          40-byte mutex v1  v2          Windows v1  v2
 //	mti_format            0x10001   0x28570002  0x10001         0x2cd82002  0x10001           0x2c2f6002  0x1         0x08138002
@@ -50,6 +53,24 @@
 // x86-64 with MSVC or MinGW-w64, which lay the structures out alike, and
 // arm64 by the same rules; readers take no pid locks there, MDB_PIDLOCK
 // 0, which shows in both versions' mti_format.)
+//
+// The BSDs follow C's selection there (mdb.c 0.9.36 lines 135-149, 1.0
+// lines 184-203). FreeBSD (11+) is Linux's case with an 8-byte
+// pthread_mutex_t (a pointer; the process-shared mutex itself lives in a
+// kernel object keyed by its address). OpenBSD, NetBSD and DragonFly use
+// named semaphores for version 1, as macOS (NetBSD's names are 14
+// characters, MDB_SHORT_SEMNAMES), and a SysV semaphore set for version 2
+// (MDB_USE_SYSV_SEM): int mtb_semid and int mtb_rlocked at the end of
+// MDB_txbody, int mt2_wlocked in mt2 (MNAME_LEN is sizeof(int) there).
+// Computed from the C declarations, as in rlmdb; no layout_dump has run on
+// a BSD yet:
+//
+//	                      FreeBSD v1  v2          OpenBSD, NetBSD, DragonFly v1  v2 (SysV)
+//	mti_format            0x10001     0x2986c002  0x10001                        0x2889a002
+//	txnid, numreaders     16, 24      8, 16       40, 48                         8, 16
+//	reader lock off, size 8, 8        24, 8       8, 32                          20, 8 (semid, rlocked)
+//	writer lock           64          64          64                             64 (wlocked)
+//	mti_readers           128         128         128                            128
 //
 // The layouts are computed with C's formulas from the platform's inputs
 // (platform below), so every platform's layout can be checked on any host.
@@ -95,16 +116,26 @@ const (
 	// hash, mdb.c 1.0 lines 5920-5945), as SemaphoreHash names its
 	// semaphores; no mt2.
 	MutexHash
+	// SysVSemaphores: a SysV semaphore set of two (reader 0, writer 1)
+	// whose id mtb_semid (an int) is at RLock, followed by the int flag
+	// mtb_rlocked; the writer's flag mt2_wlocked is at WLock (OpenBSD,
+	// NetBSD and DragonFly, version 2: MDB_USE_SYSV_SEM, mdb.c 1.0 lines
+	// 452-481 and 6096-6110). A flag is set while its semaphore is held;
+	// SEM_UNDO releases the semaphore of a process that dies holding it,
+	// and the flag it left set tells the next holder (MDB_OWNERDEAD). The
+	// id is read from the file; only the exclusive opener creates the set.
+	SysVSemaphores
 )
 
 // removedByLastUser reports whether the objects outlive the processes using
 // them, so the last one to close the environment removes them
-// (mdb_env_close0: sem_unlink of the named semaphores). Process-shared
-// mutexes live in the lock file and need nothing; Windows frees a named
-// mutex with its last handle (C only closes its handles there).
+// (mdb_env_close0: sem_unlink of the named semaphores, IPC_RMID of the SysV
+// set). Process-shared mutexes live in the lock file and need nothing;
+// Windows frees a named mutex with its last handle (C only closes its
+// handles there).
 func (o Objects) removedByLastUser() bool {
 	switch o {
-	case SemaphoreNames, SemaphoreHash:
+	case SemaphoreNames, SemaphoreHash, SysVSemaphores:
 		return true
 	}
 	return false
@@ -135,15 +166,16 @@ type Layout struct {
 	TxnID int
 	// NumReaders is the offset of mti_numreaders (u32).
 	NumReaders int
-	// RLock is the offset of the reader lock field: mti_rmutex (Linux),
-	// mti_rmname (macOS and Windows, version 1) or mti_mutexid (macOS and
-	// Windows, version 2).
+	// RLock is the offset of the reader lock field: mti_rmutex (Linux,
+	// FreeBSD), mti_rmname (named semaphores and Windows, version 1),
+	// mti_mutexid (macOS and Windows, version 2) or mti_semid followed by
+	// mti_rlocked (OpenBSD, NetBSD, DragonFly, version 2).
 	RLock int
 	// RLockSize is the size of the reader lock field.
 	RLockSize int
 	// WLock is the offset of the writer lock field mti_wmutex or
-	// mti_wmname (RLockSize bytes), -1 where there is none (macOS and
-	// Windows, version 2).
+	// mti_wmname (RLockSize bytes), or mti_wlocked (an int, with SysV
+	// semaphores); -1 where there is none (macOS and Windows, version 2).
 	WLock int
 	// TxbodySize is sizeof(MDB_txbody).
 	TxbodySize int
@@ -152,6 +184,11 @@ type Layout struct {
 	HeaderSize int
 	// Readers is the offset of mti_readers[0].
 	Readers int
+
+	// shortSemNames: the exclusive opener names SemaphoreNames with nine
+	// characters of the hash instead of ten, for names of 14 characters
+	// (NetBSD's MDB_SHORT_SEMNAMES). Openers that attach read the names.
+	shortSemNames bool
 }
 
 // Constants of both versions.
@@ -180,6 +217,8 @@ const (
 	lockVersionV2   = 2  // MDB_LOCK_VERSION of LMDB 1.0
 	lockVersionBits = 12 // MDB_LOCK_VERSION_BITS (1.0)
 	semNameLen      = 32 // MNAME_LEN with MDB_USE_POSIX_SEM and on Windows
+	cIntSize        = 4  // sizeof(int): MNAME_LEN with MDB_USE_SYSV_SEM
+	lockTypeSysVSem = 8  // MDB_LOCK_TYPE with MDB_USE_SYSV_SEM (mdb.c 1.0 line 982)
 )
 
 // lockFormatV1 is MDB_LOCK_FORMAT of LMDB 0.9: MDB_LOCK_VERSION +
@@ -189,8 +228,8 @@ func lockFormatV1(pidLock bool) uint32 { return lockVersionV1 + uint32(b2i(pidLo
 
 // LockV09 and LockV10 are this platform's layouts of lock-file version 1
 // (LMDB 0.9) and 2 (LMDB 1.0); nil where this build does not know them
-// (Linux without cgo, where sizeof(pthread_mutex_t) is unknown). The
-// platform (hostPlatform) is in layout_<os>.go.
+// (Linux and FreeBSD without cgo, where sizeof(pthread_mutex_t) is
+// unknown). The platform (hostPlatform) is in layout_<os>.go.
 var LockV09, LockV10 = hostPlatform.layouts()
 
 // LayoutFor returns this platform's lock-file layout for the data format f
@@ -228,8 +267,15 @@ func (l *Layout) ReaderOffset(i int) int { return l.Readers + i*ReaderSize }
 
 // platform holds what the lock-file layout of a C build depends on.
 type platform struct {
-	// namedSemaphores: MDB_USE_POSIX_SEM (macOS); else robust mutexes.
+	// namedSemaphores: MDB_USE_POSIX_SEM (macOS; OpenBSD, NetBSD and
+	// DragonFly in LMDB 0.9); else robust mutexes.
 	namedSemaphores bool
+	// sysvV2: LMDB 1.0 uses MDB_USE_SYSV_SEM instead, a SysV semaphore set
+	// (OpenBSD, NetBSD, DragonFly; mdb.c 1.0 lines 192-198).
+	sysvV2 bool
+	// shortSemNames: MDB_SHORT_SEMNAMES, version 1 semaphore names of 14
+	// characters (NetBSD; mdb.c 0.9.36 lines 4999-5011).
+	shortSemNames bool
 	// windowsMutexes: _WIN32, named kernel mutexes (kept in the lock file as
 	// the macOS semaphores are), and no pid locks (MDB_PIDLOCK 0, "currently
 	// the same as defined(_WIN32)" in mdb.c).
@@ -300,7 +346,7 @@ func lockFormatV2(d lockDescInputs) uint32 {
 }
 
 // named reports whether the platform's locks are named objects whose names
-// (version 1) or name hash (version 2) the lock file keeps: macOS
+// (version 1) or name hash (version 2) the lock file keeps: named
 // semaphores and Windows mutexes.
 func (p platform) named() bool { return p.namedSemaphores || p.windowsMutexes }
 
@@ -327,29 +373,36 @@ func (p platform) layouts() (v09, v10 *Layout) {
 	txbody := alignUp(txnid+8+4, max(8, nameAlign))
 	header := alignUp(txbody, cacheLine)
 	v09 = &Layout{
-		Format:     format.V09,
-		Version:    lockVersionV1,
-		LockFormat: lockFormatV1(p.pidLock()),
-		Objects:    objects,
-		TxnID:      txnid,
-		NumReaders: txnid + 8,
-		RLock:      rlock,
-		RLockSize:  mnameLen,
-		WLock:      header,
-		TxbodySize: txbody,
-		HeaderSize: header,
-		Readers:    header + alignUp(mnameLen, cacheLine),
+		Format:        format.V09,
+		Version:       lockVersionV1,
+		LockFormat:    lockFormatV1(p.pidLock()),
+		Objects:       objects,
+		TxnID:         txnid,
+		NumReaders:    txnid + 8,
+		RLock:         rlock,
+		RLockSize:     mnameLen,
+		WLock:         header,
+		TxbodySize:    txbody,
+		HeaderSize:    header,
+		Readers:       header + alignUp(mnameLen, cacheLine),
+		shortSemNames: p.namedSemaphores && p.shortSemNames,
 	}
 
 	// Version 2: txnid and numreaders moved in front of the reader lock.
+	// mt2 holds the writer mutex (mt2Size bytes), the SysV writer flag, or
+	// nothing where the writer semaphore or mutex is found by name.
 	rsize, ralign, objects, lockType := p.mutexSize, p.mutexAlign, PthreadMutexes, 0
+	mt2Size := p.mutexSize
 	switch {
+	case p.sysvV2:
+		rsize, ralign, objects = 2*cIntSize, cIntSize, SysVSemaphores
+		lockType, mt2Size = lockTypeSysVSem, cIntSize
 	case p.namedSemaphores:
 		rsize, ralign, objects = 8, p.hashAlign, SemaphoreHash
-		lockType = lockTypePosixSem(p.hashAlign)
+		lockType, mt2Size = lockTypePosixSem(p.hashAlign), 0
 	case p.windowsMutexes:
 		rsize, ralign, objects = 8, p.hashAlign, MutexHash
-		lockType = lockTypeWin32(p.hashAlign)
+		lockType, mt2Size = lockTypeWin32(p.hashAlign), 0
 	default:
 		lockType = lockTypePosixMutex(p.mutexSize, p.mutexAlign)
 	}
@@ -357,10 +410,9 @@ func (p platform) layouts() (v09, v10 *Layout) {
 	rlock = alignUp(v2NumReaders+4, ralign)
 	txbody = alignUp(rlock+rsize, max(8, ralign))
 	header = alignUp(txbody, cacheLine)
-	wlock, readers := header, header+alignUp(p.mutexSize, cacheLine)
-	if p.named() {
-		// No mt2: the writer semaphore or mutex is found by name.
-		wlock, readers = -1, header
+	wlock, readers := -1, header
+	if mt2Size > 0 {
+		wlock, readers = header, header+alignUp(mt2Size, cacheLine)
 	}
 	v10 = &Layout{
 		Format:  format.V10,

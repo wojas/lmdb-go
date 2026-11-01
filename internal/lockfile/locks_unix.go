@@ -1,22 +1,24 @@
 //go:build unix
 
 // createLocks and attachLocks on Unix: process-shared robust pthread
-// mutexes in the lock file (Linux) or named POSIX semaphores (macOS), as
-// mdb_env_setup_locks makes and finds them (0.9.36 lines 4964-5079, 1.0
-// lines 6064-6165).
+// mutexes in the lock file (Linux, FreeBSD), named POSIX semaphores (macOS;
+// OpenBSD, NetBSD and DragonFly in version 1) or a SysV semaphore set
+// (OpenBSD, NetBSD and DragonFly in version 2), as mdb_env_setup_locks
+// makes and finds them (0.9.36 lines 4964-5079, 1.0 lines 6064-6182).
 
 package lockfile
 
 import (
 	"os"
 	"syscall"
+	"unsafe"
 )
 
 // createLocks creates both locks for a lock file of layout l that this
 // process holds exclusively, and records in it what other openers need to
 // find them (mdb_env_setup_locks, *excl > 0): pthread mutexes initialised
-// in place (Linux), or semaphores whose names (version 1) or name hash
-// (version 2) are stored (macOS).
+// in place, semaphores whose names (version 1) or name hash (version 2)
+// are stored, or the SysV set whose id is stored (sysv.go).
 func createLocks(m *lockMap, fd uintptr, mode os.FileMode, l *Layout) (*sharedLocks, error) {
 	switch l.Objects {
 	case PthreadMutexes:
@@ -37,13 +39,14 @@ func createLocks(m *lockMap, fd uintptr, mode os.FileMode, l *Layout) (*sharedLo
 		if err := syscall.Fstat(int(fd), &st); err != nil {
 			return nil, err
 		}
-		id := lockFileID(uint64(st.Dev), st.Ino)
+		// unsafe.Sizeof only: the width of dev_t, which C hashes.
+		id := lockFileID(uint64(st.Dev), int(unsafe.Sizeof(st.Dev)), st.Ino)
 		var rname, wname string
 		if l.Objects == SemaphoreNames {
 			if l.WLock < 0 {
 				return nil, syscall.EINVAL
 			}
-			rname, wname = semNamesV09(id)
+			rname, wname = semNamesV09(id, l.shortSemNames)
 			if len(rname)+1 > l.RLockSize {
 				return nil, syscall.EINVAL
 			}
@@ -71,13 +74,16 @@ func createLocks(m *lockMap, fd uintptr, mode os.FileMode, l *Layout) (*sharedLo
 			return nil, err
 		}
 		return &sharedLocks{r: r, w: w}, nil
+	case SysVSemaphores:
+		return createSysVLocks(m, fd, mode, l)
 	}
 	return nil, syscall.EINVAL
 }
 
 // attachLocks uses the locks another process created: the mutexes in the
-// file, or the semaphores named in it (version 1) or after the hash stored
-// in it (version 2). What is in the file is read, never recomputed.
+// file, the semaphores named in it (version 1) or after the hash stored in
+// it (version 2), or the SysV set whose id is stored in it. What is in the
+// file is read, never recomputed.
 func attachLocks(m *lockMap, l *Layout) (*sharedLocks, error) {
 	switch l.Objects {
 	case PthreadMutexes:
@@ -123,6 +129,8 @@ func attachLocks(m *lockMap, l *Layout) (*sharedLocks, error) {
 			return nil, err
 		}
 		return &sharedLocks{r: r, w: w}, nil
+	case SysVSemaphores:
+		return attachSysVLocks(m, l)
 	}
 	return nil, syscall.EINVAL
 }
