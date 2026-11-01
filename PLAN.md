@@ -228,7 +228,13 @@ on openbsd/arm64. On OpenBSD, the plain copy of a file whose last meta
 page write failed differs from C's `mdb_copy` in that meta page, which no
 reader of the copy uses: C copies its map, which still shows the page as
 it was before the failed commit, and this port, as rlmdb, reads the file
-(`tests/engine`, `TestCopyAfterFailedMetaSync`). The other BSDs, and
+(`tests/engine`, `TestCopyAfterFailedMetaSync`). C LMDB keeps its map
+coherent with its writes on OpenBSD only since upstream's ITS#10615
+(`MDB_Invalidate`, October 2026, in the vendored sources), which no
+release has (0.9.36 and 1.0.2 do not): lmdb-go v1.9.4 (C 0.9.35) reads
+stale pages there after its own writes (the benchmark's baseline fails
+with `MDB_NOTFOUND` and crashes in `mdb_put`), and such a C writer leaves
+the maps of every process sharing the file stale. The other BSDs, and
 OpenBSD on amd64, have not run. All four build,
 vet and compile their test binaries (`go test -c`) for amd64 and arm64
 (DragonFly: amd64 only, as Go), without cgo and with it:

@@ -66,10 +66,13 @@ commands in `cmd/` and `exp/cmd/`. Read the API documentation with
   build, also with cgo against each BSD's headers
   (`scripts/bsd-cc-check.sh`). OpenBSD is tested on arm64 (OpenBSD 7.9,
   against C LMDB 0.9 and 1.0 built there); FreeBSD, NetBSD, DragonFly and
-  OpenBSD on amd64 are untested. (rlmdb's own suites pass on FreeBSD in
-  its CI. The parts macOS's kernel can run, the SysV semaphore set of
-  LMDB 1.0 lock files and NetBSD's semaphore names, run in the lock-file
-  tests on macOS.) 64-bit only: 32-bit builds
+  OpenBSD on amd64 are untested. On OpenBSD, C LMDB itself needs
+  upstream's fix ITS#10615, which LMDB 0.9.36 and 1.0.2 do not have:
+  without it, C reads stale pages after its own writes there (lmdb-go v1,
+  with C 0.9.35, fails on OpenBSD for that reason). (rlmdb's own suites
+  pass on FreeBSD in its CI. The parts macOS's kernel can run, the SysV
+  semaphore set of LMDB 1.0 lock files and NetBSD's semaphore names, run
+  in the lock-file tests on macOS.) 64-bit only: 32-bit builds
   stop with a compile error; 64-bit big-endian targets build, and s390x
   is tested under emulation (QEMU user mode), against C peers built for
   it.
