@@ -56,8 +56,9 @@ commands in `cmd/` and `exp/cmd/`. Read the API documentation with
   lock is recovered from, as between C processes (by the same design on
   FreeBSD, and with LMDB 1.0 lock files on the other BSDs).
 * **Platforms.** Linux (glibc and musl; arm64 and x86-64) and macOS.
-  Windows (x86-64; arm64 by the same rules) is implemented after rlmdb's
-  Windows port and builds, but has not run on Windows yet. FreeBSD,
+  Windows x86-64 (after rlmdb's Windows port; tested on Windows 10,
+  against C LMDB built with MinGW-w64; arm64 builds by the same rules,
+  untested). FreeBSD,
   OpenBSD, NetBSD and DragonFly (64-bit) are implemented after rlmdb's BSD
   support, with C's lock primitives and lock-file layouts there: they
   build and are untested. (rlmdb's own suites pass on FreeBSD in its CI;

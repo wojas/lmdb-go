@@ -207,8 +207,8 @@ differently from C is in `internal/engine/PORTING.md` and in rlmdb's
   number (5 became `EIO`). `error_windows.go` is kept. `ReaderCheck`
   clears the slots of a process that has exited even while some program
   still holds a handle to it (C keeps them until the last handle closes:
-  rlmdb `KNOWN_C_BUGS.md` #42). Status: builds and vets for windows/amd64
-  and windows/arm64; the tests have not run on Windows yet.
+  rlmdb `KNOWN_C_BUGS.md` #42). Status: tested on Windows x86-64 (with
+  C LMDB built with MinGW-w64 as the other side); arm64 builds, untested.
 * **FreeBSD, OpenBSD, NetBSD, DragonFly** (64-bit) follow rlmdb's BSD
   support and C LMDB's selection there, with cgo for the locks as on
   Linux. FreeBSD: Linux's robust process-shared mutexes in the lock file
