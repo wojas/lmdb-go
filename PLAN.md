@@ -212,10 +212,14 @@ data file (`sys.DataMap.Invalidate`, widened to whole OS pages: rlmdb
 ledger #39). The layouts are computed with C's formulas (rlmdb's numbers,
 not yet measured on a BSD) and tested on every host.
 
-Status: builds and untested. All four build, vet and compile their test
-binaries (`go test -c`) with `CGO_ENABLED=0` for amd64 and arm64
-(DragonFly: amd64 only, as Go); the cgo files are compiled for macOS and
-Linux only (no BSD sysroot or `zig` here), and nothing has run on a BSD.
+Status: builds and untested: nothing has run on a BSD. All four build,
+vet and compile their test binaries (`go test -c`) for amd64 and arm64
+(DragonFly: amd64 only, as Go), without cgo and with it:
+`scripts/bsd-cc-check.sh` compiles the root module (the cgo lock files),
+the `tests` module and the C oracles against each BSD's own headers and C
+library (zig's for FreeBSD 14, NetBSD 10.1 and OpenBSD 7.8; a DragonFly
+6.4 sysroot under `$HOME/sdk`), and checks the lock-file layouts against
+C's `mdb.c` compiled there (`TestLayoutsMatchCompiledC`): they agree.
 On macOS the lock-file tests also run the BSDs' LMDB 1.0 layout (the SysV
 set, including a writer that dies) and NetBSD's LMDB 0.9 layout,
 `tests/lockfile` compares the `ftok` formula with libc's, and

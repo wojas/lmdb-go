@@ -14,20 +14,25 @@
 //
 // Usage (in the tests module):
 //
-//	go run ./cmd/build-c-oracles [-cc compiler] [-windows] <rlmdb root> <out dir>
+//	go run ./cmd/build-c-oracles [-cc compiler] [-os goos | -windows] <rlmdb root> <out dir>
 //
 // <rlmdb root> is the rlmdb checkout (its repository root: tests/lmdb-c,
 // tests/compat, interop/c, rlmdb/tests/c/writeops.c). The compiler is
 // -cc, else $CC, else gcc on Windows and cc elsewhere; it may carry
-// arguments ("cc -arch x86_64"). -windows builds for Windows (default: when
-// running there), for example with x86_64-w64-mingw32-gcc from another OS.
+// arguments ("cc -arch x86_64", "zig cc -target x86_64-openbsd"). -os
+// names the system the programs are for, as a GOOS (default: the one this
+// runs on), for cross builds; -windows is -os windows, for example with
+// x86_64-w64-mingw32-gcc from another OS.
 //
 // The flags are those of rlmdb's interop/build.rs (the upstream Makefile's
 // -O2 -g -W -Wall -Wno-unused-parameter, and -pthread except on Windows).
 // On Windows the programs that are not upstream's get tests/compat on the
 // include path (rlmdb's POSIX shims) and MinGW's C99 printf
 // (-D__USE_MINGW_ANSI_STDIO=1); nothing links -ldl or -pthread, and the
-// executables end in .exe. Only <out dir> is written.
+// executables end in .exe. C 1.0's programs link -ldl for dlopen
+// (module.c), except where there is no libdl: Windows (LoadLibrary),
+// OpenBSD and NetBSD (dlopen is in every dynamically linked program
+// there, from ld.so or libc). Only <out dir> is written.
 package main
 
 import (
@@ -43,9 +48,10 @@ import (
 
 func main() {
 	ccFlag := flag.String("cc", "", "C compiler (default $CC, else gcc on Windows and cc elsewhere)")
-	windows := flag.Bool("windows", runtime.GOOS == "windows", "build Windows executables")
+	goos := flag.String("os", runtime.GOOS, "the system to build for, as a GOOS")
+	windows := flag.Bool("windows", false, "build Windows executables (-os windows)")
 	flag.Usage = func() {
-		fmt.Fprintln(os.Stderr, "usage: build-c-oracles [-cc compiler] [-windows] <rlmdb root> <out dir>")
+		fmt.Fprintln(os.Stderr, "usage: build-c-oracles [-cc compiler] [-os goos | -windows] <rlmdb root> <out dir>")
 		flag.PrintDefaults()
 	}
 	flag.Parse()
@@ -53,26 +59,41 @@ func main() {
 		flag.Usage()
 		os.Exit(2)
 	}
+	if *windows {
+		*goos = "windows"
+	}
 	cc := *ccFlag
 	if cc == "" {
 		cc = os.Getenv("CC")
 	}
 	if cc == "" {
 		cc = "cc"
-		if *windows {
+		if *goos == "windows" {
 			cc = "gcc"
 		}
 	}
-	b := &builder{cc: strings.Fields(cc), windows: *windows, root: flag.Arg(0), out: flag.Arg(1)}
+	b := &builder{cc: strings.Fields(cc), windows: *goos == "windows", libdl: hasLibdl(*goos),
+		root: flag.Arg(0), out: flag.Arg(1)}
 	if err := b.run(); err != nil {
 		fmt.Fprintln(os.Stderr, "build-c-oracles:", err)
 		os.Exit(1)
 	}
 }
 
+// hasLibdl reports whether programs for goos link dlopen from a libdl:
+// not on Windows, OpenBSD and NetBSD, which have none.
+func hasLibdl(goos string) bool {
+	switch goos {
+	case "windows", "openbsd", "netbsd":
+		return false
+	}
+	return true
+}
+
 type builder struct {
 	cc       []string
 	windows  bool
+	libdl    bool // link -ldl for C 1.0's module.c (hasLibdl)
 	root     string
 	out      string
 	mu       sync.Mutex
@@ -112,10 +133,9 @@ func (b *builder) run() error {
 	if err := os.MkdirAll(b.out, 0o755); err != nil {
 		return err
 	}
-	dl := []string{"-ldl"}
-	if b.windows {
-		// C 1.0's module loader uses LoadLibrary there.
-		dl = nil
+	var dl []string
+	if b.libdl {
+		dl = []string{"-ldl"}
 	}
 	rels := []release{
 		{tag: "09", dir: l09, lib: []string{"mdb.c", "midl.c"}},

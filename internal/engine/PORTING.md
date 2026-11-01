@@ -484,10 +484,10 @@ Divergences from rlmdb on the BSDs (none changes a file):
 * Performance: see `tests/bench/RESULTS.md` (stage 3).
 * Windows: built, vetted and cross-compiled (`go test -c`) for amd64 and
   arm64, not run yet; `scripts/windows-test.sh` is ready for the first run.
-* The BSDs: built, vetted and cross-compiled (`go test -c`, without cgo)
-  for amd64 and arm64 (DragonFly: amd64), not run yet; their cgo lock
-  files have not been compiled against a BSD's headers (PLAN.md "The
-  BSDs").
+* The BSDs: built, vetted and cross-compiled (`go test -c`) for amd64
+  and arm64 (DragonFly: amd64), with cgo against each BSD's headers too,
+  their lock-file layouts checked against C compiled for them
+  (`scripts/bsd-cc-check.sh`); not run yet (PLAN.md "The BSDs").
 * Big-endian: the root module and the tests module (C oracles built in
   the container) pass on s390x under QEMU user emulation
   (`LINUX_TEST_IMAGE=golang:1.25-trixie LINUX_TEST_PLATFORM=linux/s390x
