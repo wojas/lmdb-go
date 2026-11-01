@@ -10,6 +10,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	"github.com/PowerDNS/lmdb-go/internal/format"
@@ -135,7 +136,19 @@ func TestRootSplitBeyondCursorStack(t *testing.T) {
 		expect(c0.Put(key('g'), []byte("g"), 0), format.CursorFull, "cursor put")
 		expect(txn.Commit(), format.BadTxn, "commit after the cursor put")
 		env.Close()
-		if got, _ := os.ReadFile(data); !bytes.Equal(got, file) {
+		got, _ := os.ReadFile(data)
+		if runtime.GOOS == "windows" && len(got) > len(file) {
+			// Opened for writing, a 0.9 file is extended to the map size
+			// on Windows (as C 0.9 does there), and a 1.0 file by the
+			// pages a transaction took from the end of the map, even one
+			// that failed (committed in the view, as C 1.0 does): only
+			// zeros were added. (rlmdb tests/handbuilt.rs.)
+			if !bytes.Equal(got[len(file):], make([]byte, len(got)-len(file))) {
+				t.Fatalf("%v: the file grew by more than zeros", l.Format)
+			}
+			got = got[:len(file)]
+		}
+		if !bytes.Equal(got, file) {
 			t.Fatalf("%v: the file changed", l.Format)
 		}
 	}

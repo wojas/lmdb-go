@@ -121,9 +121,11 @@ func failedMetaSync(t *testing.T, f format.Format, flags uint32) {
 	env, dir := openTest(t, f, Options{Flags: flags})
 	fillKeys(t, env, 0, 300)
 	txnid := snapshotID(t, env)
-	st, err := os.Stat(filepath.Join(dir, "data.mdb"))
+	info, err := env.Info()
 	must(t, err)
-	end := st.Size()
+	// The end of the snapshot's pages. (Not the file's size: on Windows a
+	// 0.9 file opened for writing is as long as its map.)
+	end := int64(info.LastPgno+1) * int64(env.PageSize())
 	// The page the commit writes, and the old txnid it holds.
 	slot := int((txnid + 1) & 1)
 	old := fileTxnIDs(t, env, dir)[slot]
@@ -147,8 +149,8 @@ func failedMetaSync(t *testing.T, f format.Format, flags uint32) {
 	if err := w.Commit(); err != syscall.EIO {
 		t.Fatalf("commit: %v, want EIO", err)
 	}
-	if st, err := os.Stat(filepath.Join(dir, "data.mdb")); err != nil || st.Size() <= end {
-		t.Fatalf("the commit wrote no new pages: %v", err)
+	if !pageWritten(t, filepath.Join(dir, "data.mdb"), end, env.PageSize()) {
+		t.Fatal("the commit wrote no new pages")
 	}
 	// MDB_FATAL_ERROR: every transaction and copy fails with MDB_PANIC.
 	if err := env.BeginRead(new(Txn)); err != format.Panic {
@@ -240,4 +242,17 @@ func TestCopyMetasNotNewerThanSnapshot(t *testing.T) {
 			}
 		})
 	}
+}
+
+// pageWritten reports whether the file at path holds a page at off that is
+// not all zeros (one the engine wrote; the pages past the end of a file
+// that was extended read as zeros).
+func pageWritten(t *testing.T, path string, off int64, ps int) bool {
+	t.Helper()
+	f, err := os.Open(path)
+	must(t, err)
+	defer f.Close()
+	buf := make([]byte, ps)
+	n, _ := f.ReadAt(buf, off)
+	return n == ps && !bytes.Equal(buf, make([]byte, ps))
 }
