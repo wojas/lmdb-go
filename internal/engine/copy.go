@@ -17,7 +17,11 @@
 // root comes last), with an empty free DB: meta page 0 is a new
 // environment's (txnid 0), meta page 1 holds the main DB (txnid 1, unless
 // the environment is empty) and the main root is the last page. If the
-// count of pages does not add up the copy fails with MDB_INCOMPATIBLE.
+// count of pages does not add up the copy fails with MDB_INCOMPATIBLE, and
+// a damaged tree whose branches share pages or point back up fails it with
+// MDB_CORRUPTED as soon as it would hold more pages than the source (C
+// writes such pages once per path to them, without bound; rlmdb
+// KNOWN_C_BUGS.md #44).
 // C fills two 1 MiB buffers alternately and a second thread writes them;
 // pages are copied without their unused middle part (mdb_page_copy), which
 // keeps whatever an earlier page left there. The writer here is a plain
@@ -241,6 +245,22 @@ type copyWriter struct {
 	ps       int
 	l        *format.Layout
 	nesting  int
+	// limit is the source snapshot's mt_next_pgno: a copy that writes each
+	// reachable page once stays below it. Pages that a corrupt tree
+	// shares or reaches again (a child pointing back up) would be written
+	// again and again; C's mdb_env_cwalk writes them all (exponentially
+	// many with sharing at every level), so passing this ends the copy
+	// with MDB_CORRUPTED (rlmdb KNOWN_C_BUGS.md #44, CopyWriter::limit).
+	limit uint64
+}
+
+// checkRoom fails with MDB_CORRUPTED if pages more pages would take the
+// copy past the source's page count (limit).
+func (w *copyWriter) checkRoom(pages int) error {
+	if end := w.nextPgno + uint64(pages); end < w.nextPgno || end > w.limit {
+		return format.Corrupted
+	}
+	return nil
 }
 
 func (w *copyWriter) current() []byte {
@@ -275,6 +295,9 @@ func (w *copyWriter) makeRoom() error {
 // putPage appends a copy of page src (mdb_page_copy) numbered mc_next_pgno
 // and returns that number.
 func (w *copyWriter) putPage(src []byte) (uint64, error) {
+	if err := w.checkRoom(1); err != nil {
+		return 0, err
+	}
 	if err := w.makeRoom(); err != nil {
 		return 0, err
 	}
@@ -295,6 +318,9 @@ func (w *copyWriter) putPage(src []byte) (uint64, error) {
 
 // putOverflow appends the overflow run (pages pages), renumbered.
 func (w *copyWriter) putOverflow(run []byte, pages int) (uint64, error) {
+	if err := w.checkRoom(pages); err != nil {
+		return 0, err
+	}
 	if err := w.makeRoom(); err != nil {
 		return 0, err
 	}
@@ -323,7 +349,8 @@ func (e *Env) copyCompact(out io.Writer) error {
 		return err
 	}
 	defer txn.Abort()
-	w := &copyWriter{out: out, bufs: make([]byte, 2*wbuf), nextPgno: format.NumMetas, ps: ps, l: l}
+	w := &copyWriter{out: out, bufs: make([]byte, 2*wbuf), nextPgno: format.NumMetas, ps: ps, l: l,
+		limit: txn.nextPgno}
 	// Meta page 0: a new environment (mdb_env_init_meta0), with the
 	// source's recorded map address.
 	meta := format.NewEnvMeta(l, uint32(ps), uint64(e.mapSize.Load()), e.flags.Load())
