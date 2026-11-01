@@ -9,7 +9,8 @@
 #   WINDOWS_HOST     ssh destination (required), e.g. an alias from ~/.ssh/config
 #   WINDOWS_PORT     ssh port (default: what the ssh config says)
 #   WINDOWS_WORKDIR  work directory on the Windows side, relative to the
-#                    remote home or absolute (default lmdbgo-work)
+#                    remote home or absolute, with / or \ (default
+#                    lmdbgo-work; e.g. T:/lmdbgo-work for another drive)
 #   WINDOWS_ENV      script in the work directory that sets up the toolchain
 #                    for the command (default env.cmd), see below
 #   WINDOWS_FULL=1   send every file instead of the changes since last time
@@ -25,7 +26,8 @@
 # touched) with `git archive`, as a zip, and unpacked with the `tar` that
 # Windows 10 ships, into <workdir>\src. Only files that changed since the
 # previous run (whose tree is remembered in this checkout's git directory)
-# are sent; files deleted here are deleted there. The rlmdb sources are
+# are sent; files deleted here are deleted there. The files get the time
+# of unpacking (tar -m: exFAT drives refuse some of the zip's times). The rlmdb sources are
 # sent again only when rlmdb's HEAD changed. No git is needed on Windows,
 # and no credentials go there.
 #
@@ -65,6 +67,9 @@ workdir=${WINDOWS_WORKDIR:-lmdbgo-work}
 envfile=${WINDOWS_ENV:-env.cmd}
 ssh_opts=
 [ -n "${WINDOWS_PORT:-}" ] && ssh_opts="-o Port=$WINDOWS_PORT"
+# The work directory as cmd.exe wants it (backslashes) and as scp does.
+wd_cmd=$(printf '%s' "$workdir" | tr / '\\')
+wd_scp=$(printf '%s' "$workdir" | tr '\\' /)
 if [ $# -eq 0 ]; then
 	set -- go test ./...
 fi
@@ -124,12 +129,12 @@ fi
 		printf 'if exist "src\\%s" del /f /q "src\\%s"\r\n' "$(echo "$f" | tr / '\\')" "$(echo "$f" | tr / '\\')"
 	done <"$tmp/deleted"
 	if [ -s "$tmp/changed" ]; then
-		printf 'tar -xf windows-test.zip -C src || exit /b 125\r\n'
+		printf 'tar -xmf windows-test.zip -C src || exit /b 125\r\n'
 	fi
 	if [ -f "$tmp/rlmdb.zip" ]; then
 		printf 'if exist rlmdb rmdir /s /q rlmdb\r\n'
 		printf 'mkdir rlmdb\r\n'
-		printf 'tar -xf rlmdb.zip -C rlmdb || exit /b 125\r\n'
+		printf 'tar -xmf rlmdb.zip -C rlmdb || exit /b 125\r\n'
 	fi
 	printf 'call "%s" || exit /b 125\r\n' "$envfile"
 	printf 'set "RLMDB_SRC=%%~dp0rlmdb"\r\n'
@@ -153,16 +158,16 @@ if [ -s "$tmp/changed" ]; then
 fi
 [ -f "$tmp/rlmdb.zip" ] && files="$files $tmp/rlmdb.zip"
 # shellcheck disable=SC2086
-ssh $ssh_opts "$host" "if not exist \"$workdir\" mkdir \"$workdir\""
+ssh $ssh_opts "$host" "if not exist \"$wd_cmd\" mkdir \"$wd_cmd\""
 # shellcheck disable=SC2086
-scp -q $ssh_opts $files "$host:$workdir/"
+scp -q $ssh_opts $files "$host:$wd_scp/"
 # The other side has these trees once the script got past unpacking (exit
 # code 125 means it did not).
 rm -f "$state"
 [ -f "$tmp/rlmdb.zip" ] && rm -f "$rstate"
 rc=0
 # shellcheck disable=SC2086
-ssh $ssh_opts "$host" "\"$workdir\\windows-test.cmd\"" || rc=$?
+ssh $ssh_opts "$host" "\"$wd_cmd\\windows-test.cmd\"" || rc=$?
 if [ "$rc" -ne 125 ]; then
 	printf '%s\n' "$tree" >"$state"
 	[ -n "$rtree" ] && printf '%s\n' "$rtree" >"$rstate"
