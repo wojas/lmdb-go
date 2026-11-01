@@ -45,13 +45,24 @@ func TestLayoutMatchesC(t *testing.T) {
 			return -1
 		}
 		l := c.layout
-		rlock := []string{"mtb_rmutex", "mtb_rmname", "mtb_mutexid"}
+		rlock := []string{"mtb_rmutex", "mtb_rmname", "mtb_mutexid", "mtb_semid"}
 		for i, f := range rlock {
 			rlock[i] = "offsetof(MDB_txninfo.mt1.mtb." + f + ")"
 		}
 		rsize := make([]string, len(rlock))
 		for i, k := range rlock {
 			rsize[i] = "sizeof" + strings.TrimPrefix(k, "offsetof")
+		}
+		wantRSize := num(rsize...)
+		if l.Objects == lockfile.SysVSemaphores {
+			// The reader lock is mtb_semid followed by the flag
+			// mtb_rlocked (MDB_txbody, which starts mt1).
+			semid := num("offsetof(MDB_txbody.mtb_semid)")
+			rlocked := num("offsetof(MDB_txbody.mtb_rlocked)")
+			wantRSize = rlocked + num("sizeof(MDB_txbody.mtb_rlocked)") - semid
+			if semid < 0 || rlocked != semid+num("sizeof(MDB_txbody.mtb_semid)") {
+				t.Errorf("%s: mtb_semid at %d, mtb_rlocked at %d", c.format, semid, rlocked)
+			}
 		}
 		for _, chk := range []struct {
 			name      string
@@ -61,8 +72,9 @@ func TestLayoutMatchesC(t *testing.T) {
 			{"mti_txnid", l.TxnID, num("offsetof(MDB_txninfo.mt1.mtb.mtb_txnid)")},
 			{"mti_numreaders", l.NumReaders, num("offsetof(MDB_txninfo.mt1.mtb.mtb_numreaders)")},
 			{"reader lock", l.RLock, num(rlock...)},
-			{"reader lock size", l.RLockSize, num(rsize...)},
-			{"writer lock", l.WLock, num("offsetof(MDB_txninfo.mt2.mt2_wmutex)", "offsetof(MDB_txninfo.mt2.mt2_wmname)")},
+			{"reader lock size", l.RLockSize, wantRSize},
+			{"writer lock", l.WLock, num("offsetof(MDB_txninfo.mt2.mt2_wmutex)", "offsetof(MDB_txninfo.mt2.mt2_wmname)",
+				"offsetof(MDB_txninfo.mt2.mt2_wlocked)")},
 			{"sizeof(MDB_txbody)", l.TxbodySize, num("sizeof(MDB_txbody)")},
 			{"mt1", l.HeaderSize, num("sizeof(MDB_txninfo.mt1)")},
 			{"mti_readers", l.Readers, num("offsetof(MDB_txninfo.mti_readers)")},
@@ -164,7 +176,9 @@ func TestGoTableCAttaches(t *testing.T) {
 // TestInitBytesMatchC compares a lock file Go initialised with the one C
 // initialises in its place (same file, so the same inode for the macOS
 // names): equal bytes, except for LMDB 0.9's macOS semaphore names, which
-// C derives from uninitialised memory.
+// C derives from uninitialised memory, and the id of a SysV semaphore set
+// (mtb_semid), which the kernel assigns to each set: Go's is removed when
+// it closes, and C creates another.
 func TestInitBytesMatchC(t *testing.T) {
 	for _, c := range sides(t) {
 		env := filepath.Join(t.TempDir(), "env")
@@ -206,6 +220,14 @@ func TestInitBytesMatchC(t *testing.T) {
 					goBytes[i], cBytes[i] = 0, 0
 				}
 			}
+		}
+		if l.Objects == lockfile.SysVSemaphores {
+			const semidSize = 4 // an int
+			gid := goBytes[l.RLock : l.RLock+semidSize]
+			cid := cBytes[l.RLock : l.RLock+semidSize]
+			t.Logf("%s: semaphore set ids Go % x, C % x", c.format, gid, cid)
+			clear(gid)
+			clear(cid)
 		}
 		if !bytes.Equal(goBytes, cBytes) {
 			for i := range goBytes {
@@ -319,17 +341,24 @@ func TestReaderCheckAcrossImplementations(t *testing.T) {
 // TestWriterKilledHoldingLock: a C writer killed while it holds the writer
 // mutex is recovered from by Go, and a Go writer killed while it holds it
 // by C (robust mutexes, EOWNERDEAD and mdb_mutex_failed; Linux. Windows
-// mutexes are abandoned, WAIT_ABANDONED, which C handles the same way).
+// mutexes are abandoned, WAIT_ABANDONED, which C handles the same way. A
+// SysV semaphore set, LMDB 1.0's lock file on OpenBSD, NetBSD and
+// DragonFly, is released by SEM_UNDO, and the flag the holder left set
+// tells the next one, as MDB_OWNERDEAD).
 func TestWriterKilledHoldingLock(t *testing.T) {
-	if runtime.GOOS != "linux" && runtime.GOOS != "windows" {
-		t.Skip("robust mutexes are Linux's and Windows's; semaphores stay taken when the holder dies, in C too")
-	}
-	if os.Getenv("LMDB_TEST_NO_ROBUST_MUTEX") != "" {
+	robust := runtime.GOOS == "linux" || runtime.GOOS == "windows"
+	if robust && os.Getenv("LMDB_TEST_NO_ROBUST_MUTEX") != "" {
 		// QEMU user emulation has no robust futexes (in C too): the dead
 		// owner is never reported (scripts/linux-test.sh).
 		t.Skip("no robust mutexes here (LMDB_TEST_NO_ROBUST_MUTEX)")
 	}
+	ran := false
 	for _, c := range sides(t) {
+		if !robust && c.layout.Objects != lockfile.SysVSemaphores {
+			// Named semaphores stay taken when the holder dies, in C too.
+			continue
+		}
+		ran = true
 		env, txnid := c.newEnv(t)
 		r := openGo(t, env, c.layout)
 		if r.IsExclusive() {
@@ -359,6 +388,9 @@ func TestWriterKilledHoldingLock(t *testing.T) {
 		}
 		r.UnlockWriter()
 		r.Close()
+	}
+	if !ran {
+		t.Skip("robust mutexes are Linux's and Windows's, SysV semaphores LMDB 1.0's on OpenBSD, NetBSD and DragonFly; named semaphores stay taken when the holder dies, in C too")
 	}
 }
 
