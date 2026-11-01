@@ -313,6 +313,7 @@ func needOwnerDeath(t *testing.T) {
 	if runtime.GOOS != "linux" && runtime.GOOS != "windows" {
 		t.Skip("robust mutexes are Linux's and Windows's")
 	}
+	skipUnderQEMU(t)
 }
 
 // noRepair is a LockWriter callback for tests in which no writer dies.

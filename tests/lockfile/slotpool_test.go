@@ -39,7 +39,7 @@ func TestIdleGoSlotsInC(t *testing.T) {
 		env, _ := c.newEnv(t)
 		// No opener after this one is exclusive (which would reset the
 		// table and hide what Close left).
-		holder := startC(t, c.peer, "hold-env", env, "60", "--until-stdin").mustBeReady(t)
+		holder := startC(t, c.peer, "hold-env", env, holdSecs, "--until-stdin").mustBeReady(t)
 		genv, err := lmdb.NewEnv()
 		if err != nil {
 			t.Fatal(err)
@@ -113,7 +113,7 @@ func TestIdleGoSlotsInC(t *testing.T) {
 func TestGoSnapshotOutlivesClose(t *testing.T) {
 	for _, c := range sides(t) {
 		env, txnid := c.newEnv(t)
-		holder := startC(t, c.peer, "hold-env", env, "60", "--until-stdin").mustBeReady(t)
+		holder := startC(t, c.peer, "hold-env", env, holdSecs, "--until-stdin").mustBeReady(t)
 		genv, err := lmdb.NewEnv()
 		if err != nil {
 			t.Fatal(err)

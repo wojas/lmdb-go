@@ -1,8 +1,9 @@
 package engine
 
-// A root split on a tree as deep as the cursor stack (rlmdb
-// tests/handbuilt.rs root_split_beyond_the_cursor_stack_fails_the_txn,
-// KNOWN_C_BUGS.md #36).
+// Hand-built damaged trees (rlmdb tests/handbuilt.rs): a root split on a
+// tree as deep as the cursor stack (KNOWN_C_BUGS.md #36,
+// root_split_beyond_the_cursor_stack_fails_the_txn), and compacting
+// copies of trees whose pages are shared or cyclic (#44).
 
 import (
 	"bytes"
@@ -137,5 +138,86 @@ func TestRootSplitBeyondCursorStack(t *testing.T) {
 		if got, _ := os.ReadFile(data); !bytes.Equal(got, file) {
 			t.Fatalf("%v: the file changed", l.Format)
 		}
+	}
+}
+
+// TestCompactingCopyOfSharedPagesStops: trees whose branch pages share
+// their children or point back up (rlmdb tests/handbuilt.rs
+// compacting_copy_of_shared_pages_stops_at_the_source_size,
+// KNOWN_C_BUGS.md #44). A compacting copy writes a page once per path to
+// it, which C's mdb_env_cwalk does without bound (4^12 pages for a file of
+// 15 here). The copy stops with MDB_CORRUPTED as soon as it would hold
+// more pages than the file; a plain copy is unaffected.
+//
+// "shared": branch pages 2..13 with four children each, all the next
+// page, and a leaf of three keys at page 14. "cycle": branch page 2 whose
+// first three children are the leaf at page 3 and whose fourth is page 2
+// itself.
+func TestCompactingCopyOfSharedPagesStops(t *testing.T) {
+	const ps, levels = 4096, 12
+	l := format.LayoutV09
+	leafKV := [][2]string{{"a", "1"}, {"m", "2"}, {"z", "3"}}
+	branch := func(pgno, child uint64, back bool) []byte {
+		p := make([]byte, ps)
+		b := format.PageBuilder{B: p, L: l}
+		b.Init(pgno, format.PBranch)
+		for i, k := range []string{"", "g", "n", "t"} {
+			to := child
+			if back && i == 3 {
+				to = pgno
+			}
+			if !b.AddNode(i, []byte(k), format.NodeData{IsChild: true, Child: to}, 0) {
+				t.Fatalf("branch page %d: node %d", pgno, i)
+			}
+		}
+		return p
+	}
+	leaf := func(pgno uint64) []byte {
+		p := make([]byte, ps)
+		b := format.PageBuilder{B: p, L: l}
+		b.Init(pgno, format.PLeaf)
+		for i, kv := range leafKV {
+			if !b.AddNode(i, []byte(kv[0]), format.NodeData{Inline: []byte(kv[1])}, 0) {
+				t.Fatalf("leaf page %d: node %d", pgno, i)
+			}
+		}
+		return p
+	}
+	var shared [][]byte
+	for lv := uint64(0); lv < levels; lv++ {
+		shared = append(shared, branch(2+lv, 3+lv, false))
+	}
+	shared = append(shared, leaf(2+levels))
+	cycle := [][]byte{branch(2, 3, true), leaf(3)}
+	for _, c := range []struct {
+		what  string
+		pages [][]byte
+	}{{"shared", shared}, {"cycle", cycle}} {
+		dir := t.TempDir()
+		main := format.DB{Depth: uint16(len(c.pages)), BranchPages: uint64(len(c.pages) - 1), LeafPages: 1,
+			Entries: uint64(len(leafKV)), Root: 2}
+		file := handbuiltFile(l, ps, c.pages, main)
+		if err := os.WriteFile(filepath.Join(dir, "data.mdb"), file, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		env, err := Open(dir, Options{MaxDBs: 2, Flags: format.NoLock | format.ReadOnly})
+		if err != nil {
+			t.Fatal(err)
+		}
+		compact := t.TempDir()
+		if err := env.Copy(compact, format.CopyCompact); !errors.Is(err, format.Corrupted) {
+			t.Fatalf("%s: compacting copy: %v, want MDB_CORRUPTED", c.what, err)
+		}
+		if st, err := os.Stat(filepath.Join(compact, "data.mdb")); err != nil || st.Size() > int64(len(file)) {
+			t.Fatalf("%s: the compacting copy wrote %d bytes (%v), more than the file's %d", c.what, st.Size(), err, len(file))
+		}
+		plain := t.TempDir()
+		if err := env.Copy(plain, 0); err != nil {
+			t.Fatalf("%s: plain copy: %v", c.what, err)
+		}
+		if got, err := os.ReadFile(filepath.Join(plain, "data.mdb")); err != nil || !bytes.Equal(got, file) {
+			t.Fatalf("%s: the plain copy differs from the file (%v)", c.what, err)
+		}
+		env.Close()
 	}
 }

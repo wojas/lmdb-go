@@ -113,5 +113,7 @@ machine shared with other work):
   one as a fresh put would, into a sub-DB), and a lone `F_BIGDATA` item in
   a file C 1.0 wrote is read through its overflow pages, which are freed,
   when the key gets a duplicate. `TestDupsortCurrentTooBigForNode` and
-  `tests/engine` `TestRepairCBigDataDupsort` cover it; `FuzzWriteModel`
-  generates the case again (no failure in 4 minutes after the fix).
+  `tests/engine` (`TestDifferential*CurrentSingleItem`,
+  `TestSingleItemOnOverflowPages*`, ported from rlmdb's fix) cover it;
+  `FuzzWriteModel` generates the case again (no failure in 4 minutes
+  after the fix).

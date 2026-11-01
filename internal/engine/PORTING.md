@@ -3,12 +3,14 @@
 Status of the engine port (PLAN.md). rlmdb sources: `rlmdb/src/core/*.rs`
 and `format/*`.
 
-**Sync point: rlmdb `e48ebe0`** (its main after the restructuring that
-made the repository root the Cargo workspace and vendored the C sources in
-`tests/lmdb-c`; the next commit there, `9c854c2`, changes only rlmdb's
-scripts). The stages before were ported from `9ea2373`, whose `rust/`
-tree is `5a2ebd2` of the restructured history. "Sync with rlmdb" below
-lists what happened to each commit since.
+**Sync point: rlmdb `3df6995`** (its main with the BSDs, Windows and
+big-endian testing). The previous sync point was `e48ebe0` (its main after
+the restructuring that made the repository root the Cargo workspace and
+vendored the C sources in `tests/lmdb-c`); the stages before were ported
+from `9ea2373`, whose `rust/` tree is `5a2ebd2` of the restructured
+history. The "Sync with rlmdb" sections below list what happened to each
+commit since; rlmdb's BSD commits are the BSD port's (branch
+`stage7-bsd`).
 
 ## File map
 
@@ -43,8 +45,9 @@ lists what happened to each commit since.
 ## Tests
 
 * `internal/format`: layout numbers of both formats, pages, nodes, meta,
-  sniffing, comparators (against the literal C loop), ID lists (search,
-  runs and removal against the literal C code), error texts.
+  sniffing, comparators (against the literal C loops of both byte
+  orders), ID lists (search, runs and removal against the literal C code),
+  error texts.
 * `internal/engine` (pure Go, also `CGO_ENABLED=0`): model test, write API
   (rlmdb `write_api.rs`), nested edge cases (`nested_txn.rs`), spilling,
   format selection and refused 1.0 features, NoLock (rule 2a: a long-lived
@@ -63,7 +66,13 @@ lists what happened to each commit since.
   and a page-by-page structural comparison (port of interop `pagecmp`), and
   the Go engine reading C's result; Go-side spilling; plain and compacting
   copies byte-identical to `mdb_copy`/`mdb_copy -c`; Go reading `cpeer
-  fill` data sets. It takes 2 to 4 minutes natively and 7 to 9 under
+  fill` data sets; `MDB_CURRENT` replacements against C's
+  `mdb_cursor_del` + `mdb_cursor_put` (the `cr` op, #38; also on a 2 KiB
+  0.9 file, which the harness can start both sides from) and C-made files
+  with a DUPSORT item on overflow pages, changed by Go and audited by C;
+  plain copies with a real lock file (after a failed meta sync, by another
+  process, equal to `mdb_copy`; of a file with a forged newer meta page).
+  It takes 2 to 4 minutes natively and 7 to 9 under
   emulation (`GOARCH=amd64` under Rosetta with x86-64 oracles, or the
   x86-64 Linux container), where `go test`'s default 10-minute timeout
   fails it on a loaded machine: run it there with `-timeout 30m`.
@@ -248,10 +257,12 @@ counts of the API's hot paths are pinned by `lmdb/alloc_test.go`.
   txnids of two copies accepted a torn copy, N's roots with N+2's txnid).
   C's observable outputs are kept: no lock file is created, Info.NumReaders is
   0, ReaderList is nil (C prints "(no reader locks)"), ReaderCheck is 0,
-  and there is no reader limit. Differences from rlmdb's code that
-  remain (no observable difference found): a meta copy that fails
-  validation is retried if the committed txnid moved meanwhile (rlmdb
-  returns the error); a write transaction takes its handle's writerMu
+  and there is no reader limit. A meta copy that fails validation is
+  retried if the published txnid moved meanwhile, at most 16 failed copies
+  per begin, in both reader paths (rlmdb 3811bea; this port retried
+  without bound under NoLock and not at all with a lock file before).
+  Differences from rlmdb's code that remain (no observable difference
+  found): a write transaction takes its handle's writerMu
   before the shared writer lock (rlmdb the file's lock first), so
   SetMapSize of a handle whose writer waits for another handle's is
   EINVAL already; idle reader slots stay in the shared table per handle
@@ -292,31 +303,52 @@ counts of the API's hot paths are pinned by `lmdb/alloc_test.go`.
   C 1.0's assertion).
 * MDB_CURRENT with an item too big for a node on a DUPSORT key's only
   item (rlmdb `KNOWN_C_BUGS.md` #38, found by this port's FuzzWriteModel):
-  implemented from rlmdb's decision while its fix
-  (`fix/current-bigdata-dupsort`) has not landed; compare with it when it
-  does. The writer never creates an F_BIGDATA node in a DUPSORT database
-  (dupPrepare sends such a replacement, also a put of an item the
-  duplicate order calls equal, the delete-then-insert route of #15), and a
-  lone F_BIGDATA item (C 1.0 writes one) is read through its overflow
-  pages, which are freed, when it becomes a duplicate.
+  implemented from rlmdb's decision first, aligned with its fix (`dc90f21`)
+  in the sync to `3df6995`. The writer never creates an F_BIGDATA node in
+  a DUPSORT database: such an MDB_CURRENT is caught right after the
+  positioning and runs as mdb_cursor_del + mdb_cursor_put
+  (`replaceCurrent`, which the #15 route shares; the transaction fails if
+  the put after the delete fails), and so does a put of an item the
+  duplicate order calls equal that does not fit (in an MDB_MULTIPLE batch
+  the batch goes on); the test is mdb_node_add's (`overflowsNode`). A
+  lone F_BIGDATA item (C writes one) is read through its overflow pages
+  when it becomes a duplicate, and they are freed before the sub-page or
+  sub-DB root is built (an item longer than the maximum key size is
+  MDB_CORRUPTED).
 * A failed sync after the meta page write (macOS: the `F_FULLFSYNC` after
-  the `O_DSYNC` write; stage 4 review, round 2, P2-4) is handled as C
-  handles a failed meta page write: the old txnid is written back and the
-  environment is fatal (`MDB_PANIC` for later transactions and copies).
-  C 0.9.36 has no sync there (its `MDB_WRITEMAP` branch, which syncs the
-  meta page on macOS, makes a failed sync fatal, without the write-back);
-  rlmdb (also at e48ebe0) returns the error and does neither, which leaves
-  meta N+1 on the file with N published: a later plain copy pinned N and
-  copied meta N+1, naming pages it left out. To be fixed in rlmdb.
+  the `O_DSYNC` write; stage 4 review, round 2, P2-4; rlmdb
+  `KNOWN_C_BUGS.md` #41) is handled as C handles a failed meta page write:
+  the old txnid is written back and the environment is fatal (`MDB_PANIC`
+  for later transactions and copies). C 0.9.36 and 1.0 return the sync's
+  error and keep the page there; rlmdb did the same until `bf3a0c0`, whose
+  version this is (the test hook is its `fail_next_meta_sync`:
+  `Env.FailNextMetaSync`).
 * A plain copy writes no meta page newer than its snapshot
-  (`snapshotMetas`): such a page gets the snapshot's meta (the part a
-  commit writes). It exists only after a commit whose meta page reached
-  the file while its write or sync failed, in another process (C restores
-  the old txnid after a failed write, but not when the restore fails too,
-  nor with `MDB_WRITEMAP`; rlmdb not after a failed sync) or in this one
-  before the entry above. C's `mdb_copy` and rlmdb copy both meta pages as
-  they are, so their copy then names pages it does not contain. Copies of
-  every other file stay byte-identical to `mdb_copy`'s.
+  (`snapshotMetas`, rlmdb's `hide_newer_meta`, `bf3a0c0`): if the other
+  meta page names a newer txnid and the snapshot's own page holds the
+  snapshot, the other page gets the snapshot's meta (the part a commit
+  writes); otherwise both are copied as they are (until the sync to
+  `3df6995` this port failed with MDB_CORRUPTED when the own page did not
+  hold the snapshot, which only a racing writer of another process causes
+  without a lock file). Such a newer page exists only after a commit whose
+  meta page reached the file while its write or sync failed (C on macOS
+  after a failed `F_FULLFSYNC`; anyone when the write-back failed too), or
+  without a lock file with a writer of another process racing the copy.
+  C's `mdb_copy` copies both pages as they are, so its copy then names
+  pages it does not contain (C 1.0 does not even open such a file). Copies
+  of every other file stay byte-identical to `mdb_copy`'s.
+* A compacting copy stops with MDB_CORRUPTED as soon as it would hold more
+  pages than the source snapshot (`copyWriter.limit`, rlmdb `5d8bc38`,
+  `KNOWN_C_BUGS.md` #44): C's mdb_env_cwalk writes the shared or cyclic
+  pages of a damaged tree once per path to them, without bound.
+* rlmdb's ledger rows #39 to #44, here: #39 (OpenBSD's `msync` of a range
+  that does not start on an OS page) is the BSD port's; #40 (the robust
+  mutex repair validates the meta pages) holds here as in rlmdb
+  (`pickMetaIn` validates both pages, and a failed repair leaves the
+  mutex unrecoverable, `internal/lockfile` `TestWriterRepairFailure`); #41
+  and #44 as above; #42 (`OpenProcess` with `SYNCHRONIZE`) and #43 (the
+  Windows lock-file size in 64 bits) are the Windows port's, which follows
+  both (`internal/lockfile/filelock_windows.go`).
 * Every KNOWN_C_BUGS.md decision of rlmdb is kept as rlmdb implements it
   (the differential test exercises the cursor-state ones with rlmdb's
   repairs of C's side).
@@ -342,8 +374,38 @@ restructured history), oldest first:
 | `774f8d0` | rlmdb-capi: clear C comparators when an abort closes a handle | no change needed: comparators live in the DBI slot that every close clears (test ported); `lmdb` has no comparator API |
 | `e48ebe0` | `LockMap::read_bytes` dead code on Linux | not applicable |
 
-Also from rlmdb's decisions, not yet a commit on its main: #38 (see the
-ledger).
+Also from rlmdb's decisions, then not yet a commit on its main: #38, which
+landed in `dc90f21` (next section).
+
+## Sync with rlmdb `e48ebe0..3df6995`
+
+The engine's sync (branch `stage7-sync2`), oldest first. The Windows
+commits are the Windows port's (next section), the BSD ones the BSD
+port's (`stage7-bsd`).
+
+| rlmdb | what | here |
+|---|---|---|
+| `9c854c2` | scripts: clippy in the Linux container too | not applicable |
+| `e4a5ad9` | FreeBSD, OpenBSD, NetBSD and DragonFly with C's lock primitives (#39) | BSD port |
+| `bfef7e6` | CI and docs for the BSDs | BSD port |
+| `12a6731` | the OpenBSD `msync` row is #39 | ledger numbering only (#39: BSD port) |
+| `ce88ec6` | the shared C-oracle build directory is locked and rebuilt when stale | not applicable: the tests here take built oracles (`RLMDB_DIR`, `RLMDB_BIN`, `LMDB_ORACLE_BIN`) and build none into a shared directory |
+| `bf3a0c0` | a failed sync after the meta write is fatal and restores the old txnid; a plain copy never emits a meta newer than its snapshot (#41) | the port had both since stage 4; compared: a copy whose own meta page does not hold the snapshot no longer fails (ledger); rlmdb's tests ported (`Env.FailNextMetaSync`, `TestMetaWriteFailureIsFatal` with another `NoLock` handle, `TestFailedFullFsyncIsFatal` on macOS, `tests/engine` `TestCopyAfterFailedMetaSync` and `TestPlainCopyHidesANewerMeta` with a real lock file and C's `mdb_copy`) |
+| `ee87eb1` | ledger #40: the robust-mutex repair validates the meta pages | the port does the same (ledger); no change |
+| `3811bea` | retry a torn meta copy when the published txnid moved | ported: both reader paths, at most 16 failed copies (`maxTornCopies`; the NoLock path retried without bound, the lock-file path not at all); rlmdb's three tests (`torncopy_test.go`, through `testHookSnapshotMeta`) |
+| `dc90f21` | MDB_CURRENT never stores a DUPSORT value on overflow pages; repair files where C did (#38) | compared with the port's version and aligned (ledger: the check before the spill and touch, mdb_node_add's test, the MDB_MULTIPLE batch going on, the overflow pages freed before the sub-DB root is allocated, the maximum-size check, 16-bit `mp_upper` of a `P_LEAF2` sub-DB root); tests ported (`TestDifferential*CurrentSingleItem` with the `cr` op, `TestSingleItemOnOverflowPages*`, `TestDifferential10DupfixedItemsOverAQuarterPage` with 64 KiB pages, `TestDupsortCurrentReplacesThroughASubDB`); `pagecmp` leaves out 0.9's uninitialised `mp_pad` of ordinary pages (rlmdb's `canonical09`) |
+| `9155a5d` | the NO_LOCK snapshot stress test reserves a 1 GiB map | ported together with the test (`TestNoLockReadersPinTheSnapshotTheyRead`), which came with `ade31f0` and was not ported then |
+| `2e5101f` | tests and the C page audit no longer assume a little-endian host | mirrored: `pagecmp` reads `mn_lo`/`mn_hi` in host order, the literal `mdb_cmp_cint` loops of both byte orders, the meta tests' field pokes, a byte-swapped magic is MDB_INVALID; the C page audit is rlmdb's (`cpeer check-freelist`, built from its sources). The s390x run found one engine bug here: `Page.OverflowPages` combined `mp_lower`/`mp_upper` as on little-endian hosts |
+| `8230c7c` | `scripts/linux-test.sh`: `LINUX_TEST_TARGET` runs the suites cross-built under QEMU | here `LINUX_TEST_PLATFORM=linux/s390x` (image `golang:1.25-trixie`) runs everything under QEMU; `LMDB_TEST_NO_ROBUST_MUTEX` for its `INTEROP_NO_ROBUST_MUTEX` |
+| `5773e0a` | nightly big-endian job; byte order documented | the docs (`README.md`, `lmdb/DEVIATIONS.md`, `internal/format/arch_unsupported.go`): tested on s390x under emulation; no CI here |
+| `56e5f45` | `diff_current_single_item` does not assume a little-endian host | covered by `pagecmp`'s host-order node fields |
+| `0bf0553`, `24571fa`, `bf7d115`, `a933f11` | Windows | Windows port (next section) |
+| `44ca757` | the cross route registers the VM's amd64 handler alongside QEMU | mirrored in `scripts/linux-test.sh`: missing handlers (QEMU's, Rosetta) are registered from a privileged holder container, never removed |
+| `0092556` | the C cursor and write helpers read their scripts from stdin (FreeBSD `ARG_MAX`) | not applicable: `writeops` already reads stdin here, and the Go tests do not run `cursorops` |
+| `1009bbd` | FreeBSD tested in CI | BSD port |
+| `63b591c`, `b3ed51e`, `d27e68f`, `03fccb3`, `86563af`, `7dcf511`, `ea1bbdb` | MSVC builds of the C test programs, Windows CI, the mtest seed shim, the C library's DLL, rlmdb-tools' `atoi` and `maxreaders=-1` | Windows port / not applicable (no C API, no mtest, no C-tool clones here) |
+| `5d8bc38` | a compacting copy stops when it outgrows its source (#44) | ported (`copyWriter.limit`; rlmdb's hand-built test, `TestCompactingCopyOfSharedPagesStops`) |
+| `3df6995` | interop holds outlast slow scenarios; stale reader and #42 on Windows | the holds: `tests/lockfile` gives its C peers' `--until-stdin` holds 600 s (`holdSecs`); #42: Windows port |
 
 ## Windows: rlmdb's Windows commits (up to `3df6995`)
 
@@ -390,3 +452,8 @@ Divergences from rlmdb on Windows (none changes a file):
 * Performance: see `tests/bench/RESULTS.md` (stage 3).
 * Windows: built, vetted and cross-compiled (`go test -c`) for amd64 and
   arm64, not run yet; `scripts/windows-test.sh` is ready for the first run.
+* Big-endian: the root module and the tests module (C oracles built in
+  the container) pass on s390x under QEMU user emulation
+  (`LINUX_TEST_IMAGE=golang:1.25-trixie LINUX_TEST_PLATFORM=linux/s390x
+  scripts/linux-test.sh`), owner-death tests skipped (QEMU has no robust
+  futexes).

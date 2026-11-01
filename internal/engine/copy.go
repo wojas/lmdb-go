@@ -17,7 +17,11 @@
 // root comes last), with an empty free DB: meta page 0 is a new
 // environment's (txnid 0), meta page 1 holds the main DB (txnid 1, unless
 // the environment is empty) and the main root is the last page. If the
-// count of pages does not add up the copy fails with MDB_INCOMPATIBLE.
+// count of pages does not add up the copy fails with MDB_INCOMPATIBLE, and
+// a damaged tree whose branches share pages or point back up fails it with
+// MDB_CORRUPTED as soon as it would hold more pages than the source (C
+// writes such pages once per path to them, without bound; rlmdb
+// KNOWN_C_BUGS.md #44).
 // C fills two 1 MiB buffers alternately and a second thread writes them;
 // pages are copied without their unused middle part (mdb_page_copy), which
 // keeps whatever an earlier page left there. The writer here is a plain
@@ -153,9 +157,7 @@ func (e *Env) copyPlain(w io.Writer) error {
 	if err != nil {
 		return err
 	}
-	if err := e.snapshotMetas(buf[:2*ps], txn.txnid); err != nil {
-		return err
-	}
+	e.snapshotMetas(buf[:2*ps], txn.txnid)
 	if err := writeAll(w, buf[:2*ps]); err != nil {
 		return err
 	}
@@ -177,17 +179,24 @@ func (e *Env) copyPlain(w io.Writer) error {
 	return nil
 }
 
-// snapshotMetas makes the two meta pages a plain copy read from the file
-// (metas) fit the snapshot txnid it copies: a meta page with a newer txnid
-// names pages past the snapshot's end, which the copy leaves out, so it
-// gets the snapshot's meta (the part a commit writes, from mm_mapsize on)
-// instead. With the writer lock held there is one only after a commit
-// whose meta page reached the file but whose write or sync then failed
-// (here such a commit makes the environment fatal, and no copy runs; in C
-// or rlmdb, or in another process, it may not). C's mdb_copy copies the
-// meta pages as they are. MDB_CORRUPTED if the snapshot's own meta page
-// does not hold its txnid.
-func (e *Env) snapshotMetas(metas []byte, txnid uint64) error {
+// snapshotMetas keeps the two meta pages a plain copy read from the file
+// (metas) from naming a newer transaction than the snapshot txnid it
+// copies: if the other meta page holds a newer txnid and the snapshot's
+// own page holds the snapshot, the other page gets the snapshot's meta,
+// the part mdb_env_write_meta writes (from mm_mapsize on). Both pages then
+// describe the snapshot. rlmdb's hide_newer_meta.
+//
+// The copy holds the data file up to the snapshot's last page only, and
+// a reader of the copy takes the newer meta page, so as it is, that page
+// would name pages the copy lacks (MDB_PAGE_NOTFOUND). C's
+// mdb_env_copyfd0 copies it as it is. Holding the writer lock, the other
+// page is never newer in a sound environment: it takes a commit whose
+// meta page reached the file while its write or sync failed (C on macOS
+// leaves such a page after a failed F_FULLFSYNC, rlmdb KNOWN_C_BUGS.md
+// #41; C, rlmdb and this port when writing the old txnid back failed
+// too), or, without a lock file, a writer of another process that races
+// the copy.
+func (e *Env) snapshotMetas(metas []byte, txnid uint64) {
 	ps, base := e.pageSize, e.layout.MetaOffset()
 	id := func(i int) uint64 {
 		v, _ := format.Get64(metas, i*ps+base+format.MetaTxnID)
@@ -197,13 +206,9 @@ func (e *Env) snapshotMetas(metas []byte, txnid uint64) error {
 		return metas[i*ps+base+format.MetaMapSize : i*ps+base+format.MetaSize]
 	}
 	own := int(txnid & 1)
-	if id(own) != txnid {
-		return format.Corrupted
-	}
-	if other := own ^ 1; id(other) > txnid {
+	if other := own ^ 1; id(own) == txnid && id(other) > txnid {
 		copy(body(other), body(own))
 	}
-	return nil
 }
 
 func writeAll(w io.Writer, b []byte) error {
@@ -240,6 +245,22 @@ type copyWriter struct {
 	ps       int
 	l        *format.Layout
 	nesting  int
+	// limit is the source snapshot's mt_next_pgno: a copy that writes each
+	// reachable page once stays below it. Pages that a corrupt tree
+	// shares or reaches again (a child pointing back up) would be written
+	// again and again; C's mdb_env_cwalk writes them all (exponentially
+	// many with sharing at every level), so passing this ends the copy
+	// with MDB_CORRUPTED (rlmdb KNOWN_C_BUGS.md #44, CopyWriter::limit).
+	limit uint64
+}
+
+// checkRoom fails with MDB_CORRUPTED if pages more pages would take the
+// copy past the source's page count (limit).
+func (w *copyWriter) checkRoom(pages int) error {
+	if end := w.nextPgno + uint64(pages); end < w.nextPgno || end > w.limit {
+		return format.Corrupted
+	}
+	return nil
 }
 
 func (w *copyWriter) current() []byte {
@@ -274,6 +295,9 @@ func (w *copyWriter) makeRoom() error {
 // putPage appends a copy of page src (mdb_page_copy) numbered mc_next_pgno
 // and returns that number.
 func (w *copyWriter) putPage(src []byte) (uint64, error) {
+	if err := w.checkRoom(1); err != nil {
+		return 0, err
+	}
 	if err := w.makeRoom(); err != nil {
 		return 0, err
 	}
@@ -294,6 +318,9 @@ func (w *copyWriter) putPage(src []byte) (uint64, error) {
 
 // putOverflow appends the overflow run (pages pages), renumbered.
 func (w *copyWriter) putOverflow(run []byte, pages int) (uint64, error) {
+	if err := w.checkRoom(pages); err != nil {
+		return 0, err
+	}
 	if err := w.makeRoom(); err != nil {
 		return 0, err
 	}
@@ -322,7 +349,8 @@ func (e *Env) copyCompact(out io.Writer) error {
 		return err
 	}
 	defer txn.Abort()
-	w := &copyWriter{out: out, bufs: make([]byte, 2*wbuf), nextPgno: format.NumMetas, ps: ps, l: l}
+	w := &copyWriter{out: out, bufs: make([]byte, 2*wbuf), nextPgno: format.NumMetas, ps: ps, l: l,
+		limit: txn.nextPgno}
 	// Meta page 0: a new environment (mdb_env_init_meta0), with the
 	// source's recorded map address.
 	meta := format.NewEnvMeta(l, uint32(ps), uint64(e.mapSize.Load()), e.flags.Load())
