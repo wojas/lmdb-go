@@ -25,13 +25,13 @@ import (
 // ErrNoSharedLocks is returned by Open in a Linux build without cgo: the
 // shared writer and reader-table locks are pthread mutexes there, reached
 // through cgo. Without cgo only environments without a lock file
-// (MDB_NOLOCK) can be used. (macOS builds have the locks with and without
-// cgo.)
+// (MDB_NOLOCK) can be used. (macOS and Windows builds have the locks with
+// and without cgo.)
 var ErrNoSharedLocks = errors.New("lockfile: shared locking on Linux needs a cgo build (CGO_ENABLED=1); without cgo use NoLock")
 
 // SharedLocksAvailable reports whether this build can take the shared
-// locks, i.e. whether Open can succeed: true on macOS, and on Linux in a
-// cgo build.
+// locks, i.e. whether Open can succeed: true on macOS and Windows, and on
+// Linux in a cgo build.
 func SharedLocksAvailable() bool { return sharedLocksAvailable }
 
 // Region is an open lock file: its mapping, the two shared locks and this
@@ -40,8 +40,9 @@ func SharedLocksAvailable() bool { return sharedLocksAvailable }
 // goroutine, except that LockWriter and UnlockWriter pair up on one
 // goroutine. After Close, no method may be called.
 type Region struct {
-	file   *os.File
-	fd     int
+	file *os.File
+	// fd is the lock file's descriptor (a HANDLE on Windows).
+	fd     uintptr
 	m      *lockMap
 	locks  *sharedLocks
 	layout *Layout
@@ -53,7 +54,8 @@ type Region struct {
 	// exclusive: this process still holds the exclusive lock on byte 0.
 	exclusive bool
 	// liveReader: this process holds the lock on byte pid
-	// (me_live_reader).
+	// (me_live_reader; on Windows, where there is no such lock, it has
+	// taken a reader slot).
 	liveReader bool
 	closed     bool
 
@@ -70,7 +72,8 @@ type Region struct {
 // file. mode is the permission of a new lock file (and, on macOS, of new
 // semaphores); maxReaders the number of reader slots a new table gets.
 //
-// The first opener, the one that gets the exclusive fcntl lock on byte 0,
+// The first opener, the one that gets the exclusive lock on byte 0 (fcntl,
+// on Windows LockFileEx),
 // writes a fresh table of layout's version, whatever the file held, and
 // keeps that lock until Downgrade. Every other opener waits for a shared
 // lock on byte 0 and validates the table: a wrong magic is format.Invalid,
@@ -88,9 +91,9 @@ func Open(path string, mode os.FileMode, maxReaders uint32, readOnly bool, layou
 	if layout == nil || maxReaders == 0 {
 		return nil, syscall.EINVAL
 	}
-	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, mode.Perm())
+	f, err := openLockFile(path, mode)
 	if err != nil {
-		if readOnly && errors.Is(err, syscall.EROFS) {
+		if readOnly && isReadOnlyFS(err) {
 			return nil, nil
 		}
 		return nil, err
@@ -98,6 +101,7 @@ func Open(path string, mode os.FileMode, maxReaders uint32, readOnly bool, layou
 	r, err := setup(f, mode, maxReaders, layout)
 	if err != nil {
 		// Closing the descriptor drops our record locks.
+		unlockLockFile(f.Fd())
 		f.Close()
 		return nil, err
 	}
@@ -106,7 +110,7 @@ func Open(path string, mode os.FileMode, maxReaders uint32, readOnly bool, layou
 
 // setup is the body of mdb_env_setup_locks after the open.
 func setup(f *os.File, mode os.FileMode, maxReaders uint32, layout *Layout) (*Region, error) {
-	fd := int(f.Fd())
+	fd := f.Fd()
 	// mdb_env_excl_lock: exclusive if possible, else wait for shared.
 	exclusive := lockByte(fd, 0, true, false) == nil
 	if !exclusive {
@@ -191,7 +195,7 @@ func (r *Region) Downgrade(txnid uint64) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.m.storeUint64(r.layout.TxnID, txnid)
-	if err := lockByte(r.fd, 0, false, false); err != nil {
+	if err := downgradeLock(r.fd); err != nil {
 		return err
 	}
 	r.exclusive = false
@@ -205,18 +209,20 @@ func (r *Region) MaxReaders() uint32 { return r.maxReaders }
 // for a write transaction: other writers, threads or processes, C or Go,
 // wait until UnlockWriter.
 //
-// The writer lock is a robust pthread mutex on Linux, which belongs to the
-// OS thread that locked it. LockWriter therefore pins the calling goroutine
-// to its OS thread (runtime.LockOSThread; pins nest, so a caller that
-// pinned already is fine) until UnlockWriter, which must be called by the
-// same goroutine. On macOS the lock is a semaphore and the pin is not
-// needed, but it is kept for the same semantics everywhere. If the
-// goroutine exits holding the lock, its thread ends (Linux), and the next
-// locker anywhere recovers as from a dead process; but Go never ends the
-// main thread, so a goroutine that exits there holding the lock leaves it
-// held until the process exits.
+// The writer lock is a robust pthread mutex on Linux and a named mutex on
+// Windows, each of which belongs to the OS thread that locked it.
+// LockWriter therefore pins the calling goroutine to its OS thread
+// (runtime.LockOSThread; pins nest, so a caller that pinned already is
+// fine) until UnlockWriter, which must be called by the same goroutine. On
+// macOS the lock is a semaphore and the pin is not needed, but it is kept
+// for the same semantics everywhere. If the goroutine exits holding the
+// lock, its thread ends (Linux, Windows), and the next locker anywhere
+// recovers as from a dead process; but Go never ends the main thread, so a
+// goroutine that exits there holding the lock leaves it held until the
+// process exits.
 //
-// If the previous owner died holding the lock (Linux, EOWNERDEAD), this
+// If the previous owner died holding the lock (Linux, EOWNERDEAD; Windows,
+// WAIT_ABANDONED), this
 // repairs the state as mdb_mutex_failed does for the writer: it publishes
 // newestTxnid() (the txnid of the newest meta page) in mti_txnid, so that
 // the next writer cannot overwrite pages that meta refers to, clears the
@@ -257,8 +263,8 @@ func (r *Region) repairWriter(newestTxnid func() (uint64, error)) error {
 
 // UnlockWriter releases the writer lock (UNLOCK_MUTEX(env->me_wmutex)) and
 // the OS-thread pin of LockWriter. It must be called by the goroutine that
-// called LockWriter; on Linux another thread gets EPERM and the lock stays
-// held.
+// called LockWriter; on Linux another thread gets EPERM (on Windows
+// ERROR_NOT_OWNER) and the lock stays held.
 func (r *Region) UnlockWriter() error {
 	if err := r.locks.w.unlock(); err != nil {
 		return err
@@ -290,10 +296,23 @@ func (r *Region) setSlotPID(i int, pid int32) {
 	r.m.storeInt32(r.layout.ReaderOffset(i)+ReaderPID, pid)
 }
 
-func (r *Region) slotTID(i int) uint64 { return r.m.loadUint64(r.layout.ReaderOffset(i) + ReaderTID) }
+// slotTID is mr_tid of slot i: a pthread_t (8 bytes) on Unix, a DWORD on
+// Windows.
+func (r *Region) slotTID(i int) uint64 {
+	off := r.layout.ReaderOffset(i) + ReaderTID
+	if ReaderTIDSize == 4 {
+		return uint64(r.m.loadUint32(off))
+	}
+	return r.m.loadUint64(off)
+}
 
 func (r *Region) setSlotTID(i int, tid uint64) {
-	r.m.storeUint64(r.layout.ReaderOffset(i)+ReaderTID, tid)
+	off := r.layout.ReaderOffset(i) + ReaderTID
+	if ReaderTIDSize == 4 {
+		r.m.storeUint32(off, uint32(tid))
+		return
+	}
+	r.m.storeUint64(off, tid)
 }
 
 // SlotTxnID is mr_txnid of slot i.
@@ -346,8 +365,9 @@ func (r *Region) unlockReaders() {
 func (r *Region) AcquireSlot() (int, error) {
 	r.mu.Lock()
 	if !r.liveReader {
-		// mdb_reader_pid(Pidset): advertise that this process is alive.
-		if err := lockByte(r.fd, int64(r.pid), true, false); err != nil {
+		// mdb_reader_pid(Pidset): advertise that this process is alive
+		// (nothing on Windows).
+		if err := setPIDLock(r.fd, r.pid); err != nil {
 			r.mu.Unlock()
 			return 0, err
 		}
@@ -455,11 +475,9 @@ func (r *Region) ReaderList() []format.ReaderInfo {
 func (r *Region) ReaderCheck() (int, error) { return r.readerCheck0(false) }
 
 // pidAlive is mdb_reader_pid(Pidcheck): false only if the process is
-// certainly dead (nobody holds the lock on byte pid).
-func (r *Region) pidAlive(pid int32) bool {
-	held, err := probeLock(r.fd, int64(pid))
-	return held || err != nil
-}
+// certainly dead (nobody holds the lock on byte pid; on Windows, the
+// process does not exist any more).
+func (r *Region) pidAlive(pid int32) bool { return pidAlive(r.fd, pid) }
 
 // readerCheck0 is mdb_reader_check0; rlocked is set if the caller holds the
 // reader mutex already.
@@ -531,7 +549,8 @@ func (r *Region) Header() HeaderSnapshot {
 // Close is the lock-file part of mdb_env_close0: it clears the slots this
 // process still owns, closes the shared locks (on macOS also removing the
 // semaphores if no other process uses the environment), unmaps the table
-// and closes the file, which releases this process's record locks.
+// and closes the file, which releases this process's record locks (on
+// Windows they are released explicitly first, as C does).
 //
 // If a goroutine still holds the writer lock (LockWriter without
 // UnlockWriter), the mapping is left in place: on Linux the holding
@@ -555,12 +574,15 @@ func (r *Region) Close() error {
 	}
 	// With semaphores, the last user removes them: that is, we can (still)
 	// take the exclusive lock on byte 0.
-	lastUser := r.layout.Objects != PthreadMutexes && lockByte(r.fd, 0, true, false) == nil
+	lastUser := r.layout.Objects.removedByLastUser() && lockByte(r.fd, 0, true, false) == nil
 	r.locks.close(lastUser)
 	var err error
 	if r.writers.Load() == 0 {
 		err = r.m.unmap()
 	}
+	// Windows releases the lock on byte 0 now rather than "not necessarily
+	// at once" after the handle closes (mdb_env_close0).
+	unlockLockFile(r.fd)
 	if cerr := r.file.Close(); err == nil {
 		err = cerr
 	}

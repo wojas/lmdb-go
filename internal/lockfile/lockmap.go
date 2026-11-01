@@ -1,16 +1,17 @@
-// The lock-file mapping: rlmdb os/unix.rs LockMap; the mmap of
-// mdb_env_setup_locks and the munmap of mdb_env_close0 in mdb.c.
+// The lock-file mapping: rlmdb os/unix.rs and os/windows.rs LockMap; the
+// mmap (MapViewOfFile on Windows) of mdb_env_setup_locks and the munmap of
+// mdb_env_close0 in mdb.c. How the mapping is made and removed is in
+// lockmap_unix.go and lockmap_windows.go.
 
 package lockfile
 
 import (
 	"fmt"
 	"sync/atomic"
-	"syscall"
 	"unsafe"
 )
 
-// lockMap is a read/write MAP_SHARED mapping of the lock file (me_txns).
+// lockMap is a read/write shared mapping of the lock file (me_txns).
 //
 // Other processes read and write the same memory concurrently, so every
 // access to a shared field is an atomic operation on a naturally aligned
@@ -24,19 +25,6 @@ type lockMap struct {
 	mem []byte
 }
 
-// mapLockFile maps the first size bytes of the open file fd read/write and
-// shared.
-func mapLockFile(fd int, size int) (*lockMap, error) {
-	if size <= 0 {
-		return nil, syscall.EINVAL
-	}
-	mem, err := syscall.Mmap(fd, 0, size, syscall.PROT_READ|syscall.PROT_WRITE, syscall.MAP_SHARED)
-	if err != nil {
-		return nil, err
-	}
-	return &lockMap{mem: mem}, nil
-}
-
 func (m *lockMap) len() int { return len(m.mem) }
 
 // unmap removes the mapping; every pointer into it is invalid afterwards.
@@ -44,7 +32,7 @@ func (m *lockMap) unmap() error {
 	if m.mem == nil {
 		return nil
 	}
-	err := syscall.Munmap(m.mem)
+	err := unmapMem(m.mem)
 	m.mem = nil
 	return err
 }
@@ -56,8 +44,9 @@ func (m *lockMap) at(off, size, align int) unsafe.Pointer {
 		panic(fmt.Sprintf("lockfile: lock file access out of bounds or misaligned: %d+%d of %d", off, size, len(m.mem)))
 	}
 	// unsafe: &m.mem[off] is inside the live mapping (checked above). The
-	// mapping does not move, and mmap returns page-aligned memory, so the
-	// address has off's alignment.
+	// mapping does not move, and it starts on a page boundary (on Windows
+	// on the 64 KiB allocation granularity), so the address has off's
+	// alignment.
 	return unsafe.Pointer(&m.mem[off])
 }
 
