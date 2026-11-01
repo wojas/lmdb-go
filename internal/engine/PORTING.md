@@ -453,7 +453,7 @@ the file comments of `internal/lockfile/layout.go` (the per-BSD table),
 | `e4a5ad9` | FreeBSD, OpenBSD, NetBSD and DragonFly with C's lock primitives (#39) | ported: FreeBSD's robust mutexes (the cgo pair covers `linux \|\| freebsd`; `layout_freebsd.go`); named semaphores for 0.9 lock files on the other three (macOS's files shared: `sem.go`, `sem_cgo.go`, `-lrt` on NetBSD), NetBSD's 14-character names and 8-byte `dev_t` in the hashed struct (`semNamesV09`, `lockFileID`); the SysV set of 1.0 lock files (`SysVSemaphores`, `sysv.go`, `sysv_cgo.go`, `SysVKey` = rlmdb's `ftok_key`); the last user removes semaphores and the set (`removedByLastUser`); `MDB_FDATASYNC`, `MDB_DSYNC` and `madvise` per BSD; OpenBSD's `MDB_Invalidate` at rlmdb's three call sites (`Txn.invalidateMap`, `sys.DataMap.Invalidate`, widened to whole OS pages: #39); rlmdb's tests (layouts and lock formats of every platform, names, the SysV protocol on macOS, `ftok` against libc in `tests/lockfile`, `data_map_invalidate`); the C API link lines and the interop lock-line helper: not applicable |
 | `bfef7e6` | CI and docs for the BSDs | docs here (`PLAN.md` "The BSDs", `README.md`, `AGENTS.md`, `lmdb/DEVIATIONS.md`); no CI in this repository |
 | `12a6731` | the OpenBSD `msync` row is #39 | the comments cite #39 |
-| `1009bbd` | FreeBSD tested in rlmdb's CI | rlmdb's status; this port has not run on a BSD |
+| `1009bbd` | FreeBSD tested in rlmdb's CI | rlmdb's status; this port is tested on OpenBSD 7.9 arm64 (PLAN.md "The BSDs"), not on FreeBSD |
 
 Divergences from rlmdb on the BSDs (none changes a file):
 
@@ -488,7 +488,8 @@ Divergences from rlmdb on the BSDs (none changes a file):
 * The BSDs: built, vetted and cross-compiled (`go test -c`) for amd64
   and arm64 (DragonFly: amd64), with cgo against each BSD's headers too,
   their lock-file layouts checked against C compiled for them
-  (`scripts/bsd-cc-check.sh`); not run (PLAN.md "The BSDs").
+  (`scripts/bsd-cc-check.sh`); OpenBSD 7.9 arm64 tested, the others not
+  run (PLAN.md "The BSDs").
 * Big-endian: the root module and the tests module (C oracles built in
   the container) pass on s390x under QEMU user emulation
   (`LINUX_TEST_IMAGE=golang:1.25-trixie LINUX_TEST_PLATFORM=linux/s390x
