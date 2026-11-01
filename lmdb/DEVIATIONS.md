@@ -258,6 +258,8 @@ unchanged except:
   serialises its own transactions, which changes what those tests check;
   its handler runner deadlocks there by design); `TestNewEnv`,
   `TestEnv_Open` and `TestResize` skip without shared locking.
+  `TestResize` names its helper program with `.exe` on Windows (`exec`
+  refuses a file without an executable extension there).
 
 lmdb-go v2's tests for the format API (`sniff_test.go`, `version_test.go`,
 `preopen_test.go`) run with `Open` through `testFlags`, and
