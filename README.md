@@ -53,9 +53,10 @@ commands in `cmd/` and `exp/cmd/`. Read the API documentation with
   otherwise. For the same writes, the data file is byte-identical to C's.
 * **Sharing.** Go processes share environments with C LMDB 0.9 and 1.0 and
   with rlmdb: writers exclude each other, readers see each other in the
-  reader table, and on Linux and Windows a writer that dies holding the
-  lock is recovered from, as between C processes (by the same design on
-  FreeBSD, and with LMDB 1.0 lock files on the other BSDs).
+  reader table, and on Linux and Windows, and on OpenBSD with LMDB 1.0
+  lock files, a writer that dies holding the lock is recovered from, as
+  between C processes (by the same design on FreeBSD, and with LMDB 1.0
+  lock files on NetBSD and DragonFly).
 * **Platforms.** Linux (glibc and musl; arm64 and x86-64) and macOS.
   Windows x86-64 (after rlmdb's Windows port; tested on Windows 10,
   against C LMDB built with MinGW-w64; arm64 builds by the same rules,
@@ -63,10 +64,15 @@ commands in `cmd/` and `exp/cmd/`. Read the API documentation with
   OpenBSD, NetBSD and DragonFly (64-bit) are implemented after rlmdb's BSD
   support, with C's lock primitives and lock-file layouts there: they
   build, also with cgo against each BSD's headers
-  (`scripts/bsd-cc-check.sh`), and are untested. (rlmdb's own suites pass on FreeBSD in its CI;
-  this port has not run on any BSD yet. The parts macOS's kernel can run,
-  the SysV semaphore set of LMDB 1.0 lock files and NetBSD's semaphore
-  names, run in the lock-file tests on macOS.) 64-bit only: 32-bit builds
+  (`scripts/bsd-cc-check.sh`). OpenBSD is tested on arm64 (OpenBSD 7.9,
+  against C LMDB 0.9 and 1.0 built there); FreeBSD, NetBSD, DragonFly and
+  OpenBSD on amd64 are untested. On OpenBSD, C LMDB itself needs
+  upstream's fix ITS#10615, which LMDB 0.9.36 and 1.0.2 do not have:
+  without it, C reads stale pages after its own writes there (lmdb-go v1,
+  with C 0.9.35, fails on OpenBSD for that reason). (rlmdb's own suites
+  pass on FreeBSD in its CI. The parts macOS's kernel can run, the SysV
+  semaphore set of LMDB 1.0 lock files and NetBSD's semaphore names, run
+  in the lock-file tests on macOS.) 64-bit only: 32-bit builds
   stop with a compile error; 64-bit big-endian targets build, and s390x
   is tested under emulation (QEMU user mode), against C peers built for
   it.

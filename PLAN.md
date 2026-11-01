@@ -212,10 +212,30 @@ is Go: `MDB_FDATASYNC` (`fdatasync` on FreeBSD, `fsync` elsewhere),
 `MDB_DSYNC` (`O_SYNC` on DragonFly), and on OpenBSD, which has no unified
 buffer cache, `msync(MS_INVALIDATE)` of the map after each write to the
 data file (`sys.DataMap.Invalidate`, widened to whole OS pages: rlmdb
-ledger #39). The layouts are computed with C's formulas (rlmdb's numbers,
-not yet measured on a BSD) and tested on every host.
+ledger #39). The layouts are computed with C's formulas (rlmdb's numbers)
+and tested on every host.
 
-Status: builds and untested: nothing has run on a BSD. All four build,
+Status: OpenBSD 7.9 arm64 is tested (Go 1.26, the base system's clang):
+the root module with cgo and without it (`NoLock`; opening with a lock
+file fails with the error that names cgo), and the `tests` module (cgo)
+against C LMDB 0.9.36 and 1.0 built there with `tests/cmd/build-c-oracles`
+pass. That covers the lock-file interop with C peers of both formats
+(named semaphores for 0.9, the SysV set for 1.0, including a writer that
+dies holding the 1.0 writer lock, in both directions), the layouts
+against `layout_dump` and the probe compiled there, the write
+differential, copies and Go reading C's files. `-race` is not available
+on openbsd/arm64. On OpenBSD, the plain copy of a file whose last meta
+page write failed differs from C's `mdb_copy` in that meta page, which no
+reader of the copy uses: C copies its map, which still shows the page as
+it was before the failed commit, and this port, as rlmdb, reads the file
+(`tests/engine`, `TestCopyAfterFailedMetaSync`). C LMDB keeps its map
+coherent with its writes on OpenBSD only since upstream's ITS#10615
+(`MDB_Invalidate`, October 2026, in the vendored sources), which no
+release has (0.9.36 and 1.0.2 do not): lmdb-go v1.9.4 (C 0.9.35) reads
+stale pages there after its own writes (the benchmark's baseline fails
+with `MDB_NOTFOUND` and crashes in `mdb_put`), and such a C writer leaves
+the maps of every process sharing the file stale. The other BSDs, and
+OpenBSD on amd64, have not run. All four build,
 vet and compile their test binaries (`go test -c`) for amd64 and arm64
 (DragonFly: amd64 only, as Go), without cgo and with it:
 `scripts/bsd-cc-check.sh` compiles the root module (the cgo lock files),
@@ -263,6 +283,7 @@ built there (`tests/cmd/build-c-oracles`); the other BSDs likewise, with
   its `5773e0a`; ppc64 and mips64 are untested. Later big-endian work of
   rlmdb is ported here (the
   same way as any rlmdb change, see "Following rlmdb").
-* **BSDs: ported** (see "The BSDs"). Next: run them, a FreeBSD VM first.
+* **BSDs: ported** (see "The BSDs"); OpenBSD arm64 is tested. Next: run
+  the others, a FreeBSD VM first.
 * Cross-compiling cgo builds: `zig cc` as `CC` (bundled glibc, musl and
   macOS headers) is the suggested toolchain; document and test it.
