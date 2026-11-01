@@ -60,7 +60,8 @@ commands in `cmd/` and `exp/cmd/`. Read the API documentation with
   Windows port and builds, but has not run on Windows yet. FreeBSD,
   OpenBSD, NetBSD and DragonFly (64-bit) are implemented after rlmdb's BSD
   support, with C's lock primitives and lock-file layouts there: they
-  build and are untested. (rlmdb's own suites pass on FreeBSD in its CI;
+  build, also with cgo against each BSD's headers
+  (`scripts/bsd-cc-check.sh`), and are untested. (rlmdb's own suites pass on FreeBSD in its CI;
   this port has not run on any BSD yet. The parts macOS's kernel can run,
   the SysV semaphore set of LMDB 1.0 lock files and NetBSD's semaphore
   names, run in the lock-file tests on macOS.) 64-bit only: 32-bit builds

@@ -215,6 +215,12 @@ messages) until that is established.
   coordinator says the machine may be used. Without it, cross-check with
   `GOOS=windows GOARCH=amd64` and `arm64` builds, `go vet` and
   `go test -c`.
+* The BSDs: there is no BSD machine. `scripts/bsd-cc-check.sh` builds,
+  vets and compiles the test binaries of both modules with cgo for each
+  BSD (zig for FreeBSD, NetBSD and OpenBSD; a sysroot under `$HOME/sdk`
+  for DragonFly; see its header), with `RLMDB_DIR` also the C oracles,
+  and checks the lock-file layouts against C's. Run it when a change
+  touches the lock files, `internal/sys` or build constraints.
 * Environments for tests and benchmarks live on local file systems only:
   `$TMPDIR` / `t.TempDir()` on macOS, `/tmp` (tmpfs) in the container.
   Never on bind mounts.

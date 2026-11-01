@@ -218,10 +218,10 @@ differently from C is in `internal/engine/PORTING.md` and in rlmdb's
   no unified buffer cache, every write to the data file is followed by
   `msync(MS_INVALIDATE)` of the map, widened to whole OS pages where C's
   call fails unnoticed (rlmdb `KNOWN_C_BUGS.md` #39). Status: builds and
-  vets (`CGO_ENABLED=0`) for amd64 and arm64 (DragonFly: amd64); the
-  cgo lock files are compiled for macOS and Linux only, and nothing has
-  run on a BSD yet (rlmdb's suites run on FreeBSD in its CI, this port's
-  do not).
+  vets for amd64 and arm64 (DragonFly: amd64), with and without cgo (the
+  cgo builds against each BSD's headers: `scripts/bsd-cc-check.sh`), and
+  nothing has run on a BSD yet (rlmdb's suites run on FreeBSD in its CI,
+  this port's do not).
 * **64-bit only.** lmdb-go v1 built and ran on 32-bit platforms with C
   LMDB, whose 32-bit data files are a format of their own (the file
   depends on `sizeof(size_t)`), not shared with 64-bit processes. This
