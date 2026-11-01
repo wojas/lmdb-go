@@ -125,19 +125,24 @@ differently from C is in `internal/engine/PORTING.md` and in rlmdb's
   does not check the last one and writes past its cursor).
 * **Transactions that outlive `Env.Close`.** C requires every transaction
   to end before `mdb_env_close` (v1 then used freed C memory). Here `Close`
-  stops new transactions and `Renew` (`EINVAL`), but a read transaction
-  that outlives it keeps its snapshot readable and protected, and may
-  still be read, reset and aborted (the finalizer does that): the
-  environment stays open underneath, with the transaction's reader slot,
-  the process's liveness lock in the lock file (so other processes' reader
-  checks leave the slot alone), the files and the registry entry, until
-  the last such transaction (active or reset) has ended, and is torn down
-  then. Until that moment, opening the same path again in this process
-  fails with `EBUSY` with a lock file; a `NoLock` handle opened meanwhile
-  shares the closed one's reader table. `Commit` of a write transaction after `Close` aborts
-  it and returns `EINVAL`. `Close` waits for no commit or copy: a commit
-  in progress, and a copy that has taken its snapshot, finish; a copy that
-  has not fails with `EINVAL`.
+  stops new transactions and `Renew` (`EINVAL`), and a transaction that
+  outlives it can only end: every other method of the `Txn` and of its
+  cursors returns `EINVAL`, as for an ended transaction (`Reset` does
+  nothing, `ID` keeps its value), while `Abort`, `Commit` and the
+  finalizer end it. A read transaction keeps its snapshot protected until
+  it ends, so `RawRead` slices returned before `Close` keep their bytes
+  until then: the environment stays open underneath, with the
+  transaction's reader slot, the map, the process's liveness lock in the
+  lock file (so other processes' reader checks leave the slot alone), the
+  files and the registry entry, until the last such transaction (active
+  or reset) has ended, and is torn down then. Until that moment, opening
+  the same path again in this process fails with `EBUSY` with a lock
+  file; a `NoLock` handle opened meanwhile shares the closed one's reader
+  table. `Commit` of a write transaction after `Close` aborts it and
+  returns `EINVAL`. An operation that began before `Close` finishes on the
+  snapshot. `Close` waits for no commit or copy: a commit in progress, and
+  a copy that has taken its snapshot, finish; a copy that has not fails
+  with `EINVAL`.
 * **`SetMapSize` on an open environment** may run while read transactions
   are active (they keep the map they began with); `EINVAL` while this
   process has a write transaction, as in C.

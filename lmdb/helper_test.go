@@ -33,7 +33,10 @@ func TestMain(m *testing.M) {
 //   - hold-env prints READY, waits for a line on stdin, then writes a key
 //     and prints RESULT and the Update's error;
 //   - hold-writer prints READY inside an Update, and waits for stdin to
-//     close (the test kills it there, as a crash would).
+//     close (the test kills it there, as a crash would);
+//   - overwrite prints READY, waits for a line on stdin, then commits
+//     overwriteRounds Updates, each overwriting the main DB's key "key"
+//     with overwriteValue(i), and prints RESULT and the first error.
 func runHelper(mode, path string) int {
 	env, err := NewEnv()
 	if err == nil {
@@ -57,6 +60,14 @@ func runHelper(mode, path string) int {
 			_, err := io.Copy(io.Discard, stdin)
 			return err
 		})
+		fmt.Println("RESULT", err)
+	case "overwrite":
+		fmt.Println("READY")
+		stdin.ReadString('\n')
+		var err error
+		for i := 0; i < overwriteRounds && err == nil; i++ {
+			err = env.Update(func(txn *Txn) error { return txn.Put(1, []byte("key"), overwriteValue(i), 0) })
+		}
 		fmt.Println("RESULT", err)
 	default:
 		return 2

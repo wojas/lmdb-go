@@ -35,6 +35,10 @@ const (
 // WARNING: A writable Txn is not threadsafe and may only be used in the
 // goroutine that created it.
 //
+// After Env.Close a Txn can only end: Abort and Commit (which aborts a write
+// transaction and returns EINVAL) end it, every other method returns EINVAL
+// (Reset does nothing), and so do the methods of its cursors.
+//
 // See MDB_txn.
 type Txn struct {
 	// If RawRead is true []byte values retrieved from Get() calls on the Txn
@@ -86,6 +90,10 @@ type Txn struct {
 // write transaction.
 func beginTxn(env *Env, parent *Txn, flags uint) (*Txn, error) {
 	e := env.eng.Load()
+	if parent != nil && (e == nil || parent.ended()) {
+		// An ended parent, or one that outlived Env.Close.
+		return nil, errInvalid("mdb_txn_begin")
+	}
 	if e == nil {
 		// The environment exists only after a successful Open.
 		return nil, errNotOpen
@@ -111,8 +119,8 @@ func beginTxn(env *Env, parent *Txn, flags uint) (*Txn, error) {
 			txn.tok = txn._txn.Owner()
 			return txn, nil
 		}
-	} else if ptxn = parent._txn; parent.ended() {
-		return nil, errInvalid("mdb_txn_begin")
+	} else {
+		ptxn = parent._txn
 	}
 	_txn, err := e.BeginTxn(ptxn, uint32(flags))
 	if err != nil {
@@ -298,7 +306,7 @@ func (txn *Txn) Reset() {
 }
 
 func (txn *Txn) reset() {
-	if !txn.ended() {
+	if !txn.invalid() {
 		txn._txn.Reset()
 		txn.gen++
 	}
@@ -317,7 +325,7 @@ func (txn *Txn) Renew() error {
 }
 
 func (txn *Txn) renew() error {
-	if txn.ended() {
+	if txn.invalid() {
 		return errInvalid("mdb_txn_renew")
 	}
 	err := txn._txn.Renew()
@@ -359,7 +367,7 @@ func (txn *Txn) CreateDBI(name string) (DBI, error) {
 
 // Flags returns the database flags for handle dbi.
 func (txn *Txn) Flags(dbi DBI) (uint, error) {
-	if txn.ended() {
+	if txn.invalid() {
 		return 0, errInvalid("mdb_dbi_flags")
 	}
 	cflags, err := txn._txn.DBIFlags(engine.DBI(dbi))
@@ -379,7 +387,7 @@ func (txn *Txn) OpenRoot(flags uint) (DBI, error) {
 // applications are expected to handle any error encountered opening a
 // database.
 func (txn *Txn) openDBI(cname []byte, flags uint) (DBI, error) {
-	if txn.ended() {
+	if txn.invalid() {
 		return 0, errInvalid("mdb_dbi_open")
 	}
 	dbi, err := txn._txn.OpenDBI(cname, uint32(flags))
@@ -393,7 +401,7 @@ func (txn *Txn) openDBI(cname []byte, flags uint) (DBI, error) {
 //
 // See mdb_stat.
 func (txn *Txn) Stat(dbi DBI) (*Stat, error) {
-	if txn.ended() {
+	if txn.invalid() {
 		return nil, errInvalid("mdb_stat")
 	}
 	_stat, err := txn._txn.Stat(engine.DBI(dbi))
@@ -416,7 +424,7 @@ func (txn *Txn) Stat(dbi DBI) (*Stat, error) {
 //
 // See mdb_drop.
 func (txn *Txn) Drop(dbi DBI, del bool) error {
-	if txn.ended() {
+	if txn.invalid() {
 		return errInvalid("mdb_drop")
 	}
 	return operr("mdb_drop", txn._txn.Drop(engine.DBI(dbi), del))
@@ -466,7 +474,7 @@ func (txn *Txn) bytes(val []byte) []byte {
 //
 // See mdb_get.
 func (txn *Txn) Get(dbi DBI, key []byte) ([]byte, error) {
-	if txn.ended() {
+	if txn.invalid() {
 		return nil, errInvalid("mdb_get")
 	}
 	kdata, kn := valBytes(key)
@@ -488,7 +496,7 @@ func (txn *Txn) putNilKey(dbi DBI, flags uint) error {
 //
 // See mdb_put.
 func (txn *Txn) Put(dbi DBI, key []byte, val []byte, flags uint) error {
-	if txn.ended() {
+	if txn.invalid() {
 		return errInvalid("mdb_put")
 	}
 	kn := len(key)
@@ -508,7 +516,7 @@ func (txn *Txn) Put(dbi DBI, key []byte, val []byte, flags uint) error {
 // avoiding a memcopy.  The returned byte slice is only valid in txn's thread,
 // before it has terminated.
 func (txn *Txn) PutReserve(dbi DBI, key []byte, n int, flags uint) ([]byte, error) {
-	if txn.ended() {
+	if txn.invalid() {
 		return nil, errInvalid("mdb_put")
 	}
 	if len(key) == 0 {
@@ -532,7 +540,7 @@ func (txn *Txn) PutReserve(dbi DBI, key []byte, n int, flags uint) ([]byte, erro
 //
 // See mdb_del.
 func (txn *Txn) Del(dbi DBI, key, val []byte) error {
-	if txn.ended() {
+	if txn.invalid() {
 		return errInvalid("mdb_del")
 	}
 	kdata, kn := valBytes(key)

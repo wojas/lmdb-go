@@ -202,6 +202,18 @@ func (txn *Txn) ended() bool {
 	return t == nil || t.Owner() != txn.tok
 }
 
+// invalid reports that txn cannot run an operation: it ended, or its
+// environment was closed.  A transaction that outlives Env.Close can only
+// end (Abort, Commit, its finalizer): the engine keeps its map and reader
+// slot until then, so that RawRead slices returned before Close stay
+// valid, but nothing more is read (DEVIATIONS.md).  The check costs one
+// atomic load of the handle's eng, which Close clears before it closes
+// the engine; an operation that passed it before Close finishes safely,
+// on the snapshot the transaction keeps.
+func (txn *Txn) invalid() bool {
+	return txn.ended() || txn.env.eng.Load() == nil
+}
+
 // endChildren, at the end of txn, ends the handles of its active nested
 // transaction and of theirs: the engine ended those with txn, as C's
 // mdb_txn_end does, and reuses their state for later children.  They fail
@@ -219,12 +231,12 @@ func (txn *Txn) endChildren() {
 }
 
 // ready checks that c can run the operation op (a C function name for
-// errors): it is open and its transaction has not ended.  If the
-// transaction was reset and renewed since c was positioned, c starts over
-// unpositioned in the new snapshot (rlmdb's C API; C would keep pointers
-// into pages of the old snapshot).
+// errors): it is open and its transaction can run operations (see
+// Txn.invalid).  If the transaction was reset and renewed since c was
+// positioned, c starts over unpositioned in the new snapshot (rlmdb's C
+// API; C would keep pointers into pages of the old snapshot).
 func (c *Cursor) ready(op string) error {
-	if c._c == nil || c.txn.ended() {
+	if c._c == nil || c.txn.invalid() {
 		return errInvalid(op)
 	}
 	if c.gen != c.txn.gen {
