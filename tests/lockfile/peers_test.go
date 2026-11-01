@@ -84,7 +84,7 @@ func run(t *testing.T, bin string, args ...string) (string, int) {
 	if code != 0 {
 		t.Logf("%s %v: exit %d: %s", filepath.Base(bin), args, code, strings.TrimSpace(errb.String()))
 	}
-	return out.String() + errb.String(), code
+	return coracle.Text(out.String() + errb.String()), code
 }
 
 // mustRun runs a C program that must succeed.
