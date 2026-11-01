@@ -312,7 +312,26 @@ func (t *Txn) setSnapshot(txnid uint64, meta *format.Meta) error {
 	if t.env.fatal.Load() {
 		return format.Panic
 	}
-	if t.maxPgno() < t.nextPgno {
+	maxPgno := t.maxPgno()
+	if maxPgno < t.nextPgno {
+		// A map shorter than the map size covers the file as it was when it
+		// was made (a read-only environment on Windows, see sys.MapData); a
+		// map of the file as it is now holds every page of the snapshot,
+		// which were written before it was published. The file may still
+		// end before nextPgno (pages allocated and freed again were never
+		// written; the snapshot does not use them), so the limit is then
+		// the map size, C's me_maxpg. (rlmdb TxnCore::renew.)
+		m, ok, err := t.env.renewShortMap(t.dmap)
+		if err != nil {
+			return err
+		}
+		if ok {
+			t.dmap.Release()
+			t.dmap = m
+			maxPgno = uint64(t.env.mapSize.Load()) / uint64(t.pageSize)
+		}
+	}
+	if maxPgno < t.nextPgno {
 		return format.MapResized
 	}
 	return nil

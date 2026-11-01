@@ -1,27 +1,30 @@
 // Package sys is the operating-system layer of the engine: the read-only
 // memory map of the data file, positional I/O, syncing and platform
-// queries. It is the Go form of rlmdb's os/unix.rs and os/mod.rs without
-// the lock file (the shared mutexes and the lock-file map live in
-// internal/lockfile). C counterparts: mdb_env_map, MDB_FDATASYNC,
-// GET_PAGESIZE, the pwrite calls of mdb_page_flush and mdb_env_write_meta.
+// queries. It is the Go form of rlmdb's os/unix.rs, os/windows.rs and
+// os/mod.rs without the lock file (the shared mutexes and the lock-file
+// map live in internal/lockfile). C counterparts: mdb_env_map,
+// MDB_FDATASYNC, GET_PAGESIZE, mdb_fopen, the pwrite calls of
+// mdb_page_flush and mdb_env_write_meta.
 //
-// The package needs no unsafe: syscall.Mmap returns the mapping as a
-// []byte, and everything else is ordinary system calls.
+// Everything the engine needs is behind the same functions on every
+// platform; the files ending in _unix.go and _windows.go make the system
+// calls. On Unix the package needs no unsafe: syscall.Mmap returns the
+// mapping as a []byte. On Windows the map is made with the Win32 and NT
+// calls C uses there (datamap_windows.go, whose comment lists every
+// Windows decision), and the view becomes a []byte with unsafe.Slice.
 package sys
 
 import (
-	"os"
 	"sync/atomic"
-	"syscall"
 )
 
-// DataMap is a read-only, MAP_SHARED memory map of the data file
-// (me_map).
+// DataMap is a read-only, shared memory map of the data file (me_map).
 //
 // The map may be longer than the file (the map size is the maximum
 // database size); touching a page beyond the end of the file would raise
-// SIGBUS, so Slice also checks against the file size, re-reading it (one
-// fstat) only when an access goes past the last size seen.
+// SIGBUS (an access violation on Windows), so Slice also checks against
+// the file size, re-reading it only when an access goes past the last size
+// seen.
 //
 // Why handing out slices of this map is sound: other processes write the
 // file while we read it. LMDB's MVCC invariant, which C relies on just the
@@ -41,51 +44,27 @@ import (
 // mapping is removed when the last reference goes. That keeps slices of
 // live transactions valid when Env.SetMapSize installs a new map (rlmdb
 // keeps old maps alive with an Arc for the same reason).
+//
+// On Unix the map is always as long as the map size asked for. On Windows
+// a map made through a read-only handle covers the file as it is (C maps
+// "whatever exists" for MDB_RDONLY), so Len may be smaller; the engine maps
+// the file again when a snapshot needs more (Env.renewShortMap).
 type DataMap struct {
 	data    []byte
 	metaEnd int
-	fd      int
-	// knownSize is the last known size of the data file.
+	// knownSize is the last known size of the data file (on Windows, with
+	// a reserved view, also the size the view is known to show).
 	knownSize atomic.Int64
 	refs      atomic.Int64
 	// onFree runs after the mapping was removed (SetOnFree).
 	onFree func()
+	// osMap holds what the platform needs to refresh the size and to
+	// remove the mapping (datamap_unix.go, datamap_windows.go).
+	osMap
 }
 
-// MapReadOnly maps size bytes of f read-only and shared. random applies
-// madvise(MADV_RANDOM) where available (MDB_NORDAHEAD). metaEnd is the end
-// of the meta pages, which Slice refuses. The map keeps a duplicate of f's
-// descriptor to refresh the file size, closed with the mapping. It starts
-// with one reference, the caller's.
-func MapReadOnly(f *os.File, size int, random bool, metaEnd int) (*DataMap, error) {
-	if size <= 0 {
-		return nil, syscall.EINVAL
-	}
-	fd, err := dupCloexec(int(f.Fd()))
-	if err != nil {
-		return nil, err
-	}
-	data, err := syscall.Mmap(fd, 0, size, syscall.PROT_READ, syscall.MAP_SHARED)
-	if err != nil {
-		syscall.Close(fd)
-		return nil, err
-	}
-	if random {
-		adviseRandom(data)
-	}
-	m := &DataMap{data: data, metaEnd: metaEnd, fd: fd}
-	var st syscall.Stat_t
-	if err := syscall.Fstat(fd, &st); err != nil {
-		_ = syscall.Munmap(data)
-		syscall.Close(fd)
-		return nil, err
-	}
-	m.knownSize.Store(st.Size)
-	m.refs.Store(1)
-	return m, nil
-}
-
-// Len is the length of the mapping (me_mapsize).
+// Len is the length of the mapping (me_mapsize, or on Windows through a
+// read-only handle the file's size when it was mapped).
 func (m *DataMap) Len() int { return len(m.data) }
 
 // Slice returns n bytes at off, or ok false if the range is outside the
@@ -102,18 +81,20 @@ func (m *DataMap) Slice(off, n int) ([]byte, bool) {
 	return m.data[off:end:end], true
 }
 
+// refreshSize re-reads the size the map can show (the file's, see
+// viewSize) and reports whether it reaches needed.
 func (m *DataMap) refreshSize(needed int) bool {
-	var st syscall.Stat_t
-	if err := syscall.Fstat(m.fd, &st); err != nil {
+	size, err := m.viewSize()
+	if err != nil {
 		return false
 	}
 	for {
 		old := m.knownSize.Load()
-		if st.Size <= old || m.knownSize.CompareAndSwap(old, st.Size) {
+		if size <= old || m.knownSize.CompareAndSwap(old, size) {
 			break
 		}
 	}
-	return st.Size >= int64(needed)
+	return size >= int64(needed)
 }
 
 // ReadMeta copies len(out) bytes at off, for data other processes may be
@@ -154,27 +135,10 @@ func (m *DataMap) SetOnFree(f func()) { m.onFree = f }
 // Release drops a reference; the last one removes the mapping.
 func (m *DataMap) Release() {
 	if m.refs.Add(-1) == 0 {
-		_ = syscall.Munmap(m.data)
+		m.unmap()
 		m.data = nil
-		syscall.Close(m.fd)
 		if m.onFree != nil {
 			m.onFree()
 		}
 	}
-}
-
-// OSPageSize is the OS memory page size (4096 on x86-64 Linux, 16384 on
-// Apple Silicon macOS).
-func OSPageSize() int { return os.Getpagesize() }
-
-// dupCloexec duplicates fd with the close-on-exec flag set.
-func dupCloexec(fd int) (int, error) {
-	syscall.ForkLock.RLock()
-	defer syscall.ForkLock.RUnlock()
-	nfd, err := syscall.Dup(fd)
-	if err != nil {
-		return -1, err
-	}
-	syscall.CloseOnExec(nfd)
-	return nfd, nil
 }

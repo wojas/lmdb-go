@@ -263,6 +263,13 @@ func operr(op string, err error) error {
 	if errors.Is(err, errNoSharedLocks) {
 		return ErrNoSharedLocking
 	}
+	// A system error the os package wrapped: its errno, as above. (On
+	// Windows operrno would take a system error code such as
+	// ERROR_ACCESS_DENIED, 5, for the C runtime's errno of that number.)
+	var se syscall.Errno
+	if errors.As(err, &se) {
+		return &OpError{Op: op, Errno: se}
+	}
 	return operrno(op, format.Code(err))
 }
 

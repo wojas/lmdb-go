@@ -17,6 +17,11 @@ var (
 	glibcAarch64 = platform{mutexSize: 48, mutexAlign: 8, pidSize: 4, pthreadSize: 8}
 	// glibc x86-64 and musl (both architectures) have a 40-byte mutex.
 	mutex40 = platform{mutexSize: 40, mutexAlign: 8, pidSize: 4, pthreadSize: 8}
+	// Windows x64 (MSVC and MinGW-w64): named mutexes, int pid, HANDLE
+	// pthread_t, no pid locks.
+	win64 = platform{windowsMutexes: true, hashAlign: 8, pidSize: 4, pthreadSize: 8}
+
+	allPlatforms = []platform{macOS, glibcAarch64, mutex40, win64}
 )
 
 // want is one column of the table in layout.go.
@@ -39,7 +44,8 @@ func checkLayout(t *testing.T, name string, l *Layout, w want) {
 
 // TestLayoutsPerPlatform checks the computed layouts against the numbers
 // C's layout_dump and layout_dump10 print on each platform (rlmdb's
-// DESIGN.md table; musl's are glibc x86-64's, measured in Alpine).
+// DESIGN.md table; musl's are glibc x86-64's, measured in Alpine;
+// Windows's are rlmdb's windows_layout test, measured there with MinGW-w64).
 func TestLayoutsPerPlatform(t *testing.T) {
 	v1, v2 := macOS.layouts()
 	checkLayout(t, "macOS v1", v1, want{0x10001, SemaphoreNames, 40, 48, 8, 32, 64, 56, 64, 128})
@@ -50,6 +56,11 @@ func TestLayoutsPerPlatform(t *testing.T) {
 	v1, v2 = mutex40.layouts()
 	checkLayout(t, "40-byte mutex v1", v1, want{0x10001, PthreadMutexes, 48, 56, 8, 40, 64, 64, 64, 128})
 	checkLayout(t, "40-byte mutex v2", v2, want{0x2c2f6002, PthreadMutexes, 8, 16, 24, 40, 64, 64, 64, 128})
+	// Windows: version 1 laid out as on macOS (32-byte names), with
+	// MDB_PIDLOCK 0 in mti_format; version 2 the hash at 24, no mt2.
+	v1, v2 = win64.layouts()
+	checkLayout(t, "Windows v1", v1, want{0x1, MutexNames, 40, 48, 8, 32, 64, 56, 64, 128})
+	checkLayout(t, "Windows v2", v2, want{0x08138002, MutexHash, 8, 16, 24, 8, -1, 32, 64, 64})
 
 	if v1, v2 := (platform{}).layouts(); v1 != nil || v2 != nil {
 		t.Error("a platform with an unknown mutex size has layouts")
@@ -79,6 +90,20 @@ func TestHostLayout(t *testing.T) {
 			t.Fatalf("host layouts %+v %+v, want %+v %+v", LockV09, LockV10, v1, v2)
 		}
 		t.Logf("sizeof(pthread_mutex_t) = %d: readers at %d (v1), %d (v2)", mutexSize, v1.Readers, v2.Readers)
+	case "windows":
+		v1, v2 := win64.layouts()
+		if *LockV09 != *v1 || *LockV10 != *v2 {
+			t.Fatalf("host layouts %+v %+v, want %+v %+v", LockV09, LockV10, v1, v2)
+		}
+	}
+	// mr_tid: a pthread_t after the pid and its padding on Unix, a DWORD
+	// right after the pid on Windows.
+	tid, size := 16, 8
+	if runtime.GOOS == "windows" {
+		tid, size = 12, 4
+	}
+	if ReaderTID != tid || ReaderTIDSize != size {
+		t.Errorf("mr_tid at %d, %d bytes; want %d, %d", ReaderTID, ReaderTIDSize, tid, size)
 	}
 }
 
@@ -86,7 +111,7 @@ func TestLayoutFor(t *testing.T) {
 	if LayoutFor(format.V09) != LockV09 || LayoutFor(format.V10) != LockV10 || LayoutFor(0) != nil {
 		t.Fatal("LayoutFor picks the wrong layout")
 	}
-	for _, p := range []platform{macOS, glibcAarch64, mutex40} {
+	for _, p := range allPlatforms {
 		v1, v2 := p.layouts()
 		if v1.Format != format.V09 || v2.Format != format.V10 || v1.Version != 1 || v2.Version != 2 {
 			t.Fatalf("format or version wrong: %+v %+v", v1, v2)
@@ -99,7 +124,7 @@ func TestLayoutFor(t *testing.T) {
 
 // TestReaderSlotLayout is rlmdb's reader_slot_layout, for every platform.
 func TestReaderSlotLayout(t *testing.T) {
-	for _, p := range []platform{macOS, glibcAarch64, mutex40} {
+	for _, p := range allPlatforms {
 		v1, v2 := p.layouts()
 		for _, l := range []*Layout{v1, v2} {
 			if l.Readers%64 != 0 || l.HeaderSize%64 != 0 {
@@ -141,6 +166,15 @@ func TestLockDesc(t *testing.T) {
 	if lt := lockTypePosixMutex(40, 8); lt != 63 || lockFormatV2(in(64, lt)) != 0x2c2f6002 {
 		t.Error("40-byte mutex lock description")
 	}
+	// Windows x64: MDB_LOCK_TYPE 1, MDB_txbody 32, no pid locks.
+	win := in(32, lockTypeWin32(8))
+	win.pidlock = false
+	if lockTypeWin32(8) != 1 || lockDesc(win) != 33080 || lockFormatV2(win) != 0x08138002 {
+		t.Error("Windows lock description")
+	}
+	if lockFormatV1(true) != 0x10001 || lockFormatV1(false) != 0x1 {
+		t.Error("MDB_LOCK_FORMAT of version 1")
+	}
 	// The CACHELINE term is 0 only for 64-byte cache lines.
 	other := in(32, 5)
 	other.cacheline = 128
@@ -149,9 +183,29 @@ func TestLockDesc(t *testing.T) {
 	}
 }
 
-// TestSnapshots is rlmdb's snapshots test.
+// TestObjectKinds is rlmdb's removed_by_last_user test with the stores_*
+// predicates: every kind is named explicitly.
+func TestObjectKinds(t *testing.T) {
+	for _, c := range []struct {
+		o                    Objects
+		removed, names, hash bool
+	}{
+		{PthreadMutexes, false, false, false},
+		{SemaphoreNames, true, true, false},
+		{SemaphoreHash, true, false, true},
+		{MutexNames, false, true, false},
+		{MutexHash, false, false, true},
+	} {
+		if c.o.removedByLastUser() != c.removed || c.o.storesNames() != c.names || c.o.storesHash() != c.hash {
+			t.Errorf("objects %d: removed %v, names %v, hash %v", c.o, c.o.removedByLastUser(), c.o.storesNames(), c.o.storesHash())
+		}
+	}
+}
+
+// TestSnapshots is rlmdb's snapshots test. mr_tid is decoded as this
+// host's C would store it.
 func TestSnapshots(t *testing.T) {
-	for _, p := range []platform{macOS, glibcAarch64, mutex40} {
+	for _, p := range allPlatforms {
 		v1, v2 := p.layouts()
 		for _, l := range []*Layout{v1, v2} {
 			buf := make([]byte, l.FileSize(2))
@@ -160,25 +214,30 @@ func TestSnapshots(t *testing.T) {
 			ne.PutUint32(buf[4:], l.LockFormat)
 			ne.PutUint64(buf[l.TxnID:], 42)
 			ne.PutUint32(buf[l.NumReaders:], 2)
-			if l.Objects == SemaphoreHash {
+			if l.Objects.storesHash() {
 				ne.PutUint64(buf[l.RLock:], 0x1234)
 			}
-			if l.Objects == SemaphoreNames {
+			if l.Objects.storesNames() {
 				copy(buf[l.RLock:], "/MDB")
 			}
 			off := l.ReaderOffset(1)
 			ne.PutUint64(buf[off:], 7)
 			ne.PutUint32(buf[off+8:], 99)
-			ne.PutUint64(buf[off+16:], 5)
+			var tid [8]byte
+			ne.PutUint64(tid[:], 5)
+			if ReaderTIDSize == 4 {
+				ne.PutUint32(tid[:], 5)
+			}
+			copy(buf[off+ReaderTID:], tid[:ReaderTIDSize])
 
 			h, ok := ReadHeader(buf, l)
 			if !ok || h.Magic != Magic || h.Format != l.LockFormat || h.TxnID != 42 || h.NumReaders != 2 {
 				t.Fatalf("header %+v", h)
 			}
-			if (l.Objects == SemaphoreHash) != (h.MutexID == 0x1234) {
+			if l.Objects.storesHash() != (h.MutexID == 0x1234) {
 				t.Errorf("mutex id %#x", h.MutexID)
 			}
-			if (l.Objects == SemaphoreNames) != (string(h.RName) == "/MDB") || len(h.WName) != 0 {
+			if l.Objects.storesNames() != (string(h.RName) == "/MDB") || len(h.WName) != 0 {
 				t.Errorf("names %q %q", h.RName, h.WName)
 			}
 			r, ok := ReadReader(buf, l, 1)

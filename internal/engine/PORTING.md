@@ -15,7 +15,7 @@ lists what happened to each commit since.
 | Go | rlmdb | status |
 |---|---|---|
 | `internal/format/*` | `format/*` (minus lockfile), consts, flags, error, cmp, idl | done, unit tests ported |
-| `internal/sys/*` | `os/unix.rs`, `os/mod.rs` minus shared locks | done (data map, pread/pwrite, fdatasync) |
+| `internal/sys/*` | `os/unix.rs`, `os/windows.rs`, `os/mod.rs` minus shared locks and the lock file | done (data map, pread/pwrite, fdatasync, file opens; `*_unix.go`, `*_windows.go`) |
 | `lockregion.go` | `core/reader.rs` (interface only) | done |
 | `memlock.go` | `core/reader.rs` `LocalReaders`, `core/registry.rs` `LocalShared` | in-memory region: NoLock reader table, committed txnid and writer lock; test stand-in for the lock file |
 | `registry.go` | `core/registry.rs` | done (claims keyed by the data file, see the ledger) |
@@ -345,6 +345,39 @@ restructured history), oldest first:
 Also from rlmdb's decisions, not yet a commit on its main: #38 (see the
 ledger).
 
+## Windows: rlmdb's Windows commits (up to `3df6995`)
+
+The Windows port of rlmdb, ported on branch `stage7-windows`; the other
+commits of `e48ebe0..3df6995` are the engine sync's. Every Windows
+decision is in the file comments of `internal/sys/datamap_windows.go`,
+`io_windows.go`, `internal/lockfile/filelock_windows.go`,
+`mutex_windows.go` and `locks_windows.go` (rlmdb keeps them in one module
+comment, `os/windows.rs`).
+
+| rlmdb | what | here |
+|---|---|---|
+| `0bf0553` | the OS layer on 64-bit Windows | ported without cgo (`golang.org/x/sys/windows`, ntdll for `NtCreateSection`, `NtMapViewOfSection`, `NtExtendSection`): `sys.MapData` (0.9 extended to the map size and mapped whole; 1.0 reserved section, `DataMap.CommitPages` where pages are taken from the end of the map, section extended to the file size), `Env.renewShortMap` for read-only maps of the file as it was, the files with C's sharing, `FILE_FLAG_WRITE_THROUGH` meta handle, copy target, file identity, `IsMissing`, registry key of an unresolvable directory; the lock file (`MutexNames`, `MutexHash`, `LockFileEx`, named mutexes, abandoned mutexes as dead owners, no pid locks, `OpenProcess` liveness with `SYNCHRONIZE`, `mr_tid` a `DWORD` at 12, `mti_format` `0x1` and `0x08138002`); rlmdb's Windows unit tests (`*_windows_test.go`) and the Windows layout, computed on every host |
+| `24571fa` | rlmdb-capi, tools, tests and interop on Windows | the parts that apply: the C oracles built with MinGW-w64 as interop/build.rs builds them (`tests/cmd/build-c-oracles`), `.exe` names (`coracle.Exe`), `scripts/windows-test.sh`; test expectations that differ on Windows (lock byte not writable through another handle, owner-death tests); rlmdb-capi and rlmdb-tools: not applicable |
+| `bf7d115` | CI workflow and docs | docs here (`PLAN.md`, `README.md`, `AGENTS.md`, `lmdb/DEVIATIONS.md`); no CI in this repository |
+| `a933f11` | refer to `KNOWN_C_BUGS.md` #42 and #43 | the comments cite them |
+| `b3ed51e` | interop: argv[0] copies; CI temp directory on the local disk | not applicable (the harness is rlmdb's); run the tests with `TMP` on a local disk, as there |
+| `5d8bc38` | a compacting copy stops when it outgrows its source (#44) | not Windows-specific: the engine sync's |
+| `3df6995` | interop holds outlast slow scenarios; stale reader and #42 on Windows | rlmdb's interop harness (the Go peer runs in it from rlmdb's `t3/interop-gopeer-v2`) |
+| `63b591c`, `d27e68f`, `03fccb3`, `86563af`, `7dcf511`, `ea1bbdb` | MSVC builds of the C test programs, the C library's DLL, rlmdb-tools' `atoi` per C runtime | not applicable (no MSVC build here: the oracles are built with MinGW-w64) |
+
+Divergences from rlmdb on Windows (none changes a file):
+
+* The copy target is created without `FILE_FLAG_NO_BUFFERING` (rlmdb sets
+  it for pages of at least the OS page size, C always), as the Unix copy
+  target is not opened with `O_DIRECT`: it changes no byte of the copy.
+* Errors are Go's: the system's error codes as `syscall.Errno` (C:
+  `GetLastError()`), and LMDB's own errno values as Go's `syscall`
+  constants (`syscall.EINVAL` ...; rlmdb returns the C runtime's numbers),
+  which is what lmdb-go v1 returned on Windows (`lmdb/DEVIATIONS.md`).
+  `format.Strerror` keeps "Invalid error code" for unknown negative codes
+  (rlmdb on Windows: the system's empty message).
+* The OS page size is `GetSystemInfo`'s, cached once per process.
+
 ## Open items
 
 * `MemLock` doubles as the test stand-in for the lock file; the real
@@ -355,3 +388,5 @@ ledger).
 * The read-only-file-system path (OpenLock returning nil) is exercised
   only through NoLock.
 * Performance: see `tests/bench/RESULTS.md` (stage 3).
+* Windows: built, vetted and cross-compiled (`go test -c`) for amd64 and
+  arm64, not run yet; `scripts/windows-test.sh` is ready for the first run.

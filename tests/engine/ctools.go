@@ -20,8 +20,9 @@ import (
 )
 
 // cBin is the directory of the C oracle binaries: $RLMDB_BIN (for example
-// the output of scripts/build-c-writeops.sh), or rlmdb's interop build
-// under $RLMDB_DIR (target/release/build/rlmdb-interop-*/out/bin).
+// the output of scripts/build-c-writeops.sh or cmd/build-c-oracles), or
+// rlmdb's interop build under $RLMDB_DIR
+// (target/release/build/rlmdb-interop-*/out/bin).
 func cBin() string {
 	if d := os.Getenv("RLMDB_BIN"); d != "" {
 		return d
@@ -36,7 +37,7 @@ func tool(t testing.TB, name string) string {
 	if d == "" {
 		t.Skip("C oracle binaries not found: set RLMDB_BIN (rlmdb interop build's out/bin) or RLMDB_DIR")
 	}
-	p := filepath.Join(d, name)
+	p := filepath.Join(d, coracle.Exe(name))
 	if _, err := os.Stat(p); err != nil {
 		t.Skipf("C oracle %s not found in %s", name, d)
 	}

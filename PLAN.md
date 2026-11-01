@@ -164,17 +164,34 @@ first and are then ported here. To keep that cheap:
   `NoLock` reader tracking) are reported to the rlmdb side, so the two
   stay in step.
 
-## Windows (planned)
+## Windows
 
-The owner will add Windows support once a test machine is available,
-first to rlmdb and then ported here (see "Following rlmdb"). Until then: keep every OS
-specific behind build constraints (`internal/sys`, `internal/lockfile`)
-so a `_windows.go` file pair can be added without touching the engine,
-keep lmdb-go's Windows files (e.g. `lmdb/error_windows.go`) and their
-declarations, and do not design anything that cannot work there. C LMDB on
-Windows uses named mutexes (`CreateMutex`, `Global\MDBr…`/`MDBw…`, names
-in the lock file) and `LockFileEx` on the lock file, all reachable from
-`golang.org/x/sys/windows` without cgo.
+Ported from rlmdb (its Windows port, `0bf0553` to `3df6995`; the sync
+rows are in `internal/engine/PORTING.md`), without cgo: the OS layer
+calls the system through `golang.org/x/sys/windows` (v0.30.0, the newest
+release whose `go` directive fits `go 1.22`) and, for the NT section
+calls C 1.0 makes, ntdll. The decisions are listed in the file comments
+of `internal/sys/datamap_windows.go`, `internal/sys/io_windows.go`,
+`internal/lockfile/filelock_windows.go`, `mutex_windows.go` and
+`locks_windows.go`: an LMDB 0.9 data file extended to the map size and
+mapped whole, an LMDB 1.0 one mapped with a reserved section it grows
+into (pages taken from the end of the map committed in the view, as C
+1.0 does), read-only maps of the file as it is (mapped again when a
+snapshot needs more), the lock file locked with `LockFileEx` on byte 0,
+named mutexes `Global\MDBr…` / `Global\MDBw…` (version 1: names in the
+file; version 2: from the hash stored there, read, never recomputed),
+abandoned mutexes repaired as dead robust ones, no pid locks (reader
+liveness through `OpenProcess`, with rlmdb's fix #42), files opened with
+C's sharing. A write transaction keeps its OS thread (the mutexes belong
+to it, as on Linux). lmdb-go v1's `lmdb/error_windows.go` is kept.
+
+Status: windows/amd64 and windows/arm64 build and vet (the root module;
+the `tests` module on amd64 with cgo through MinGW-w64, and its packages
+that do not need cgo on both without), and so do their test binaries
+(`go test -c`); nothing has run on Windows yet. `scripts/windows-test.sh` runs commands
+on a Windows machine (a git-archive copy, its own work directory and
+toolchain), and `tests/cmd/build-c-oracles` builds the C oracles there
+with MinGW-w64.
 
 ## Deferred decisions (owner, revisit before a release)
 
@@ -207,6 +224,7 @@ in the lock file) and `LockFileEx` on the lock file, all reachable from
   untested tier (e4a5ad9, ledger #39; C 1.0 uses SysV semaphores on
   OpenBSD/NetBSD/DragonFly, FreeBSD's robust mutex is 8 bytes). Port in
   the next rlmdb sync round, together with rlmdb's versions of #38 and the
-  meta-sync fix, then Windows and big-endian when they land there.
+  meta-sync fix, then big-endian when it lands there (Windows: see
+  above).
 * Cross-compiling cgo builds: `zig cc` as `CC` (bundled glibc, musl and
   macOS headers) is the suggested toolchain; document and test it.

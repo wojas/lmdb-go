@@ -87,9 +87,15 @@ messages) until that is established.
      Keep the cgo path: should a Go release break that linkname (a link
      error in `CGO_ENABLED=0` macOS builds), cgo builds are unaffected. No
      other runtime linkname, and no third-party package (purego) for this.
+   * Windows: no cgo at all. The locks are named kernel mutexes, as in C
+     LMDB there, and they, the `LockFileEx` locks and the maps go through
+     `golang.org/x/sys/windows` (and ntdll for the section calls C 1.0
+     makes); the `*_windows.go` files of `internal/sys` and
+     `internal/lockfile` list every Windows decision.
 
    Everything else (B-tree, mmap, file I/O, fsync, `fcntl` record locks)
-   is Go using `syscall` / `golang.org/x/sys/unix`, without cgo. No cgo or
+   is Go using `syscall` / `golang.org/x/sys/unix` (`x/sys/windows` on
+   Windows), without cgo. No cgo or
    semaphore call on the read path: reader slots the process already owns
    are reused without the reader mutex, as rlmdb does.
    The cgo reference lives in exactly one place: the nested module
@@ -107,10 +113,11 @@ messages) until that is established.
    process, normally the test binary itself (`exec.Command(os.Args[0])`).
 2. **Interoperability with C locking is an absolute must**: C, rlmdb and
    Go processes exclude each other as writers, see each other's readers,
-   and recover from a holder that died (Linux `EOWNERDEAD`), exactly as C
-   processes do among themselves. On macOS the semaphore names are stored
-   in the lock file (0.9) or derived from data stored there (1.0): read
-   them, never recompute what C reads (rlmdb `AGENTS.md` §1). Both
+   and recover from a holder that died (Linux `EOWNERDEAD`, Windows
+   `WAIT_ABANDONED`), exactly as C processes do among themselves. On macOS
+   the semaphore names, and on Windows the mutex names, are stored in the
+   lock file (0.9) or derived from data stored there (1.0): read them,
+   never recompute what C reads (rlmdb `AGENTS.md` §1). Both
    lock-file versions as rlmdb implements them. A write transaction holds
    the writer mutex on one OS thread (`runtime.LockOSThread`), as lmdb-go
    requires today.
@@ -195,6 +202,14 @@ messages) until that is established.
   `RLMDB_DIR=<rlmdb checkout>` mounts rlmdb read-only at `/rlmdb`; build
   the Linux C oracles from its vendored sources into a directory under
   `/tmp` (the container's tmpfs), never into the mounted checkout.
+* Windows: `scripts/windows-test.sh` runs a command in a copy of the
+  checkout on a Windows machine over ssh, with the toolchain its work
+  directory's `env.cmd` names (see its header); with `RLMDB_DIR` and
+  `WINDOWS_ORACLES=1` it also builds the C oracles there
+  (`tests/cmd/build-c-oracles`, MinGW-w64). Use it only when the
+  coordinator says the machine may be used. Without it, cross-check with
+  `GOOS=windows GOARCH=amd64` and `arm64` builds, `go vet` and
+  `go test -c`.
 * Environments for tests and benchmarks live on local file systems only:
   `$TMPDIR` / `t.TempDir()` on macOS, `/tmp` (tmpfs) in the container.
   Never on bind mounts.
