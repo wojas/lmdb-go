@@ -60,6 +60,25 @@
 #   scripts/windows-test.sh 'set CGO_ENABLED=0&& go test ./...'
 #   RLMDB_DIR=<rlmdb checkout> WINDOWS_ORACLES=1 scripts/windows-test.sh \
 #     'cd tests && go test ./...'
+#
+# On an exFAT (or FAT) drive cgo programs, such as the tests module's, do
+# not link with TMP there: Go's external linking sets its object files to
+# 1970, which exFAT cannot store ("cannot chtimes"). Give the go command a
+# TMP on NTFS (only the linker's scratch files go there) and the tests
+# theirs through a go test -exec wrapper in the work directory, e.g.
+# testtmp.cmd:
+#
+#   @echo off
+#   set "TMP=%~dp0tmp"
+#   set "TEMP=%~dp0tmp"
+#   %*
+#   exit /b %ERRORLEVEL%
+#
+#   scripts/windows-test.sh 'set "TMP=C:\some\ntfs\dir" & set "TEMP=C:\some\ntfs\dir"
+#     & cd tests && go test -exec T:\lmdbgo-work\testtmp.cmd ./...'
+#
+# (cmd parses the arguments %* passes again: -run patterns with | do not
+# survive it.)
 set -eu
 here=$(cd "$(dirname "$0")/.." && pwd)
 host=${WINDOWS_HOST:?set WINDOWS_HOST to the ssh destination of the Windows machine}
