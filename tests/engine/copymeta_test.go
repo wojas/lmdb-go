@@ -22,6 +22,7 @@ import (
 	eng "github.com/PowerDNS/lmdb-go/internal/engine"
 	"github.com/PowerDNS/lmdb-go/internal/format"
 	"github.com/PowerDNS/lmdb-go/internal/lockfile"
+	"github.com/PowerDNS/lmdb-go/internal/sys"
 )
 
 // openLockFile opens the lock file shared with C (lmdb's openLock).
@@ -192,11 +193,7 @@ func TestPlainCopyHidesANewerMeta(t *testing.T) {
 			newer.DBs[1].Root = meta.LastPgno + 20
 			var forged [format.MetaSize]byte
 			newer.Write(forged[:])
-			f, err := os.OpenFile(data, os.O_WRONLY, 0)
-			must(t, err)
-			_, err = f.WriteAt(forged[:], int64(metaAt(other)))
-			f.Close()
-			must(t, err)
+			writeAsCommit(t, data, forged[:], metaAt(other))
 			if info, _ := env.Info(); info.LastTxnID != txnid+1 {
 				t.Fatalf("Info: txnid %d, want %d", info.LastTxnID, txnid+1)
 			}
@@ -263,6 +260,26 @@ func TestPlainCopyHidesANewerMeta(t *testing.T) {
 				}
 			}()
 		})
+	}
+}
+
+// writeAsCommit writes b at off of the data file through a descriptor, as
+// a commit writes its pages, and, where maps do not show such writes
+// (OpenBSD, which has no unified buffer cache), drops the mapped copy of
+// them as the writer does (MDB_Invalidate, sys.DataMap.Invalidate), so
+// that the environment's map shows them too.
+func writeAsCommit(t *testing.T, data string, b []byte, off int) {
+	t.Helper()
+	f, err := os.OpenFile(data, os.O_RDWR, 0)
+	must(t, err)
+	defer f.Close()
+	_, err = f.WriteAt(b, int64(off))
+	must(t, err)
+	if sys.MapNeedsInvalidate {
+		m, err := sys.MapData(f, off+len(b), false, 0, false)
+		must(t, err)
+		m.Invalidate(uint64(off), len(b))
+		m.Release()
 	}
 }
 
@@ -344,8 +361,13 @@ func TestCopyAfterFailedMetaSync(t *testing.T) {
 			checkCopyKeys(t, gdir, txnid, 300)
 			ours, err := os.ReadFile(filepath.Join(gdir, "data.mdb"))
 			must(t, err)
-			if _, theirs, errs := run(t, c.tool, dir); theirs != string(ours) {
-				t.Fatalf("C's copy: %s; stderr %s", firstDifference([]byte(theirs), ours, env.PageSize()), errs)
+			_, theirsOut, errs := run(t, c.tool, dir)
+			theirs := []byte(theirsOut)
+			if sys.MapNeedsInvalidate {
+				sameButFailedMetaPage(t, theirs, ours, env.PageSize(), layoutOf(c.f), txnid)
+			}
+			if !bytes.Equal(theirs, ours) {
+				t.Fatalf("C's copy: %s; stderr %s", firstDifference(theirs, ours, env.PageSize()), errs)
 			}
 			peer := "cpeer"
 			if c.f == format.V10 {
@@ -356,4 +378,27 @@ func TestCopyAfterFailedMetaSync(t *testing.T) {
 			}
 		})
 	}
+}
+
+// sameButFailedMetaPage accounts for OpenBSD, which has no unified buffer
+// cache, in TestCopyAfterFailedMetaSync: neither the failed write of the
+// meta page nor the write that puts the old txnid back is followed by
+// MDB_Invalidate (in C as here), so the maps of the file still show that
+// page as it was before the failed commit. C's mdb_copy copies meta pages
+// from its map; the plain copy here reads the file (pread), which holds the
+// failed commit's records under the old txnid. Both name the same txnid,
+// which no reader of the copy takes (the snapshot's page is newer); theirs
+// gets our commit part of that page, for the comparison of the rest.
+func sameButFailedMetaPage(t *testing.T, theirs, ours []byte, ps int, l *format.Layout, txnid uint64) {
+	t.Helper()
+	at := int((txnid+1)&1)*ps + l.MetaOffset()
+	if len(theirs) < at+format.MetaSize || len(ours) < at+format.MetaSize {
+		return
+	}
+	cm, okc := format.ReadMeta(theirs[at:])
+	gm, okg := format.ReadMeta(ours[at:])
+	if !okc || !okg || cm.TxnID != gm.TxnID || cm.TxnID >= txnid {
+		t.Fatalf("the failed commit's meta page: C's copy %+v, ours %+v", cm, gm)
+	}
+	copy(theirs[at+format.MetaMapSize:at+format.MetaSize], ours[at+format.MetaMapSize:at+format.MetaSize])
 }
