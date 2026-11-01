@@ -59,8 +59,9 @@ differently from C is in `internal/engine/PORTING.md` and in rlmdb's
   built with `CGO_ENABLED=0`, `Env.Open` without `NoLock` returns
   `ErrNoSharedLocking` before touching the file system; `NoLock`
   environments work. On macOS a build without cgo calls the semaphores in
-  libSystem directly and works fully. `SharedLockingAvailable` says which
-  kind of build is running.
+  libSystem directly and works fully. Windows builds need no cgo at all
+  (see Windows). `SharedLockingAvailable` says which kind of build is
+  running.
 * **`NoLock`.** Only the cross-process locking is removed: within the
   process, write transactions are serialised and readers are tracked in an
   in-memory table, so pages a live reader can see are never reused. C
@@ -186,8 +187,26 @@ differently from C is in `internal/engine/PORTING.md` and in rlmdb's
   length, so appending to it never overwrites the value, but holding the
   key keeps the value's memory alive. Read transactions and cursors reuse
   the memory of ended ones (one small allocation each, for the handle).
-* **Windows** is not supported yet: the OS layer (`internal/sys`,
-  `internal/lockfile`) has no Windows files. `error_windows.go` is kept.
+* **Windows** (64-bit: x86-64, and arm64 by the same rules) follows
+  rlmdb's Windows port and C LMDB's `_WIN32` paths, without cgo
+  (`golang.org/x/sys/windows`): `SharedLockingAvailable` is true with and
+  without cgo, and the lock file is C's (named mutexes `Global\MDBr…`,
+  `Global\MDBw…`, `LockFileEx` on byte 0). As with v1 on C there, `FD`
+  returns and `CopyFD` takes a `HANDLE`, and a write transaction holds a
+  mutex that belongs to its thread (another thread's `Commit` gets
+  `ERROR_NOT_OWNER`). An LMDB 0.9 data file opened for writing is as long
+  as its map size (C 0.9 extends it in order to map it), and is never
+  shrunk (C 0.9 tries when the map size shrinks; rlmdb does not); an LMDB
+  1.0 file grows with its writes. Errors: LMDB's own errno values are Go's
+  `syscall` constants (`syscall.EINVAL`, ...), as v1's `error_windows.go`
+  made them from the C runtime's errno; system errors keep their Windows
+  error code (`syscall.Errno`, e.g. `ERROR_ACCESS_DENIED`, 5), where v1's
+  table read the codes 2, 5, 12, 13, 16, 22 and 28 as the errno of that
+  number (5 became `EIO`). `error_windows.go` is kept. `ReaderCheck`
+  clears the slots of a process that has exited even while some program
+  still holds a handle to it (C keeps them until the last handle closes:
+  rlmdb `KNOWN_C_BUGS.md` #42). Status: builds and vets for windows/amd64
+  and windows/arm64; the tests have not run on Windows yet.
 * **64-bit only.** lmdb-go v1 built and ran on 32-bit platforms with C
   LMDB, whose 32-bit data files are a format of their own (the file
   depends on `sizeof(size_t)`), not shared with 64-bit processes. This

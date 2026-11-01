@@ -23,15 +23,17 @@ var _ engine.LockRegion = (*lockfile.Region)(nil)
 // through cgo, so that without cgo only environments opened with NoLock,
 // which have no lock file, can be used.  On macOS they are POSIX semaphores,
 // reached through cgo in a cgo build and through libSystem directly in a
-// build without cgo, so macOS builds never return this error.
+// build without cgo, and on Windows named kernel mutexes, reached through
+// the system's DLLs without cgo, so macOS and Windows builds never return
+// this error.
 var ErrNoSharedLocking = errors.New("lmdb: shared locking on Linux needs a cgo build (CGO_ENABLED=1); open the environment with NoLock or build with cgo")
 
 // errNoSharedLocks is what the lock file returns for ErrNoSharedLocking.
 var errNoSharedLocks = lockfile.ErrNoSharedLocks
 
 // SharedLockingAvailable reports whether this program can open environments
-// with a lock file, i.e. without the NoLock flag: true on macOS, and on
-// Linux if it was built with cgo.  Otherwise Env.Open returns
+// with a lock file, i.e. without the NoLock flag: true on macOS and Windows,
+// and on Linux if it was built with cgo.  Otherwise Env.Open returns
 // ErrNoSharedLocking unless NoLock is given.
 func SharedLockingAvailable() bool {
 	return lockfile.SharedLocksAvailable()
