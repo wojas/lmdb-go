@@ -20,10 +20,14 @@ func (err *OpError) Error() string {
 	return err.Op + ": " + err.Errno.Error()
 }
 
+// Unwrap makes errors.Is and errors.As see err.Errno, so that
+// errors.Is(err, NotFound) and errors.Is(err, os.ErrNotExist) hold.
+func (err *OpError) Unwrap() error { return err.Errno }
+
 // The most common error codes do not need to be handled explicity.  Errors can
 // be checked through helper functions IsNotFound, IsMapFull, etc, Otherwise
-// they should be checked using the IsErrno function instead of direct
-// comparison because they will typically be wrapped with an OpError.
+// they should be checked using the IsErrno function or errors.Is instead of
+// direct comparison because they will typically be wrapped with an OpError.
 const (
 	// Error codes defined by LMDB.  See the list of LMDB return codes for more
 	// information about each

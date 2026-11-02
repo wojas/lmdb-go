@@ -1,7 +1,10 @@
 package lmdb
 
 import (
+	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"syscall"
 	"testing"
 )
@@ -58,5 +61,53 @@ func TestIsErrno(t *testing.T) {
 	}
 	if !IsErrno(operr, err) {
 		t.Errorf("expected match: %v", operr)
+	}
+}
+
+func TestOpErrorUnwrap(t *testing.T) {
+	env := setup(t)
+	defer clean(env, t)
+
+	err := env.View(func(txn *Txn) error {
+		dbi, err := txn.OpenRoot(0)
+		if err != nil {
+			return err
+		}
+		_, err = txn.Get(dbi, []byte("missing"))
+		return err
+	})
+	var operr *OpError
+	if !errors.As(err, &operr) {
+		t.Fatalf("not an OpError: %#v", err)
+	}
+	if !errors.Is(err, NotFound) {
+		t.Errorf("errors.Is(%v, NotFound) is false", err)
+	}
+	if errors.Is(err, MapFull) {
+		t.Errorf("errors.Is(%v, MapFull) is true", err)
+	}
+	if !IsNotFound(err) {
+		t.Errorf("IsNotFound(%v) is false", err)
+	}
+	var errno Errno
+	if !errors.As(err, &errno) || errno != NotFound {
+		t.Errorf("errors.As: %v", errno)
+	}
+	if wrapped := fmt.Errorf("wrapped: %w", err); !errors.Is(wrapped, NotFound) {
+		t.Errorf("errors.Is(%v, NotFound) is false", wrapped)
+	}
+
+	// A system errno, through the os package's own errors.
+	env2, err := NewEnv()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer env2.Close()
+	err = env2.Open(filepath.Join(t.TempDir(), "missing"), 0, 0o644)
+	if !errors.As(err, &operr) {
+		t.Fatalf("not an OpError: %#v", err)
+	}
+	if !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("errors.Is(%v, os.ErrNotExist) is false", err)
 	}
 }

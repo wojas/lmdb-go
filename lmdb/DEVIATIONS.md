@@ -35,6 +35,9 @@ differently from C is in `internal/engine/PORTING.md` and in rlmdb's
 * `SharedLockingAvailable() bool` and `ErrNoSharedLocking`: see "Builds
   without cgo".
 * `ErrTxnWrongThread`: see "Write transactions and threads".
+* `OpError.Unwrap`: `errors.Is` and `errors.As` see the errno of an
+  `*OpError`, so `errors.Is(err, NotFound)` holds. In v1 it was false;
+  `IsNotFound`, `IsErrno` and the other helpers work as before.
 
 ## Behaviour that differs
 
