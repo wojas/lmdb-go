@@ -18,6 +18,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"syscall"
+	"time"
 
 	"github.com/PowerDNS/lmdb-go/internal/format"
 )
@@ -85,6 +86,19 @@ type Region struct {
 //
 // Errors are format.Errno values (LMDB's codes), syscall.Errno values
 // (possibly wrapped in *os.PathError), or ErrNoSharedLocks.
+//
+// Where the last user of the environment removes the shared locks
+// (semaphores, Objects.removedByLastUser), it does so holding byte 0
+// exclusively, and an opener that failed its exclusive probe while that
+// process still held the environment open gets its shared lock only after
+// they are gone. C fails the open then (rlmdb KNOWN_C_BUGS.md #47); here the
+// lock file is closed, which releases the shared lock, and the open starts
+// again with the exclusive probe, which then either succeeds (this process
+// creates the locks) or waits for the process that does create them to
+// downgrade. Locks are only ever created under the exclusive lock, so every
+// process that attaches uses the same ones. After removedRetries tries (a
+// lock file that names locks which do not exist while other processes hold
+// it open: damage), the open fails with ENOENT.
 func Open(path string, mode os.FileMode, maxReaders uint32, readOnly bool, layout *Layout) (*Region, error) {
 	return OpenClaimed(path, mode, maxReaders, readOnly, layout, nil)
 }
@@ -115,6 +129,32 @@ func OpenClaimed(path string, mode os.FileMode, maxReaders uint32, readOnly bool
 	if layout == nil || maxReaders == 0 {
 		return nil, syscall.EINVAL
 	}
+	for retries := 0; ; retries++ {
+		r, err := openOnce(path, mode, maxReaders, readOnly, layout, claim)
+		if err != errLocksRemoved {
+			return r, err
+		}
+		if retries == removedRetries {
+			return nil, syscall.ENOENT
+		}
+		// Openers that raced the same closer start again at the same time;
+		// a pause lets the first one's probe find the others gone.
+		time.Sleep(time.Duration(min(retries+1, 10)) * 200 * time.Microsecond)
+	}
+}
+
+// removedRetries is how many times OpenClaimed goes back to the exclusive
+// probe after finding the shared locks removed, before it gives up.
+const removedRetries = 100
+
+// errLocksRemoved: attachLocks found that the locks the lock file names do
+// not exist (any more).
+var errLocksRemoved = errors.New("lockfile: the shared locks were removed")
+
+// openOnce is one pass of OpenClaimed: open, claim, set up. errLocksRemoved
+// if it should start again, with the lock file closed and its claim given
+// back.
+func openOnce(path string, mode os.FileMode, maxReaders uint32, readOnly bool, layout *Layout, claim FileClaim) (*Region, error) {
 	f, err := openLockFile(path, mode)
 	if err != nil {
 		if readOnly && isReadOnlyFS(err) {
@@ -132,6 +172,9 @@ func OpenClaimed(path string, mode os.FileMode, maxReaders uint32, readOnly bool
 		// Closing the descriptor drops our record locks.
 		unlockLockFile(f.Fd())
 		f.Close()
+		if err == errLocksRemoved && claim != nil {
+			claim.ReleaseLockFile()
+		}
 		return nil, err
 	}
 	return r, nil

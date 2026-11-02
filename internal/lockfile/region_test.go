@@ -383,6 +383,37 @@ func blocks(f func(), d time.Duration) (done chan struct{}, blocked bool) {
 	}
 }
 
+// TestOpenWithItsSemaphoresRemoved: a lock file that names semaphores which
+// do not exist while another process holds it open (damage): the open tries
+// again a bounded number of times, then fails with ENOENT (rlmdb
+// KNOWN_C_BUGS.md #47; the race it is for: lmdb TestOpenCloseRace).
+func TestOpenWithItsSemaphoresRemoved(t *testing.T) {
+	needLocks(t)
+	for _, l := range layouts() {
+		if !l.Objects.removedByLastUser() {
+			continue
+		}
+		path := filepath.Join(t.TempDir(), "lock.mdb")
+		h := startHelper(t, "hold-env", path, l)
+		r := openRegion(t, path, l)
+		// Remove them, keeping the helper's lock on byte 0.
+		r.locks.close(true)
+		start := time.Now()
+		if got, err := Open(path, 0o644, 4, false, l); err != syscall.ENOENT {
+			if err == nil {
+				got.Close()
+			}
+			t.Fatalf("v%d: %v, want ENOENT", l.Version, err)
+		}
+		if d := time.Since(start); d > 30*time.Second {
+			t.Fatalf("v%d: gave up after %v", l.Version, d)
+		}
+		r.m.unmap()
+		r.file.Close()
+		h.kill()
+	}
+}
+
 func TestVersionMismatchWhileHeld(t *testing.T) {
 	needLocks(t)
 	for _, l := range layouts() {

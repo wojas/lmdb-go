@@ -144,12 +144,18 @@ func createSysVLocks(m *lockMap, fd uintptr, mode os.FileMode, l *Layout) (*shar
 
 // attachSysVLocks uses the set whose id another process stored, after
 // checking, as C does, that this process may read it and change it.
+// errLocksRemoved if the id names no set (EINVAL; some systems say EIDRM
+// for a removed one): the last user removed it after this opener's exclusive
+// probe failed, or the lock file holds garbage.
 func attachSysVLocks(m *lockMap, l *Layout) (*sharedLocks, error) {
 	if !sysvLayout(l) {
 		return nil, syscall.EINVAL
 	}
 	semid := m.loadInt32(l.RLock)
 	if e := sysvCheck(semid); e != 0 {
+		if e == syscall.EINVAL || e == syscall.EIDRM {
+			return nil, errLocksRemoved
+		}
 		return nil, e
 	}
 	return sysvLocks(m, semid, l), nil
