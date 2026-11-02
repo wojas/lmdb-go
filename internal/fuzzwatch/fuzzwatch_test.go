@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"runtime"
+	"runtime/debug"
 	"strings"
 	"testing"
 	"time"
@@ -18,6 +19,23 @@ func TestFuzzingFlag(t *testing.T) {
 	}
 	if Fuzzing() {
 		t.Fatal("Fuzzing in a normal test")
+	}
+}
+
+// The testing package still has -test.fuzz (TuneGC's sign of go test
+// -fuzz), and TuneGC leaves the collector alone in a normal test.
+func TestTuneGCOnlyWhenFuzzing(t *testing.T) {
+	if flag.Lookup("test.fuzz") == nil {
+		t.Fatal("no -test.fuzz flag: FuzzingProcess cannot tell go test -fuzz")
+	}
+	if FuzzingProcess() {
+		t.Fatal("FuzzingProcess in a normal test")
+	}
+	before := debug.SetGCPercent(-1)
+	debug.SetGCPercent(before)
+	TuneGC()
+	if after := debug.SetGCPercent(before); after != before {
+		t.Fatalf("TuneGC changed GOGC from %d to %d in a normal test", before, after)
 	}
 }
 

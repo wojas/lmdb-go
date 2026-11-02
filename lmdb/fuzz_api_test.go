@@ -19,6 +19,7 @@ import (
 
 	"github.com/PowerDNS/lmdb-go/internal/engine"
 	"github.com/PowerDNS/lmdb-go/internal/format"
+	"github.com/PowerDNS/lmdb-go/internal/fuzzwatch"
 )
 
 // fzFlagBits are the write flags a flag byte combines.
@@ -199,6 +200,7 @@ func (r *apiRun) step() {
 }
 
 func FuzzAPI(f *testing.F) {
+	fuzzwatch.TuneGC()
 	f.Add([]byte{0, 0, 2, 5, 3, 7, 0, 1, 1, 2, 0, 6, 2, 5, 9, 9, 1, 4, 2, 2, 15, 3, 4})
 	f.Add(bytes.Repeat([]byte{1, 6, 3, 4, 0x24, 2, 8, 9, 7, 13, 1, 0x40, 3}, 30))
 	f.Add(bytes.Repeat([]byte{3, 8, 2, 3, 4, 5, 9, 3, 1, 2, 11, 5, 4}, 30))

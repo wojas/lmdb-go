@@ -1558,6 +1558,7 @@ func (r *fzRun) step() {
 }
 
 func FuzzWriteModel(f *testing.F) {
+	fuzzwatch.TuneGC()
 	// Seeds: each shape with a mix of operations, from a fixed generator.
 	for s := range fzShapes {
 		for _, n := range []int{200, 1200} {
