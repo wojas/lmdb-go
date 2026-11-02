@@ -94,27 +94,37 @@ as `WriteMap`, stricter checks on ended handles) are listed in
 Compared with lmdb-go v1.9.4's Go code on C LMDB 0.9.36 plus ITS#10615,
 ITS#10642 and ITS#10643 (the same C code as LMDB 0.9.37; the released
 v1.9.4 bundles 0.9.35), including its cgo call overhead, both in one
-process with interleaved runs, 1,000,000 keys, Go 1.27. Times are medians
-in ns per operation on macOS (Apple M1 Pro, 16 KiB pages). The ratio is
-this implementation's time divided by lmdb-go's: below 1 means this one is
-faster. The last column is the ratio on Linux arm64 (4 KiB pages).
+process with interleaved runs, 1,000,000 keys. Times are medians in ns
+per operation on Linux x86-64: an AMD EPYC Milan server (4 vCPUs of a
+virtual machine), ext4, 4 KiB pages, Go 1.26. The ratio is this
+implementation's time divided by lmdb-go's: below 1 means this one is
+faster. The last two columns are the ratios on macOS (Apple M1 Pro, 16 KiB
+pages, Go 1.27) and on Linux arm64 (a VM on that Mac, 4 KiB pages),
+measured on 2026-11-02.
 
-| workload | lmdb-go ns/op | this ns/op | ratio | ratio, Linux |
-|---|---:|---:|---:|---:|
-| random get | 1202 | 889 | 0.74 | 1.04 |
-| forward cursor scan | 58.5 | 28.8 | 0.49 | 0.64 |
-| random get, 8 concurrent readers | 166 | 116 | 0.70 | 0.99 |
-| read transaction with one get (`View`) | 2083 | 1036 | 0.50 | 1.13 |
-| random put | 2725 | 2763 | 1.01 | 0.93 |
-| random delete | 3326 | 3503 | 1.05 | 0.72 |
-| commit of one put, no sync | 6833 | 7801 | 1.14 | 1.11 |
-| commit of one put, synced | 10620272 | 10638233 | 1.00 | (tmpfs) |
-| sequential append | 106 | 181 | 1.72 | 1.65 |
+| workload | lmdb-go ns/op | this ns/op | ratio | ratio, macOS | ratio, Linux arm64 |
+|---|---:|---:|---:|---:|---:|
+| random get | 1106 | 1063 | 0.96 | 0.74 | 1.04 |
+| forward cursor scan | 104 | 76.3 | 0.74 | 0.49 | 0.64 |
+| random get, 8 concurrent readers | 448 | 397 | 0.89 | 0.70 | 0.99 |
+| read transaction with one get (`View`) | 1415 | 1327 | 0.94 | 0.50 | 1.13 |
+| random put | 3221 | 3717 | 1.15 | 1.01 | 0.93 |
+| random overwrite | 3966 | 4521 | 1.14 | 0.95 | 0.92 |
+| random delete | 3939 | 4727 | 1.20 | 1.05 | 0.72 |
+| commit of one put, no sync | 7977 | 10774 | 1.35 | 1.14 | 1.11 |
+| commit of one put, synced | 328011 | 333167 | 1.02 | 1.00 | (tmpfs) |
+| sequential append | 212 | 325 | 1.53 | 1.72 | 1.65 |
 
-Synced commits on macOS take as long as lmdb-go's here: both flush the
-drive cache twice per commit, as C LMDB does since 0.9.36. The released
-lmdb-go v1.9.4, with C 0.9.35, flushes once, so against it synced commits
-take about twice as long. The Linux column comes from a Linux VM on the
+Reads are as fast as lmdb-go's or faster. Writes cost relatively more on
+x86-64 than on Apple silicon: this implementation executes up to about
+twice as many instructions per write as C LMDB, which the M1 runs in the
+cycles both spend waiting for memory, and the EPYC largely does not.
+Transactions of a single put show it most, as each pays the fixed cost of
+a commit.
+Synced commits take as long as lmdb-go's. On macOS both flush the drive
+cache twice per commit, as C LMDB does since 0.9.36; the released lmdb-go
+v1.9.4, with C 0.9.35, flushes once, so against it synced commits on macOS
+take about twice as long. The Linux arm64 column comes from a VM on the
 same Mac, in which the 32-byte vector loads that Go 1.26 and later use to
 copy structs on arm64 are slow: read transactions (`View`, `Renew`) cost
 more there with those Go versions than with Go 1.25, where the `View` row

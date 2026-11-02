@@ -351,8 +351,16 @@ func searchPage(mp format.Page, cmp format.Comparator, ksize int, key []byte) (i
 	i, rc := 0, 0
 	if !mp.IsLeaf2() && cmp.Kind == format.CmpMemn {
 		// The default order gets its own loop, reading node i's key as
-		// Page.NodeKey does (the same checks, NUMKEYS read once).
+		// Page.NodeKey does (the same checks, NUMKEYS read once). Where
+		// both keys have 8 bytes, their first 8 bytes compared as
+		// big-endian integers decide most probes without the call to
+		// bytes.Compare (memcmp order either way).
 		b, base, pb := mp.B, mp.L.PageHdr, mp.L.PtrBase
+		var key8 uint64
+		hasKey8 := len(key) >= 8
+		if hasKey8 {
+			key8 = binary.BigEndian.Uint64(key)
+		}
 		for low <= high {
 			i = (low + high) >> 1
 			p := base + 2*i
@@ -368,7 +376,20 @@ func searchPage(mp format.Page, cmp format.Comparator, ksize int, key []byte) (i
 			if ks > len(b)-s {
 				return 0, false, false, format.Corrupted
 			}
-			rc = bytes.Compare(key, b[s:s+ks])
+			nk := b[s : s+ks]
+			if hasKey8 && len(nk) >= 8 {
+				if v := binary.BigEndian.Uint64(nk); v != key8 {
+					if key8 > v {
+						low = i + 1
+						rc = 1
+					} else {
+						high = i - 1
+						rc = -1
+					}
+					continue
+				}
+			}
+			rc = bytes.Compare(key, nk)
 			if rc == 0 {
 				break
 			}
