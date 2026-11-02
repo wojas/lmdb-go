@@ -18,9 +18,12 @@ import (
 	"fmt"
 	"slices"
 	"testing"
+
+	"github.com/PowerDNS/lmdb-go/internal/fuzzwatch"
 )
 
 func FuzzWriteDifferential(f *testing.F) {
+	fuzzwatch.TuneGC()
 	names := fuzzProfileNames()
 	x := uint64(0x9e3779b97f4a7c15)
 	for i, name := range []string{"plain", "dupsort", "dupfixed", "intdup", "nested_plain", "nested_dupsort"} {

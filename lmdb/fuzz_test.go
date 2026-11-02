@@ -40,8 +40,11 @@ const (
 	// fuzzHangLimit is how long one input may run while fuzzing; inputs
 	// take milliseconds.
 	fuzzHangLimit = 10 * time.Second
-	// fuzzHeapLimit is how much one input may grow the heap.
-	fuzzHeapLimit = 2 << 30
+	// fuzzHeapLimit is how much one input may grow the heap (a seed grows
+	// it by a few MiB). It stops a runaway input before it exhausts a
+	// machine with 2 GB of RAM, where fuzzing with four workers already
+	// takes about 1.3 GB (FUZZING.md).
+	fuzzHeapLimit = 256 << 20
 	// fuzzMaxFile bounds the inputs (the seeds are a few KiB).
 	fuzzMaxFile = 1 << 20
 	// fuzzReadBudget bounds the cursor operations of one read pass.
@@ -206,6 +209,7 @@ func must(tb testing.TB, err error) {
 func fuzzWatchdog(fn func()) { fuzzwatch.Run(fuzzHangLimit, fuzzHeapLimit, fn) }
 
 func FuzzEnvFile(f *testing.F) {
+	fuzzwatch.TuneGC()
 	for _, s := range fuzzSeedShapes {
 		f.Add(buildFuzzSeed(f, f.TempDir(), s.f, s.ps))
 	}

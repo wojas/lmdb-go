@@ -231,6 +231,22 @@ messages) until that is established.
   `$TMPDIR` / `t.TempDir()` on macOS, `/tmp` (tmpfs) in the container.
   Never on bind mounts.
 * Test scratch directories are per test process.
+* **2 GB of RAM (owner).** Every test suite, fuzz target (as `FUZZING.md`
+  runs it) and benchmark of this repository runs on a machine with 2 GB
+  of RAM in total, which also holds the Go toolchain building the tests,
+  parallel test binaries, cgo and the C oracles, peer processes, tmpfs
+  contents and the page cache. `scripts/linux-test.sh` runs its container
+  as such a machine (2 GB without swap, at most 8 CPUs, `/tmp` a tmpfs
+  inside the 2 GB), prints the memory peak and fails a run in which the
+  OOM killer ended a process. Keep every suite below 1.5 GiB there (its
+  processes and `/tmp`; page cache the kernel can reclaim does not
+  count), so that 512 MiB stays free for an OS: size test data for it,
+  free what a test generated before the next, stream instead of
+  materialising, and bound concurrency (goroutines, subprocesses,
+  environments open at once) instead of letting it grow with the CPUs;
+  under `-race` every allocation costs several times its size. Do not raise
+  `LINUX_TEST_MEMORY` to make something pass: a test that needs more
+  memory is gated (off by default) and only with the owner's approval.
 * Cross-process tests (C and Go processes on one environment at once) are
   required for anything that touches the lock file, reader table, writer
   lock or meta pages.

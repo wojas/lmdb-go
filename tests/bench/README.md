@@ -65,6 +65,23 @@ timed part of each repetition). The head names the OS (major version),
 CPU, page size and Go version, nothing that identifies a host; the
 environment directory goes to stderr.
 
+### Memory
+
+The default run (`-n 1000000`, every group, both implementations) fits
+on a machine with 2 GB of RAM. The process itself takes up to 360 MB (the
+data sets, dirty pages and the heaps of both implementations); the rest is
+the environment of the group that runs (each group's is removed before
+the next starts), whose data file reaches 1.1 GB in the `ls` group. On a
+disk file system that file is page cache, which the kernel reclaims under
+pressure (the process's resident size, which counts the mapped file, then
+reaches 1.4 GB); on a tmpfs it is memory: in the 2 GB container of
+`scripts/linux-test.sh`, with the environments in its tmpfs `/tmp`, the
+default run peaks at 1.4 GB. Where `/tmp` is a tmpfs of half the RAM (as
+on many Linux distributions), a machine with 2 GB has 1 GB there, too
+little for the `ls` group: give such a machine `-dir` on a disk file
+system. The `go test` benchmarks below (`-lmdb.n 100000`) peak at about
+0.5 GB in that container, compiling included.
+
 ### Go benchmarks and benchstat
 
 `bench_test.go` has one benchmark per group, with a sub-benchmark per

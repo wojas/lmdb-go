@@ -18,12 +18,16 @@
 //     little about the input there; go test's -timeout catches a hang
 //     instead, also with every goroutine's stack.
 //
+// TuneGC keeps the collector's goal low in the processes of go test -fuzz,
+// whose heaps hold Go's large mutation buffers.
+//
 // The package is used by tests only.
 package fuzzwatch
 
 import (
 	"flag"
 	"fmt"
+	"os"
 	"runtime/debug"
 	"runtime/metrics"
 	"sync"
@@ -39,6 +43,34 @@ const heapMetric = "/memory/classes/heap/objects:bytes"
 func Fuzzing() bool {
 	f := flag.Lookup("test.fuzzworker")
 	return f != nil && f.Value.String() == "true"
+}
+
+// fuzzGCPercent is the collector's GOGC in the processes of go test -fuzz
+// (TuneGC).
+const fuzzGCPercent = 25
+
+// FuzzingProcess reports whether this process belongs to go test -fuzz:
+// the coordinator or one of its workers (-test.fuzz is set in both).
+func FuzzingProcess() bool {
+	f := flag.Lookup("test.fuzz")
+	return f != nil && f.Value.String() != ""
+}
+
+// TuneGC lowers the collector's goal (GOGC 25 instead of 100) in the
+// processes of go test -fuzz, unless GOGC is set; elsewhere it does
+// nothing. A fuzz target calls it first, so that it runs in the
+// coordinator and in every worker. Go's fuzzer keeps a buffer of 100 MB
+// for mutating inputs in every worker and more in the coordinator
+// (internal/fuzz, mutator.scratch), live for the whole run; with the
+// default GOGC each of these processes therefore lets about as much
+// garbage pile up before a collection. Measured with four workers in a
+// 2 GB Linux container, FuzzEnvFile took 1.3 GB with GOGC 100 and 0.9 GB
+// with 25, FuzzWriteDifferential 1.2 and 0.8 GB: fuzzing has to fit on a
+// machine with 2 GB of RAM (FUZZING.md).
+func TuneGC() {
+	if FuzzingProcess() && os.Getenv("GOGC") == "" {
+		debug.SetGCPercent(fuzzGCPercent)
+	}
 }
 
 // Run runs fn, the code of one fuzz input, and crashes the process if fn

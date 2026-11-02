@@ -18,7 +18,7 @@ itself is started by hand.
 | `internal/engine` | `FuzzPageOps` | one page and an edit | the engine's node search and in-place page edits (`pageops.go`, the DUPSORT sub-page builder) on damaged pages, called as their callers call them |
 | `internal/engine` | `FuzzWriteModel` | an environment shape and a script of operations | the write path against an in-memory model: every put flag, cursor writes, `MDB_CURRENT`, `MDB_MULTIPLE`, deletes, range deletes, bulk loads, cursor moves, nested transactions, commits, aborts, drops, reopens; return codes, values, cursor positions and counts after every step, contents and `Env.Audit` after every commit, plain and compacting copies at the end |
 | `internal/lockfile` | `FuzzLockFile` | the content of a lock file | header and reader-slot decoding of both lock-file versions for every platform's layout, and the reader-table walks of a `Region` over that table (in memory: no file, locks or semaphores) |
-| `lmdb` | `FuzzEnvFile` | a whole data file | the public API end to end with `NoLock`: open, bounded reads of every named database (walks both ways, gets, duplicate and multiple-value operations), plain and compacting copy, one write transaction with a nested one, reading again; panics, hangs (an input running for 10 s while fuzzing) and heap growth past 2 GiB fail |
+| `lmdb` | `FuzzEnvFile` | a whole data file | the public API end to end with `NoLock`: open, bounded reads of every named database (walks both ways, gets, duplicate and multiple-value operations), plain and compacting copy, one write transaction with a nested one, reading again; panics, hangs (an input running for 10 s while fuzzing) and heap growth past 256 MiB fail |
 | `lmdb` | `FuzzAPI` | a script of API calls with arbitrary arguments | every write flag combination, cursor operation codes 0-255, nil, empty and oversized keys and values, `PutMulti` strides, unpositioned cursors, nested transactions, databases opened with any flags: no panic, and the committed file passes `Env.Audit` and reads back |
 | `tests/engine` (nested module) | `FuzzWriteDifferential` | an oracle, a profile and a script | the lock-step write differential against C 0.9.36 (`writeops`) and C 1.0 (`writeops10`, 1 and 4 KiB pages): cursors after every step, then `mdb_dump`, C's page audit and the pages themselves; skips without the C oracles |
 
@@ -35,18 +35,33 @@ the last 80 operations.
 ## Running
 
 One target per package at a time (a Go restriction); `-parallel` sets the
-number of worker processes (default: all CPUs):
+number of worker processes (default: all CPUs; the commands use four):
 
 ```sh
-go test -run='^$' -fuzz='^FuzzPage$'       -fuzztime=10m ./internal/format/
-go test -run='^$' -fuzz='^FuzzPageOps$'    -fuzztime=10m ./internal/engine/
-go test -run='^$' -fuzz='^FuzzWriteModel$' -fuzztime=1h -fuzzminimizetime=300x ./internal/engine/
-go test -run='^$' -fuzz='^FuzzLockFile$'   -fuzztime=5m  ./internal/lockfile/
-go test -run='^$' -fuzz='^FuzzEnvFile$'    -fuzztime=1h -fuzzminimizetime=50x ./lmdb/
-go test -run='^$' -fuzz='^FuzzAPI$'        -fuzztime=30m ./lmdb/
+go test -run='^$' -fuzz='^FuzzPage$'       -fuzztime=10m -parallel 4 ./internal/format/
+go test -run='^$' -fuzz='^FuzzPageOps$'    -fuzztime=10m -parallel 4 ./internal/engine/
+go test -run='^$' -fuzz='^FuzzWriteModel$' -fuzztime=1h -fuzzminimizetime=300x -parallel 4 ./internal/engine/
+go test -run='^$' -fuzz='^FuzzLockFile$'   -fuzztime=5m  -parallel 4 ./internal/lockfile/
+go test -run='^$' -fuzz='^FuzzEnvFile$'    -fuzztime=1h -fuzzminimizetime=50x -parallel 4 ./lmdb/
+go test -run='^$' -fuzz='^FuzzAPI$'        -fuzztime=30m -parallel 4 ./lmdb/
 (cd tests && RLMDB_DIR=<rlmdb checkout> \
   go test -run='^$' -fuzz='^FuzzWriteDifferential$' -fuzztime=30m -parallel 4 ./engine/)
 ```
+
+Four workers fit a machine with 2 GB of RAM. Every worker costs memory
+whatever the target: Go's fuzzer gives each worker process a buffer of
+100 MB for mutating inputs, and the coordinating process one more per
+worker once that worker has found something (`internal/fuzz`), so a
+worker takes about 200 MB before the target allocates anything. With
+eight workers, `FuzzEnvFile` ran out of 2 GB within a minute; with four,
+every target stayed below 1 GB in eight minutes (measured in the 2 GB
+container of `scripts/linux-test.sh`; `FuzzAPI` 0.95 GB, the C
+differential 0.8 GB). `FuzzEnvFile`, `FuzzAPI`, `FuzzWriteModel` and
+`FuzzWriteDifferential` lower the collector's goal in the fuzzing
+processes (GOGC 25 unless `GOGC` is set; `internal/fuzzwatch`), which
+keeps the garbage next to those buffers small: with Go's default, the C
+differential took 1.2 GB. Raise `-parallel` only where memory allows,
+about 250 MB per worker.
 
 `-fuzzminimizetime` keeps the fuzzer from spending up to a minute
 minimizing each new interesting input, which with the larger inputs of
