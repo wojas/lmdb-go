@@ -141,8 +141,8 @@ uses a test fake of the interface (in-process only).
   `exp/lmdbsync`, the commands: pass with cgo and with `CGO_ENABLED=0`
   (`NoLock`; lock-file tests skip). The port twins of `tests/gopeer` and
   `tests/bench` build without a tag. rlmdb's interop matrix with
-  `INTEROP_GOPEER_IMPL=port` (rlmdb branch `t3/interop-gopeer`:
-  `go_pairs`, `go_pairs10`, `go_peer`) passes in full on macOS and on
+  `INTEROP_PEER_ARGS='--impl port'` (`external_pairs`,
+  `external_pairs10`, `external_peer`) passes in full on macOS and on
   Linux arm64 with glibc and with musl (`tests/gopeer/README.md`).
 
 ## Following rlmdb

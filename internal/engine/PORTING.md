@@ -424,7 +424,7 @@ comment, `os/windows.rs`).
 | `a933f11` | refer to `KNOWN_C_BUGS.md` #42 and #43 | the comments cite them |
 | `b3ed51e` | interop: argv[0] copies; CI temp directory on the local disk | not applicable (the harness is rlmdb's); run the tests with `TMP` on a local disk, as there |
 | `5d8bc38` | a compacting copy stops when it outgrows its source (#44) | not Windows-specific: the engine sync's |
-| `3df6995` | interop holds outlast slow scenarios; stale reader and #42 on Windows | rlmdb's interop harness (the Go peer runs in it from rlmdb's `t3/interop-gopeer-v2`) |
+| `3df6995` | interop holds outlast slow scenarios; stale reader and #42 on Windows | rlmdb's interop harness (the Go peer runs in it as `Peer::External`, in rlmdb's main since `0f902b4`) |
 | `63b591c`, `d27e68f`, `03fccb3`, `86563af`, `7dcf511`, `ea1bbdb` | MSVC builds of the C test programs, the C library's DLL, rlmdb-tools' `atoi` per C runtime | not applicable (no MSVC build here: the oracles are built with MinGW-w64) |
 
 Divergences from rlmdb on Windows (none changes a file):

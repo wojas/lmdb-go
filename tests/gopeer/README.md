@@ -79,8 +79,8 @@ C's, gopeer does this:
 
 ## Running rlmdb's interop tests with gopeer
 
-rlmdb's interop crate (branch `t3/interop-gopeer-v2`, `Peer::External`
-on top of rlmdb's main; not merged into it) finds gopeer through
+rlmdb's interop crate (`Peer::External`, in rlmdb's main since `0f902b4`)
+finds gopeer through
 `INTEROP_PEER` (its path), `INTEROP_PEER_ARGS` (`--impl cgo` or `--impl
 port`) and `INTEROP_PEER_NAME` (`Go`); without `INTEROP_PEER` the tests
 are skipped.
@@ -155,7 +155,7 @@ counts as C 0.9.36 and later do), and `delete` needs no workaround.
 | Linux x86-64, glibc (Debian bookworm, under Rosetta) | 165 / 165 | 231 / 231 | 5 / 5 |
 
 Every row is from the final validation (2026-11-01), with rlmdb's main
-after its restructuring (`t3/interop-gopeer-v2`, whose scenarios include
+after its restructuring (with `Peer::External` on top; the scenarios include
 1- to 3-byte `MDB_DUPFIXED` data sets; the Go peer's data set and page
 audit follow them). The x86-64 row ran in an x86-64 container under
 Rosetta (`--platform linux/amd64`, `rust:1-bookworm`, the gopeer built
