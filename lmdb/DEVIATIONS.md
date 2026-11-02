@@ -88,12 +88,47 @@ differently from C is in `internal/engine/PORTING.md` and in rlmdb's
   for every name of the data file: the directory, the file itself with
   `NoSubdir`, symlinks and hard links (the data file's device and inode;
   rlmdb claims the path given and then the device and inode, which comes
-  to the same). Across processes C's file names
+  to the same). The lock file is claimed the same way before it is locked,
+  so an `Open` that reaches the lock file of a handle of this process
+  under another name, or a data file that is such a lock file, fails with
+  `EBUSY` as well (C sets the table up again under the open handle's
+  readers); a descriptor of such a file that the failed `Open` or
+  `SniffFormat` opened stays open until that handle is gone, since closing
+  it would drop the handle's record locks. Across processes C's file names
   apply: the lock file of a directory is `lock.mdb` in it, that of a
   `NoSubdir` file its name plus `-lock`, so processes that open one data
   file in different modes use two lock files and neither exclude each
   other's writers nor see each other's readers, in C as here. Open an
   environment in the same mode everywhere.
+* **Read-only handles before the first commit.** A read transaction of a
+  `Readonly` handle reads the snapshot `mti_txnid` names, also while it is
+  0, as read transactions of writable handles do. C's and v1's read-only
+  handles read the newest meta page while it is 0, which can be a first
+  commit in flight, one that failed, or one whose writer died before it
+  was published (rlmdb `KNOWN_C_BUGS.md` #45). Such a reader sees an empty
+  environment there, txnid 0.
+* **0.9 pages below 2 KiB.** A 0.9 data file of pages below 2 KiB is
+  refused with `MDB_INVALID`, read-write and read-only (rlmdb #48). C and
+  v1 open it (no 0.9 writer makes one; 511-byte keys and `DupFixed` items
+  do not fit its pages, and C writes past them). LMDB 1.0 files keep their
+  range from 256 bytes.
+* **Damaged files, more of them refused.** A transaction on a snapshot
+  whose last page is below the meta pages, or the largest page number,
+  fails to begin with `MDB_CORRUPTED` (rlmdb #49; a C writer overwrites a
+  meta page there). Over branch pages that share children (rlmdb #50): a
+  cursor walk fails with `MDB_CORRUPTED` once it has stepped onto more
+  leaves in one direction than the snapshot has pages plus the pages its
+  write transaction allocated; walks of the free DB (page allocation,
+  `FreePages`, the compacting copy's count) fail at a key not larger than
+  the one before; `Txn.Drop` fails once its walk has visited, or its free
+  list holds, more pages than the snapshot has; and a commit whose free
+  list names a page twice fails. C and v1 walk such a tree for hours and
+  commit such a free list. Sound files see no difference.
+* **`Open` while the last user closes.** Where the last user of an
+  environment removes its semaphores (macOS; OpenBSD, NetBSD and DragonFly),
+  an `Open` that finds them gone starts again with the exclusive probe, up
+  to 100 times, then fails with `ENOENT`. C and v1 fail with `ENOENT` at
+  once (rlmdb #47).
 * **Ignored flags.** `FixedMap`, `WriteMap`, `MapAsync` and `NoMemInit` are
   accepted and ignored (`Flags` reports them), as in rlmdb: the map is
   read-only and never at a fixed address.
@@ -232,7 +267,12 @@ differently from C is in `internal/engine/PORTING.md` and in rlmdb's
   semaphores for LMDB 0.9 lock files, as on macOS (NetBSD's names are 14
   characters, as C's), and for LMDB 1.0 lock files the SysV semaphore set
   of C 1.0 (`semget(ftok(lockfile, 'M'))`), which tells the next writer
-  about one that died; `MDB_FDATASYNC` is `fsync`. On OpenBSD, which has
+  about one that died. The first opener of such a lock file refuses a set
+  at its key that is not a set of two it may change (another program's
+  set whose `ftok` key collides: `EEXIST` for a larger one, the
+  `semctl` error for another user's), where C 1.0 and rlmdb before
+  `2fb635e` reset it (rlmdb `KNOWN_C_BUGS.md` #46). `MDB_FDATASYNC` is
+  `fsync`. On OpenBSD, which has
   no unified buffer cache, every write to the data file is followed by
   `msync(MS_INVALIDATE)` of the map, widened to whole OS pages where C's
   call fails unnoticed (rlmdb `KNOWN_C_BUGS.md` #39). The port builds and
