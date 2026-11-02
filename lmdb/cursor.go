@@ -75,6 +75,7 @@ func openCursor(txn *Txn, db DBI) (*Cursor, error) {
 		c._c = txn.env.readCursor()
 		c.pooled = true
 		if err := txn._txn.OpenCursorInto(c._c, engine.DBI(db)); err != nil {
+			c._c.Forget()
 			txn.env.cursors.Put(c._c)
 			return nil, operr("mdb_cursor_open", err)
 		}
@@ -117,7 +118,10 @@ func (c *Cursor) Renew(txn *Txn) error {
 func (c *Cursor) close() bool {
 	if c._c != nil {
 		if c.pooled {
-			// A read cursor holds nothing but its memory.
+			// A read cursor holds nothing but its memory, once it
+			// forgets its pages (slices into a map that may be unmapped
+			// while the cursor waits in the pool).
+			c._c.Forget()
 			c.txn.env.cursors.Put(c._c)
 		} else if c.txn.ended() && !c.txn.readonly {
 			// the cursor has already been released by LMDB.

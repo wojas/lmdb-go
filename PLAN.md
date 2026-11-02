@@ -235,8 +235,27 @@ released in LMDB 0.9.37 and 1.0.3 (2026-10-21; 0.9.36 and 1.0.2 do not
 have it): the released lmdb-go v1.9.4 (C 0.9.35) reads stale pages there
 after its own writes (on it the benchmark fails with `MDB_NOTFOUND` and
 crashes in `mdb_put`), and such a C writer leaves the maps of every
-process sharing the file stale. The other BSDs, and
-OpenBSD on amd64, have not run. All four build,
+process sharing the file stale. FreeBSD 15.1 arm64 is tested likewise
+(Go 1.26, the base system's clang): the root module with cgo and without
+it, the `tests` module against C LMDB 0.9.36 and 1.0 built there by
+rlmdb's interop build (the robust mutexes of both lock-file versions, a
+writer that dies holding the writer mutex recovered from in both
+directions, the layouts against `layout_dump` and the probe compiled
+there, the write differential, copies), and rlmdb's interop matrix with
+the Go peer (`tests/gopeer`: `--impl port` on both formats, `--impl cgo`
+on 0.9) next to C LMDB 0.9.37 and 1.0.3, rlmdb and C on rlmdb. Two
+failures there are the harness's: its `killed_writer` scenario counts
+only Linux's and Windows's writer locks as robust and expects the next
+writer to wait on FreeBSD, which fails for C against C as well and
+passes with FreeBSD counted; and on two virtual CPUs the `--nosync`
+writer loop of `concurrent_writers_readers` now and then fills the
+scenario's 512 MiB map (`MDB_MAP_FULL`) while a preempted reader pins an
+old snapshot, readers of every implementation alike. `-race` is not
+available on freebsd/arm64. Fuzzing there found that pooled read cursors
+and transactions kept page slices of unmapped maps, which the collector
+follows once FreeBSD places Go heap in the same addresses (fixed:
+`rcursor.forget`). NetBSD, DragonFly, and FreeBSD and OpenBSD on amd64,
+have not run. All four build,
 vet and compile their test binaries (`go test -c`) for amd64 and arm64
 (DragonFly: amd64 only, as Go), without cgo and with it:
 `scripts/bsd-cc-check.sh` compiles the root module (the cgo lock files),
@@ -247,12 +266,11 @@ C's `mdb.c` compiled there (`TestLayoutsMatchCompiledC`): they agree.
 On macOS the lock-file tests also run the BSDs' LMDB 1.0 layout (the SysV
 set, including a writer that dies) and NetBSD's LMDB 0.9 layout,
 `tests/lockfile` compares the `ftok` formula with libc's, and
-`internal/sys` tests the invalidation. rlmdb's own suites run on FreeBSD
-in its CI (a VM job); this port's do not yet. To run: a FreeBSD VM (as
-rlmdb's `bsd.yml`, `vmactions/freebsd-vm`) with Go and the base system's
-`cc`, running `go test ./...` and the `tests` module against the C oracles
-built there (`tests/cmd/build-c-oracles`); the other BSDs likewise, with
-`-lrt` on NetBSD coming from `sem_cgo.go`.
+`internal/sys` tests the invalidation. To run the others: a VM with Go
+and the base system's `cc`, running `go test ./...` and the `tests`
+module against the C oracles built there (`tests/cmd/build-c-oracles`),
+as on FreeBSD and OpenBSD, with `-lrt` on NetBSD coming from
+`sem_cgo.go`.
 
 ## Deferred decisions (owner, revisit before a release)
 
@@ -284,7 +302,7 @@ built there (`tests/cmd/build-c-oracles`); the other BSDs likewise, with
   its `5773e0a`; ppc64 and mips64 are untested. Later big-endian work of
   rlmdb is ported here (the
   same way as any rlmdb change, see "Following rlmdb").
-* **BSDs: ported** (see "The BSDs"); OpenBSD arm64 is tested. Next: run
-  the others, a FreeBSD VM first.
+* **BSDs: ported** (see "The BSDs"); FreeBSD and OpenBSD arm64 are
+  tested. Next: NetBSD and DragonFly, and amd64.
 * Cross-compiling cgo builds: `zig cc` as `CC` (bundled glibc, musl and
   macOS headers) is the suggested toolchain; document and test it.

@@ -86,6 +86,32 @@ func (c *rcursor) init(db format.DB, cmp format.Comparator, flags uint8, l *form
 	c.pg[0] = emptyPage
 }
 
+// forget drops the cursor's pages (the stack and the sub-page), slices
+// into a data map or a dirty page, so that a cursor kept for reuse (a
+// closed read cursor in package lmdb's pool, the scratch cursors of a Txn
+// object) does not keep pointers into a map that is unmapped once the last
+// transaction releases it. Such a pointer is not harmless in Go: the
+// address range may become Go heap, which FreeBSD places in the holes
+// munmap leaves, and the collector then takes the stale slice for a
+// pointer into whatever is allocated there (and marks free memory: heap
+// corruption). The pages set are a prefix of the stack (push fills it from
+// the root), so the loop stops at the first empty entry; a cursor not used
+// since it last forgot costs two loads and no store. The cursor must be
+// initialised again before use, as it always is (its depth and flags are
+// left as they are).
+func (c *rcursor) forget() {
+	if c.pg[0] == nil && c.subpage == nil {
+		return
+	}
+	for i := range c.pg {
+		if c.pg[i] == nil {
+			break
+		}
+		c.pg[i] = nil
+	}
+	c.subpage = nil
+}
+
 func (c *rcursor) page(i int) format.Page { return format.Page{B: c.pg[i], L: c.l} }
 
 func (c *rcursor) topPage() format.Page { return format.Page{B: c.pg[c.top], L: c.l} }

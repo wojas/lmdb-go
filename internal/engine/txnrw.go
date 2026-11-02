@@ -295,6 +295,7 @@ func (t *Txn) end(keep bool) error {
 	w.dropPghead()
 	w.pglast = 0
 	w.flags = txnFinished
+	t.forgetPages()
 	if w.locked {
 		w.locked = false
 		e := t.env

@@ -243,7 +243,9 @@ func (t *Txn) endNested(how int) {
 	w.parent = nil
 	w.flags = txnFinished
 	// The map is the parent's (the child holds no reference of its own);
-	// the spare child must not keep it past the parent's end.
+	// the spare child must not keep it past the parent's end, nor pages of
+	// it in its scratch cursors.
+	t.forgetPages()
 	t.dmap = nil
 	// The parent's next child reuses this one's memory (beginNested): the
 	// caller must not use t any more (package lmdb drops it, and Owner

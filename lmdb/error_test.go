@@ -103,7 +103,7 @@ func TestOpErrorUnwrap(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer env2.Close()
-	err = env2.Open(filepath.Join(t.TempDir(), "missing"), 0, 0o644)
+	err = env2.Open(filepath.Join(t.TempDir(), "missing"), testFlags(0), 0o644)
 	if !errors.As(err, &operr) {
 		t.Fatalf("not an OpError: %#v", err)
 	}

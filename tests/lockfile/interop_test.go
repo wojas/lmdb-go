@@ -340,13 +340,13 @@ func TestReaderCheckAcrossImplementations(t *testing.T) {
 
 // TestWriterKilledHoldingLock: a C writer killed while it holds the writer
 // mutex is recovered from by Go, and a Go writer killed while it holds it
-// by C (robust mutexes, EOWNERDEAD and mdb_mutex_failed; Linux. Windows
-// mutexes are abandoned, WAIT_ABANDONED, which C handles the same way. A
+// by C (robust mutexes, EOWNERDEAD and mdb_mutex_failed; Linux and
+// FreeBSD. Windows mutexes are abandoned, WAIT_ABANDONED, which C handles the same way. A
 // SysV semaphore set, LMDB 1.0's lock file on OpenBSD, NetBSD and
 // DragonFly, is released by SEM_UNDO, and the flag the holder left set
 // tells the next one, as MDB_OWNERDEAD).
 func TestWriterKilledHoldingLock(t *testing.T) {
-	robust := runtime.GOOS == "linux" || runtime.GOOS == "windows"
+	robust := runtime.GOOS == "linux" || runtime.GOOS == "freebsd" || runtime.GOOS == "windows"
 	if robust && os.Getenv("LMDB_TEST_NO_ROBUST_MUTEX") != "" {
 		// QEMU user emulation has no robust futexes (in C too): the dead
 		// owner is never reported (scripts/linux-test.sh).
@@ -390,7 +390,7 @@ func TestWriterKilledHoldingLock(t *testing.T) {
 		r.Close()
 	}
 	if !ran {
-		t.Skip("robust mutexes are Linux's and Windows's, SysV semaphores LMDB 1.0's on OpenBSD, NetBSD and DragonFly; named semaphores stay taken when the holder dies, in C too")
+		t.Skip("robust mutexes are Linux's, FreeBSD's and Windows's, SysV semaphores LMDB 1.0's on OpenBSD, NetBSD and DragonFly; named semaphores stay taken when the holder dies, in C too")
 	}
 }
 
