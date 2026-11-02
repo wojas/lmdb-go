@@ -13,7 +13,7 @@
 #   * the root module: go vet ./..., go build of every package and command,
 #     go test -c of every package;
 #   * the tests module: go vet ./... and go test -c of every package (the
-#     cgo reference tests/cgolmdb, C LMDB 0.9.35, included);
+#     cgo reference tests/cgolmdb, C LMDB 0.9.36 plus fixes, included);
 #   * with RLMDB_DIR: the C oracles (tests/cmd/build-c-oracles: C 0.9 and
 #     1.0 peers, tools, layout_dump, writeops) and the layout probe
 #     (internal/lockfile/cprobe/layout_probe.c, which includes C's mdb.c);

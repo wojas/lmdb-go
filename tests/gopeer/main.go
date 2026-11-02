@@ -4,8 +4,9 @@
 //	gopeer <command> <args...> [options...] [--impl cgo|port]
 //
 // One binary, two implementations: --impl cgo runs the protocol on the
-// pinned cgo lmdb-go v1.9.4 (C LMDB 0.9.35; a C 0.9 peer, next to rlmdb's
-// cpeer on C 0.9.36), --impl port (the default) on the Go implementation.
+// pinned cgo reference (lmdb-go v1.9.4's Go code on C LMDB 0.9.36 plus
+// ITS#10615, ITS#10642 and ITS#10643; a C 0.9 peer, next to rlmdb's cpeer on
+// the same C code), --impl port (the default) on the Go implementation.
 // The peer itself is package ./cgo; ./port is the same code generated for
 // the port (tests/gen-port.sh). See README.md.
 package main

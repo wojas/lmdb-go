@@ -1,5 +1,6 @@
-// Command lmdb-bench runs rlmdb's benchmark workload groups on the cgo
-// lmdb-go v1.9.4 (C LMDB 0.9.35) and on the Go implementation, in one
+// Command lmdb-bench runs rlmdb's benchmark workload groups on the pinned
+// cgo reference (lmdb-go v1.9.4's Go code on C LMDB 0.9.36 plus ITS#10615,
+// ITS#10642 and ITS#10643) and on the Go implementation, in one
 // process, interleaved: per round and group, each implementation runs the
 // group (one warm-up and -reps timed repetitions of each workload, in a
 // fresh environment), the one that goes first alternating; the samples of

@@ -1,6 +1,7 @@
-// What differs between the implementations, the cgo side: lmdb-go v1.9.4
-// (C LMDB 0.9.35). Hand-written; tests/gen-port.sh does not copy this file
-// to ../port, which has its own impl.go.
+// What differs between the implementations, the cgo side: the pinned
+// reference, lmdb-go v1.9.4's Go code on C LMDB 0.9.36 plus ITS#10615,
+// ITS#10642 and ITS#10643. Hand-written; tests/gen-port.sh does not copy
+// this file to ../port, which has its own impl.go.
 
 package peer
 
