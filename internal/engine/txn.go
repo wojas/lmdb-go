@@ -13,7 +13,9 @@
 //     until stable. From then on writers do not reuse pages this snapshot
 //     needs.
 //  3. Read the meta page of that txnid (txnid & 1) and take the free/main
-//     DB records and last_pgno from it.
+//     DB records and last_pgno from it. C's read-only handles take the
+//     newest meta page instead while mti_txnid is 0; here they do not (rlmdb
+//     KNOWN_C_BUGS.md #45).
 //
 // Step 3 races with writers: a writer committing N+2 rewrites the meta
 // page our N uses. C accepts the torn read; here mti_txnid is re-checked
@@ -219,15 +221,11 @@ func (t *Txn) takeSnapshot() error {
 	}
 	torn := 0
 	for {
+		// The snapshot mti_txnid names, also while it is 0, where C's
+		// read-only handles take the newest meta page instead: that can be
+		// the first commit's, written but not yet published, or failed, and
+		// writers build on mti_txnid (rlmdb KNOWN_C_BUGS.md #45).
 		txnid = e.lock.PublishCurrentTxnID(t.slot)
-		if txnid == 0 && e.isReadOnly() {
-			if meta, err = e.pickMetaIn(m); err != nil {
-				return err
-			}
-			e.lock.SetSlotTxnID(t.slot, meta.TxnID)
-			txnid = meta.TxnID
-			break
-		}
 		if meta, err = e.snapshotMeta(m, int(txnid&1)); err != nil {
 			if torn+1 < maxTornCopies && e.lock.TxnID() != txnid {
 				// Torn by a commit meanwhile (maxTornCopies): again.

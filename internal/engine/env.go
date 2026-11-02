@@ -106,6 +106,9 @@ type Env struct {
 	// metaSyncFault is the errno the sync after the next meta page write
 	// is to fail with (0: none), for tests (FailNextMetaSync).
 	metaSyncFault atomic.Int32
+	// metaWriteHook runs once the next meta page write of this handle
+	// reached the file, for tests (AfterNextMetaWrite).
+	metaWriteHook atomic.Pointer[func()]
 
 	// writerMu serialises the write transactions of this handle and guards
 	// writer; the lock region's writer lock (taken after it) serialises
@@ -774,8 +777,20 @@ func (e *Env) SetDirtyLimit(pages int) { e.dirtyLimit.Store(int64(max(pages, 16)
 // Environment::fail_next_meta_sync).
 func (e *Env) FailNextMetaSync(errno syscall.Errno) { e.metaSyncFault.Store(int32(errno)) }
 
-// injectedMetaSyncError is the failure FailNextMetaSync asked for, once.
+// AfterNextMetaWrite makes hook run on the committing goroutine once the
+// next meta page write of this handle has reached the file (and, on macOS,
+// its sync is done), before the commit is published or fails as
+// FailNextMetaSync asks: a commit stopped in flight, holding the writer
+// lock, for tests of what other processes see meanwhile (not C API; rlmdb's
+// Environment::after_next_meta_write).
+func (e *Env) AfterNextMetaWrite(hook func()) { e.metaWriteHook.Store(&hook) }
+
+// injectedMetaSyncError runs the hook of AfterNextMetaWrite, then returns
+// the failure FailNextMetaSync asked for; each once.
 func (e *Env) injectedMetaSyncError() error {
+	if hook := e.metaWriteHook.Swap(nil); hook != nil {
+		(*hook)()
+	}
 	if e.metaSyncFault.Load() == 0 {
 		return nil
 	}

@@ -992,5 +992,8 @@ func TestMain(m *testing.M) {
 	if src := os.Getenv(copyHelperSrc); src != "" {
 		os.Exit(copyHelper(src))
 	}
+	if src := os.Getenv(readHelperSrc); src != "" {
+		os.Exit(readHelper(src))
+	}
 	os.Exit(m.Run())
 }
