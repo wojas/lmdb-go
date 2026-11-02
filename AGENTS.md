@@ -219,9 +219,10 @@ messages) until that is established.
   coordinator says the machine may be used. Without it, cross-check with
   `GOOS=windows GOARCH=amd64` and `arm64` builds, `go vet` and
   `go test -c`.
-* The BSDs: an OpenBSD arm64 VM may be available (how to reach it and
-  its rules are in `AGENTS.local.md`; use it only when the coordinator
-  says so); there is no machine for the other BSDs. `scripts/bsd-cc-check.sh` builds,
+* The BSDs: an OpenBSD and a FreeBSD arm64 VM may be available (how to
+  reach them and their rules are in `AGENTS.local.md`; use them only when
+  the coordinator says so); there is no machine for NetBSD and DragonFly.
+  `scripts/bsd-cc-check.sh` builds,
   vets and compiles the test binaries of both modules with cgo for each
   BSD (zig for FreeBSD, NetBSD and OpenBSD; a sysroot under `$HOME/sdk`
   for DragonFly; see its header), with `RLMDB_DIR` also the C oracles,
