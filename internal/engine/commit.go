@@ -197,22 +197,10 @@ func (t *Txn) writeRuns(runs []flushEntry) error {
 	return nil
 }
 
-// writeBatch writes one batch of contiguous pages at pos (C's pwritev).
-// The syscall package has no pwritev; a batch of several buffers is
-// gathered into one reused buffer and written with one pwrite.
+// writeBatch writes one batch of contiguous pages at pos (C's pwritev;
+// sys.PageWriter).
 func (t *Txn) writeBatch(f *os.File, bufs [][]byte, pos uint64) error {
-	switch len(bufs) {
-	case 0:
-		return nil
-	case 1:
-		return sys.WriteAt(f, bufs[0], int64(pos))
-	}
-	b := t.w.flushBuf[:0]
-	for _, x := range bufs {
-		b = append(b, x...)
-	}
-	t.w.flushBuf = b
-	return sys.WriteAt(f, b, int64(pos))
+	return t.w.pageWriter.WriteAt(f, bufs, int64(pos))
 }
 
 // invalidateMap is MDB_Invalidate: after n bytes at pos were written to
@@ -276,7 +264,7 @@ func (t *Txn) writeMeta() error {
 	if syncFD && e.metaFile != nil {
 		f = e.metaFile
 	}
-	err := sys.WriteAt(f, buf[format.MetaMapSize:], off)
+	err := sys.Pwrite(f, buf[format.MetaMapSize:], off)
 	if err == nil && runtime.GOOS == "darwin" && syncFD && e.metaFile != nil {
 		// O_DSYNC does not flush the drive cache on macOS.
 		err = sys.Fdatasync(e.metaFile)

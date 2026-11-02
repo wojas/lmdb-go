@@ -107,10 +107,10 @@ type wstate struct {
 	// reclaimRun.
 	rc, rx     rcursor
 	reclaimCur rcursor
-	// flushBuf is the reused buffer of page writes, runs that of the pages
-	// to write.
-	flushBuf []byte
-	runs     []flushEntry
+	// pageWriter writes the batches of pages, runs is the list of the
+	// pages to write.
+	pageWriter sys.PageWriter
+	runs       []flushEntry
 	// metaBuf is the meta page writeMeta writes. It lives here because
 	// os.File.WriteAt keeps a reference to its buffer on Windows: a local
 	// array escaped to the heap there, one allocation per commit.
