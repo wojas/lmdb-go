@@ -369,7 +369,7 @@ func (t *Txn) setSnapshot(txnid uint64, meta *format.Meta) error {
 			return err
 		}
 		if ok {
-			t.dmap.Release()
+			t.releaseMap()
 			t.dmap = m
 			maxPgno = uint64(t.env.mapSize.Load()) / uint64(t.pageSize)
 		}
@@ -428,7 +428,26 @@ func (t *Txn) Renew() error {
 	return nil
 }
 
+// forgetPages drops the pages of the transaction's scratch cursors (and of
+// a write transaction's), which point into its map, when the transaction
+// gives the map up: the Txn object outlives it (package lmdb's pool of read
+// transactions, the environment's write transaction, a spare child), and
+// must not keep pointers into a map that may be unmapped (rcursor.forget).
+func (t *Txn) forgetPages() {
+	t.nameCur.forget()
+	t.getCur.forget()
+	t.getX.forget()
+	if w := t.w; w != nil {
+		w.rc.forget()
+		w.rx.forget()
+		w.reclaimCur.forget()
+	}
+}
+
+// releaseMap releases the transaction's map, which may unmap it, after
+// its scratch cursors have dropped their pages (rcursor.forget).
 func (t *Txn) releaseMap() {
+	t.forgetPages()
 	if t.dmap != nil {
 		t.dmap.Release()
 		t.dmap = nil

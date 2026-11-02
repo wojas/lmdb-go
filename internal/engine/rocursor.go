@@ -100,6 +100,18 @@ func (c *Cursor) Close() {
 	if c.txn != nil && c.txn.w != nil {
 		c.txn.closeWriteCursor(c.id)
 	}
+	c.Forget()
+}
+
+// Forget drops the cursor's pages (rcursor.forget), which point into its
+// transaction's map, before package lmdb keeps a closed read cursor for
+// reuse: a kept cursor must not keep pointers into a map that may be
+// unmapped. It touches nothing but the cursor (not its transaction, whose
+// state may serve another transaction by now). OpenCursorInto starts it
+// over.
+func (c *Cursor) Forget() {
+	c.mc.forget()
+	c.mx.forget()
 }
 
 // Txn is the cursor's transaction (mdb_cursor_txn): for a write cursor
