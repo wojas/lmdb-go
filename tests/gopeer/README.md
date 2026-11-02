@@ -20,9 +20,11 @@ go build -o /tmp/gopeer ./gopeer                     # cgo and the port
 `--impl cgo|port` (an option like the others, anywhere after the command)
 selects the implementation the protocol runs on:
 
-* `cgo`: the pinned lmdb-go v1.9.4 (`../cgolmdb`, cgo, C LMDB 0.9.35). A
-  C 0.9 peer; it opens LMDB 0.9 environments only (`--format 1.0` and
-  `--pagesize` are usage errors, as for `cpeer`).
+* `cgo`: the pinned reference `../cgolmdb`: lmdb-go v1.9.4's Go code on C
+  LMDB 0.9.36 plus ITS#10615, ITS#10642 and ITS#10643, the same code as
+  LMDB 0.9.37 and as rlmdb's `cpeer`. A C 0.9 peer; it opens LMDB 0.9
+  environments only (`--format 1.0` and `--pagesize` are usage errors, as
+  for `cpeer`).
 * `port` (the default): the Go implementation, both data formats
   (`--format` with lmdb-go v2's `Env.SetFormat`, `--pagesize` with
   `Env.SetPageSize`).
@@ -144,8 +146,7 @@ at once). That covers
 writers of all implementations excluding each other, readers seeing each
 other in the reader table, MVCC, killed writers (robust mutex recovery on
 Linux), copies, and C's page audit and page-by-page comparison of what Go
-wrote. The DUPSORT page-count failures of `--impl cgo` are gone (the port
-counts as C 0.9.36 and later do), and `delete` needs no workaround.
+wrote. `delete` needs no workaround.
 
 | | `external_pairs` | `external_pairs10` | `external_peer` |
 |---|---:|---:|---:|
@@ -154,10 +155,11 @@ counts as C 0.9.36 and later do), and `delete` needs no workaround.
 | Linux arm64, musl (Alpine) | 165 / 165 | 231 / 231 | 5 / 5 |
 | Linux x86-64, glibc (Debian bookworm, under Rosetta) | 165 / 165 | 231 / 231 | 5 / 5 |
 
-Every row is from the final validation (2026-11-01), with rlmdb's main
-after its restructuring (with `Peer::External` on top; the scenarios include
-1- to 3-byte `MDB_DUPFIXED` data sets; the Go peer's data set and page
-audit follow them). The x86-64 row ran in an x86-64 container under
+The macOS and Linux arm64 rows are from 2026-11-02, with rlmdb's main at
+`0f902b4`; the x86-64 row is from the final validation (2026-11-01), with
+rlmdb's main after its restructuring (with `Peer::External` on top; the
+scenarios include 1- to 3-byte `MDB_DUPFIXED` data sets; the Go peer's data
+set and page audit follow them). The x86-64 row ran in an x86-64 container under
 Rosetta (`--platform linux/amd64`, `rust:1-bookworm`, the gopeer built
 in the same platform's golang container, a target volume of its own);
 there `external_pairs10` and `external_peer` ran with
@@ -167,31 +169,42 @@ thread of the test binary waiting in the kernel on a priority-inheritance
 futex (which neither C LMDB, rlmdb nor the harness uses) and no peer
 process running, which points at the emulator rather than at a peer.
 
-### Results with `--impl cgo` (lmdb-go v1.9.4, C LMDB 0.9.35)
+### Results with `--impl cgo` (the reference)
 
-`external_peer` passes on macOS and Linux: gopeer knows the same
-commands as `cpeer`, `gen` is byte-identical, and `verify`, `dump --all`, `stat` and
-`check-freelist` print exactly what `cpeer` prints on an environment C
-wrote; writer loops of C, Rust, C on Rust and Go at once keep `#commits`
-exact. On the 0.9 pairs (Go and C, Go and Rust both ways, Go and Go; 165
-tests), every scenario passes except the ones that check DUPSORT page
-counts, and those fail because of the C version, not the peer: lmdb-go
-v1.9.4 bundles C LMDB 0.9.35, before ITS#9388 (0.9.36: a DUPSORT DB's
-`md_branch_pages`/`md_leaf_pages` include its sub-DBs' pages) and
-ITS#10643 (0.9.37: page counts when deleting DUPSORT records). `cpeer`
-(0.9.36 and later) and rlmdb follow the newer accounting, so their
-`check-freelist` rejects DUPSORT DBs with sub-DBs that 0.9.35 wrote (and
-counts that went negative where both versions wrote one DB), and
-`same_writes_same_pages` finds the main DB's record of such a DB
-different. Locking, the reader table, MVCC, killed writers (robust mutex
-recovery on Linux), copies and all data checks pass. Run on macOS 15
-(arm64) and Linux arm64 (Debian bookworm containers):
+Every test passes: gopeer knows the same commands as `cpeer`, `gen` is
+byte-identical, and `verify`, `dump --all`, `stat` and `check-freelist`
+print exactly what `cpeer` prints on an environment C wrote; writer loops
+of C, Rust, C on Rust and Go at once keep `#commits` exact. That covers
+locking, the reader table, MVCC, killed writers (robust mutex recovery on
+Linux), copies, DUPSORT page counts and `same_writes_same_pages`, with
+rlmdb's main at `0f902b4` (2026-11-02). `delete` runs with the workaround
+above, so the harness reports it as `SKIPPED partly`.
 
-| | passed | failed: DUPSORT page counts | failed: `same_writes_same_pages` |
-|---|---:|---:|---:|
-| macOS | 127 | 34 | 4 |
-| Linux | 125 | 36 | 4 |
+| | `external_pairs` | `external_peer` |
+|---|---:|---:|
+| macOS 15 (arm64) | 165 / 165 | 5 / 5 |
+| Linux arm64, glibc (Debian bookworm) | 165 / 165 | 5 / 5 |
+| Linux arm64, musl (Alpine) | 165 / 165 | 5 / 5 |
 
 The 1.0 pairs (`external_pairs10`) and `four_writers10` are skipped: the
 cgo peer does not open LMDB 1.0 environments. They become meaningful with
 `--impl port`.
+
+### The released lmdb-go v1.9.4 (C LMDB 0.9.35)
+
+A peer on the released v1.9.4's C code does not pass the DUPSORT checks,
+because of the C version, not the peer. C 0.9.35 is from before ITS#9388
+(0.9.36: a DUPSORT DB's `md_branch_pages`/`md_leaf_pages` include its
+sub-DBs' pages) and ITS#10643 (0.9.37: page counts when deleting DUPSORT
+records). `cpeer` and rlmdb follow the newer accounting, so their
+`check-freelist` rejects DUPSORT DBs with sub-DBs that 0.9.35 wrote (and
+counts that went negative where both versions wrote one DB), and
+`same_writes_same_pages` finds the main DB's record of such a DB
+different. Locking, the reader table, MVCC, killed writers, copies and all
+data checks pass. Measured on 2026-11-02 with rlmdb's main at `0f902b4`,
+with this peer built on that C code:
+
+| | passed | failed: DUPSORT page counts | failed: `same_writes_same_pages` |
+|---|---:|---:|---:|
+| macOS 15 (arm64) | 127 | 33 | 5 |
+| Linux arm64, glibc (Debian bookworm) | 125 | 35 | 5 |
