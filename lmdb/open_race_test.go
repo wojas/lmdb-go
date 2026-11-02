@@ -115,6 +115,7 @@ func openRaceWorker(spec string) int {
 }
 
 func TestOpenCloseRace(t *testing.T) {
+	requireLockFile(t)
 	iterations := 1000
 	if n, err := strconv.Atoi(os.Getenv("OPEN_RACE_ITERATIONS")); err == nil {
 		iterations = n
