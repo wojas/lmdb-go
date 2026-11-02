@@ -9,10 +9,74 @@ the medians: below 1 means the port is faster.** Times are ns per
 operation (median of all samples; `lmdb-bench` prints the minimum in
 parentheses), allocations are Go heap allocations per operation.
 
-The current numbers come first (the new reference, 2026-11-02), then the
+The current numbers come first (the new reference, 2026-11-02, preceded
+by why read transactions on Linux got slower with Go 1.27), then the
 final validation (2026-11-01) and what stage 3 (benchmarks and
 performance, `PLAN.md`) and stage 4 measured and changed, all against C
 0.9.35.
+
+## Read transactions in the Linux VM with Go 1.26 and later (2026-11-02)
+
+The new reference's run below found the port's read transactions slower
+on Linux with Go 1.27 than with Go 1.25 (`view_empty` 2.26 times as long)
+and not on macOS. The cause is how Go 1.26 and later copy structs on
+arm64, combined with the VM the Linux numbers come from; the port did not
+change and was not changed.
+
+**Reproduced.** Go 1.25.12 against Go 1.27.3 builds of the same port code
+in one Linux arm64 container (`lmdb-bench -ab`, `goapi`, `-n 100000
+-rounds 3 -reps 3`; Go 1.27 / Go 1.25): `view_empty` 2.27 (177 to 401
+ns), `view_get` 1.36, `txn_get` 1.71, `renew_get` 1.83,
+`cursor_renew_set` 1.50; lookups, cursor operations and commits 1.03 to
+1.12. Go 1.26.2 is as slow as Go 1.27.3: in a Go benchmark of the
+`lmdb` package, interleaved, an empty `View` takes 214 to 233 ns with Go
+1.25, 422 to 501 with Go 1.26 and 421 to 452 with Go 1.27; a `Reset` plus
+`Renew` 136 to 140, 346 to 359 and 353 to 370 ns. No allocation changed.
+
+**Cause: LDP Q.** Go 1.26 compiles copies of more than 64 bytes on arm64
+to pairs of 32-byte vector loads and stores (`LDP Q` / `STP Q`, Go's
+`FLDPQ` / `FSTPQ`) instead of `duffcopy`; Go 1.27 does the same for copies
+of 32 to 64 bytes, which were pairs of 8-byte register loads (`LDP X`).
+Beginning or renewing a read transaction copies such structs several
+times: the decoded meta page (`format.Meta`, 136 bytes, returned by value
+from `ReadMeta`, `readMetaIn` and `snapshotMeta` to `takeSnapshot`) and
+the reset of the main and free DB's entries (`txnDB`, 104 bytes, in
+`Txn.dbe`); a CPU profile of `Reset` plus `Renew` with Go 1.27 puts a
+third of the time on the line of that reset. In the Linux VM one `LDP Q`
+costs about 4.7 ns more than on macOS on the same CPU, and successive ones
+do not overlap; `LDR Q` and `LDP X` cost the same in both:
+
+| ns per call of a function that does | macOS | Linux VM |
+|---|---:|---:|
+| one `LDP Q` (32 bytes; assembly) | 2.1 | 6.9 |
+| two `LDR Q` (32 bytes; assembly) | 2.1 | 2.2 |
+| two `LDP X` (32 bytes; assembly) | 2.1 | 2.1 |
+| four `LDP Q` (assembly) | 1.6 to 2.2 | 20 to 25 |
+| a copy of a 104-byte struct, Go 1.25 / 1.26 / 1.27 | 3.1 / 2.8 / 3.0 | 3.1 / 21 to 25 / 21 to 22 |
+| a copy of a 48-byte struct, Go 1.25 / 1.27 | 1.0 / 1.0 to 1.5 | 1.0 / 7.2 |
+
+A Go 1.27.3 compiler changed to emit two `LDR Q` where it emits one `LDP
+Q` for a copy (an experiment only) removes the slowdown: in the same
+container, interleaved, an empty `View` takes 185 to 214 ns (stock Go
+1.27: 416 to 452, Go 1.25: 202 to 218) and a `Reset` plus `Renew` 125 to
+134 ns (352 to 357; 134 to 137).
+
+**Why only Linux: the VM.** The Linux numbers come from a Lima VM on
+Apple Virtualization with Rosetta enabled. Its CPUs order memory as x86
+does (total store order): a message-passing litmus test (plain stores of
+data then flag, plain loads of flag then data) sees flag without data
+128389 times in 111189 trials on macOS and never in 282996 trials (three
+runs) in the VM. That `LDP Q` is slow in that mode is the likely
+explanation; it could not be checked here (the VM's mode was not changed),
+nor was native arm64 Linux hardware measured. macOS
+runs natively, where Go 1.27's copies are as fast as before (the port's
+`view_empty` took 0.83 of its Go 1.25 time).
+
+**Stage 11** (the rlmdb fixes pending on `stage11-rlmdb-sync3`, including
+read-only readers pinning `mti_txnid`'s snapshot while it is 0) does not
+change it: against `main`, both built with Go 1.27.3 in the Linux VM
+(`goapi`, `-n 100000`, 3 and 4 rounds of 3 reps), `view_empty` is 1.03
+and 1.01.
 
 ## New reference: C 0.9.36 plus fixes (2026-11-02)
 
