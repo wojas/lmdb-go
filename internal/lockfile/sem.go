@@ -2,7 +2,7 @@
 
 // The shared locks as semaphores. On macOS, and for LMDB 0.9 lock files on
 // OpenBSD, NetBSD and DragonFly, they are LMDB's MDB_USE_POSIX_SEM (mdb.c
-// 0.9.36 lines 143-149 and 367-379): LOCK_MUTEX0 is mdb_sem_wait (sem_wait,
+// 0.9.37 lines 143-149 and 367-379): LOCK_MUTEX0 is mdb_sem_wait (sem_wait,
 // retried on EINTR), UNLOCK_MUTEX is sem_post, mdb_env_setup_locks
 // (4990-5030) creates the two semaphores with sem_unlink then
 // sem_open(name, O_CREAT|O_EXCL, mode, 1) or opens them with sem_open(name,

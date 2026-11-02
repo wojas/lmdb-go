@@ -187,7 +187,7 @@ to it, as on Linux). lmdb-go v1's `lmdb/error_windows.go` is kept.
 
 Status: tested on Windows 10 x86-64 with Go 1.25 and MinGW-w64 gcc
 (MSYS2): the root module with and without cgo, and the `tests` module
-(cgo) against C LMDB 0.9.36 and 1.0 built there with
+(cgo) against C LMDB 0.9.37 and 1.0.3 built there with
 `tests/cmd/build-c-oracles` (lock-file interop with C peers, the write
 differential, copies, Go reading C's files) pass, on an exFAT drive and,
 for the file-system-sensitive tests (`internal/sys`, `internal/lockfile`,
@@ -218,7 +218,7 @@ and tested on every host.
 Status: OpenBSD 7.9 arm64 is tested (Go 1.26, the base system's clang):
 the root module with cgo and without it (`NoLock`; opening with a lock
 file fails with the error that names cgo), and the `tests` module (cgo)
-against C LMDB 0.9.36 and 1.0 built there with `tests/cmd/build-c-oracles`
+against C LMDB 0.9.37 and 1.0.3 built there with `tests/cmd/build-c-oracles`
 pass. That covers the lock-file interop with C peers of both formats
 (named semaphores for 0.9, the SysV set for 1.0, including a writer that
 dies holding the 1.0 writer lock, in both directions), the layouts

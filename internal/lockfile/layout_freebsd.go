@@ -1,5 +1,5 @@
 // The lock-file platform of FreeBSD C builds: FreeBSD 11 and later take
-// MDB_USE_POSIX_MUTEX with MDB_USE_ROBUST (mdb.c 0.9.36 lines 135-142,
+// MDB_USE_POSIX_MUTEX with MDB_USE_ROBUST (mdb.c 0.9.37 lines 135-142,
 // 1.0 lines 184-191), Linux's robust process-shared mutexes in the lock
 // file; rlmdb format/lockfile.rs (the FreeBSD platform).
 

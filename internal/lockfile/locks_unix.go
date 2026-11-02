@@ -4,7 +4,7 @@
 // mutexes in the lock file (Linux, FreeBSD), named POSIX semaphores (macOS;
 // OpenBSD, NetBSD and DragonFly in version 1) or a SysV semaphore set
 // (OpenBSD, NetBSD and DragonFly in version 2), as mdb_env_setup_locks
-// makes and finds them (0.9.36 lines 4964-5079, 1.0 lines 6064-6182).
+// makes and finds them (0.9.37 lines 4964-5079, 1.0 lines 6064-6182).
 
 package lockfile
 

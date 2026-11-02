@@ -1,5 +1,5 @@
 // The lock-file platform of Linux C builds: MDB_USE_POSIX_MUTEX with
-// robust mutexes (mdb.c lines 120-160 and 280-316, 0.9.36).
+// robust mutexes (mdb.c lines 120-160 and 280-316, 0.9.37).
 
 package lockfile
 

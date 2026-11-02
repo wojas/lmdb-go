@@ -1,5 +1,5 @@
 // MDB_FDATASYNC on FreeBSD: fdatasync(2), which C LMDB keeps there from
-// FreeBSD 11.1 on (mdb.c 0.9.36 lines 135-142); MDB_DSYNC is O_DSYNC
+// FreeBSD 11.1 on (mdb.c 0.9.37 lines 135-142); MDB_DSYNC is O_DSYNC
 // (FreeBSD 13 and later); rlmdb os/unix.rs (fdatasync, MDB_DSYNC).
 
 package sys
@@ -10,7 +10,7 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// oDSync is MDB_DSYNC (mdb.c 0.9.36 lines 456-461): FreeBSD's O_DSYNC
+// oDSync is MDB_DSYNC (mdb.c 0.9.37 lines 456-461): FreeBSD's O_DSYNC
 // (<fcntl.h>, 13.0 and later), which neither package syscall nor
 // golang.org/x/sys/unix v0.30.0 defines.
 const oDSync = 0x01000000

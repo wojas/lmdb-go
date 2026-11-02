@@ -1,6 +1,6 @@
 // The pair of shared locks of an environment, created or attached as the
 // lock-file version says: the lock part of mdb_env_setup_locks and of
-// mdb_env_close0 in mdb.c (0.9.36 lines 4964-5079, 5250-5270; 1.0 lines
+// mdb_env_close0 in mdb.c (0.9.37 lines 4964-5079, 5250-5270; 1.0 lines
 // 6064-6182); rlmdb os/shared_lock.rs and os/windows.rs (SharedLocks).
 // createLocks and attachLocks are per OS: locks_unix.go (pthread mutexes,
 // named semaphores and SysV semaphores, whose libc calls are in

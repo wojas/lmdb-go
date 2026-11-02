@@ -1,5 +1,5 @@
 // The data file map on Windows: mdb_env_map of the C release of each data
-// format (0.9.36 mdb.c line 4110; LMDB 1.0, mdb10.c line 5076) and rlmdb's
+// format (0.9.37 mdb.c line 4110; LMDB 1.0, mdb10.c line 5076) and rlmdb's
 // os/windows.rs (map_data, DataMap::map_readonly, DataMap::map_reserved,
 // DataMap::commit_pages), whose module documentation records the measured
 // behaviour these decisions rest on. Both views are read-only

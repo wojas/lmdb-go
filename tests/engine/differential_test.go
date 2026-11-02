@@ -2,7 +2,7 @@
 // tests/common/differential.rs and write_differential*.rs): the same
 // script of puts, deletes, cursor moves, nested transactions and drops on
 // several cursors of one write transaction runs in C (rlmdb's
-// tests/c/writeops.c, built against C 0.9.36 as writeops and C 1.0 as
+// tests/c/writeops.c, built against C 0.9.37 as writeops and C 1.0 as
 // writeops10) and in Go, each in a fresh environment. After every step the
 // position of every cursor must agree; the committed environments must
 // have the same contents (mdb_dump), pass C's page audit (cpeer
@@ -45,7 +45,7 @@ type oracle struct {
 	dataFile []byte
 }
 
-// oracle09 is C 0.9.36. It skips t where C's pages are not this process's
+// oracle09 is C 0.9.37. It skips t where C's pages are not this process's
 // (requireSamePageSize): 0.9 takes the OS page size.
 func oracle09(t testing.TB) *oracle {
 	o := &oracle{writeops: tool(t, "writeops"), dump: "mdb_dump", peer: "cpeer", f: format.V09}

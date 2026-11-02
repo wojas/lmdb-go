@@ -45,5 +45,5 @@
 // fixups; read operations on them rebuild read cursors. Every decision
 // that shows in the data file (page allocation, split points, free-list
 // handling, spilling, compacting copy) is C's, which tests/engine checks
-// page by page against C 0.9.36 and C 1.0.
+// page by page against C 0.9.37 and C 1.0.
 package engine

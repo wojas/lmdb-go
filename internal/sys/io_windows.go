@@ -1,5 +1,5 @@
 // Opening the environment's files, their identity and size on Windows:
-// mdb_fopen's _WIN32 branch (0.9.36 mdb.c line 4405) and rlmdb's
+// mdb_fopen's _WIN32 branch (0.9.37 mdb.c line 4405) and rlmdb's
 // os/windows.rs (env_file_options, sync_write_options, open_copy_target,
 // is_missing, file_id, file_size).
 //

@@ -8,7 +8,7 @@ import (
 	"syscall"
 )
 
-// oDSync is MDB_DSYNC (mdb.c 0.9.36 lines 456-461): O_DSYNC.
+// oDSync is MDB_DSYNC (mdb.c 0.9.37 lines 456-461): O_DSYNC.
 const oDSync = syscall.O_DSYNC
 
 // Fdatasync flushes the file's data to disk (MDB_FDATASYNC). os.File.Sync

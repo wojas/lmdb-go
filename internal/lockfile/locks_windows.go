@@ -1,5 +1,5 @@
 // createLocks and attachLocks on Windows: the two named kernel mutexes of
-// mdb_env_setup_locks's _WIN32 branch (0.9.36 lines 4964-4994; 1.0 lines
+// mdb_env_setup_locks's _WIN32 branch (0.9.37 lines 4964-4994; 1.0 lines
 // 6064-6110 with mdb_env_mname_init); rlmdb os/windows.rs
 // (SharedLocks::create, SharedLocks::attach).
 //

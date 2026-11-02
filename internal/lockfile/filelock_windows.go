@@ -1,6 +1,6 @@
 // The lock file's OS protocol on Windows: mdb_fopen (MDB_O_LOCKS),
 // mdb_env_excl_lock, mdb_env_share_locks, mdb_reader_pid and the unlock in
-// mdb_env_close0, as mdb.c's _WIN32 paths do them (0.9.36 lines 2718,
+// mdb_env_close0, as mdb.c's _WIN32 paths do them (0.9.37 lines 2718,
 // 4698, 4741, 5239); rlmdb os/windows.rs lock_byte, downgrade_lock,
 // unlock_lock_file, set_pid_lock, pid_alive. The Unix counterpart is
 // fcntl.go.

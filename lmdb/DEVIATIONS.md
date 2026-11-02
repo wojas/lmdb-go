@@ -9,7 +9,7 @@ and writes the same bytes as C LMDB 0.9 and 1.0. Behaviour is that of
 lmdb-go v1 on C LMDB except as listed here. What the engine does
 differently from C is in `internal/engine/PORTING.md` and in rlmdb's
 `KNOWN_C_BUGS.md` and `rlmdb-capi/README.md` ("Differences from C LMDB
-0.9.36"), whose decisions the port keeps.
+0.9.37"), whose decisions the port keeps.
 
 ## lmdb-go v1 bugs not kept
 
@@ -47,7 +47,7 @@ differently from C is in `internal/engine/PORTING.md` and in rlmdb's
   that programs can tell the two apart (rlmdb's C library reports 0.9.85
   for the same reason; 90 reads as "go"). v1 reported its bundled C
   library (0.9.35). `Env.EngineVersion` reports the C release whose format
-  an environment matches: 0.9.36 or 1.0.2 (lmdb-go v2: the bundled
+  an environment matches: 0.9.37 or 1.0.3 (lmdb-go v2: the bundled
   engine's `mdb_version`).
 * **Formats.** Both formats are read and written by one engine; v2 has two
   C engines. As in v2, an existing file is opened in its format,

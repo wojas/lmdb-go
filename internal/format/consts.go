@@ -1,4 +1,4 @@
-// The numeric constants of C LMDB 0.9 (lmdb.h and mdb.c, 0.9.36): flag
+// The numeric constants of C LMDB 0.9 (lmdb.h and mdb.c, 0.9.37): flag
 // bits, cursor operation numbers and format limits. Port of rlmdb's
 // consts.rs. Everything has exactly the value C uses; the on-disk and
 // lock-file formats depend on several of them, so they must never be
