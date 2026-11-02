@@ -13,7 +13,12 @@
 #                        LINUX_TEST_IMAGE=golang:1.25-trixie: the bookworm
 #                        images have no s390x variant)
 #                        (default: the VM's native architecture)
-#   LINUX_TEST_TMPFS     size of the tmpfs at /tmp (default 4g; 0 disables)
+#   LINUX_TEST_MEMORY    memory limit of the container, swap included
+#                        (default 2g; 0 disables)
+#   LINUX_TEST_CPUS      CPUs the container may use (default 8, or the
+#                        Docker host's number if it has fewer; 0: no limit)
+#   LINUX_TEST_TMPFS     size of the tmpfs at /tmp (default: the memory
+#                        limit, 4g without one; 0 disables)
 #   RLMDB_DIR            rlmdb checkout (its repository root, with the
 #                        vendored C sources in tests/lmdb-c) to mount
 #                        read-only at /rlmdb (optional; for the C oracles:
@@ -22,6 +27,17 @@
 # /tmp, where tests and benchmarks create environments, is a tmpfs: the
 # alternatives in the VM are its virtual disk and the virtiofs host mount,
 # neither of which is a local file system. fsync timings mean nothing here.
+#
+# Every test suite and benchmark must run on a machine with 2 GB of RAM, so
+# by default the container is one: 2 GB without swap for everything in it
+# (the Go toolchain, test binaries, C peers, the files in /tmp, which are
+# memory, and the page cache, which the kernel shrinks to stay within the
+# limit), and at most 8 CPUs, since parallel compilers, test binaries and
+# fuzzing workers multiply with the CPUs (GOMAXPROCS is set to match: the
+# modules' go version predates Go's own reading of the CPU limit). When the
+# command ends, the script reports the container's memory peak (page cache
+# included) and fails the run if the kernel's OOM killer ended a process
+# in it.
 #
 # Foreign platforms run through the VM kernel's binfmt_misc handlers
 # (Lima's Rosetta for linux/amd64, QEMU user emulation for the others). On
@@ -45,7 +61,9 @@
 set -eu
 repo=$(cd "$(dirname "$0")/.." && pwd)
 image=${LINUX_TEST_IMAGE:-golang:1.25-bookworm}
-tmpfs=${LINUX_TEST_TMPFS-4g}
+memory=${LINUX_TEST_MEMORY-2g}
+case $memory in ""|0) memory= ;; esac
+tmpfs=${LINUX_TEST_TMPFS-${memory:-4g}}
 case $tmpfs in ""|0) tmpfs_mount= ;; *) tmpfs_mount="--tmpfs /tmp:exec,size=$tmpfs" ;; esac
 platform=${LINUX_TEST_PLATFORM:+--platform $LINUX_TEST_PLATFORM}
 # No Docker Desktop credential helper here: scratch config, Lima socket.
@@ -56,6 +74,47 @@ if [ -z "${DOCKER_HOST:-}" ] && [ -S "$HOME/.lima/docker/sock/docker.sock" ]; th
   export DOCKER_HOST="unix://$HOME/.lima/docker/sock/docker.sock"
 fi
 if [ $# -eq 0 ]; then set -- go test ./...; fi
+cpus=${LINUX_TEST_CPUS-8}
+case $cpus in ""|0) cpus= ;; esac
+if [ -n "$cpus" ]; then
+  ncpu=$(docker info --format '{{.NCPU}}' 2>/dev/null) || ncpu=
+  if [ -n "$ncpu" ] && [ "$ncpu" -lt "$cpus" ]; then cpus=$ncpu; fi
+fi
+
+# memory_run: the command line in the container under a memory limit ($0
+# of the shell, for the messages): the command runs as a child of the
+# shell, which forwards SIGINT and SIGTERM to it (docker passes them to the
+# shell, process 1), and then reports the cgroup's memory peak and OOM kills
+# (cgroup v2; v1 as a fallback). A run in which the OOM killer ended a
+# process fails even if the command itself succeeded. The report uses shell
+# builtins only: when /tmp holds the memory, a new process would be killed.
+memory_run='exec 3<&0
+"$@" <&3 3<&- &
+pid=$!
+trap "kill -INT $pid 2>/dev/null" INT
+trap "kill -TERM $pid 2>/dev/null" TERM
+while :; do
+  wait "$pid"
+  rc=$?
+  kill -0 "$pid" 2>/dev/null || break
+done
+cg=/sys/fs/cgroup events=$cg/memory.events peakf=$cg/memory.peak
+if [ ! -r $events ]; then
+  events=$cg/memory/memory.oom_control peakf=$cg/memory/memory.max_usage_in_bytes
+fi
+oom=0 peak=
+if [ -r $events ]; then
+  while read -r k v; do [ "$k" != oom_kill ] || oom=$v; done < $events
+fi
+if [ -r $peakf ]; then read -r peak < $peakf; fi
+if [ -n "$peak" ]; then
+  echo "linux-test.sh: memory peak $((peak >> 20)) MiB of $0 (with /tmp and the page cache)" >&2
+fi
+if [ "$oom" -gt 0 ]; then
+  echo "linux-test.sh: the OOM killer ended $oom process(es): the run needs more than $0 of memory" >&2
+  [ "$rc" -ne 0 ] || rc=137
+fi
+exit "$rc"'
 
 # binfmt_ensure <platform>: make containers of <platform> start (see the
 # header). The registration runs in the holder container with the qemu
@@ -132,8 +191,11 @@ if [ -n "${LINUX_TEST_PLATFORM:-}" ]; then
     *) no_robust=1 ;;
   esac
 fi
+if [ -n "$memory" ]; then set -- sh -c "$memory_run" "$memory" "$@"; fi
 # shellcheck disable=SC2086
 exec docker run --rm -i $platform \
+  ${memory:+--memory=$memory --memory-swap=$memory} \
+  ${cpus:+--cpus=$cpus -e GOMAXPROCS=$cpus} \
   $tmpfs_mount \
   -v "$repo:/work" \
   ${git_mount:+-v "$git_mount:$git_mount:ro"} \
