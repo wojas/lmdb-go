@@ -479,7 +479,7 @@ func TestEnv_ReaderList_idleSlot(t *testing.T) {
 // consistent, and the reader table ends with idle slots only, at most the
 // pool's bound (MaxReaders/4). Run with -race.
 func TestEnv_View_concurrentSlots(t *testing.T) {
-	env := setup(t)
+	env := setupMaxDBsFlags(t, 4, 0)
 	defer clean(env, t)
 	// A reader that the scheduler leaves alone for a while pins its
 	// snapshot while the writer commits freely: room for that.
@@ -588,7 +588,7 @@ func TestEnv_SetMapSize_concurrentViews(t *testing.T) {
 			if flags == 0 {
 				requireLockFile(t)
 			}
-			env := setupFlags(t, flags)
+			env := setupMaxDBsFlags(t, 4, flags)
 			defer clean(env, t)
 			iters := 10000
 			if testing.Short() || raceEnabled {
@@ -621,7 +621,7 @@ func TestEnv_SetMapSize_concurrentViews(t *testing.T) {
 // commits (review finding P1-1, the reviewer's reproducer: a reader could
 // take a torn meta copy, publish the newer txnid and read older pages).
 func TestNoLock_snapshotMatchesID(t *testing.T) {
-	env := setupFlags(t, NoLock|NoSync)
+	env := setupMaxDBsFlags(t, 4, NoLock|NoSync)
 	defer clean(env, t)
 	if err := env.SetMapSize(1 << 30); err != nil {
 		t.Fatal(err)
@@ -732,6 +732,18 @@ func TestEnv_Close_racesWithTxns(t *testing.T) {
 // then let the next tests' garbage grow to.
 func setupMaxDBs(t *testing.T, maxDBs int) *Env {
 	t.Helper()
+	return setupMaxDBsFlags(t, maxDBs, 0)
+}
+
+// setupMaxDBsFlags is setupMaxDBs with environment flags, as setupFlags.
+// Tests that begin read transactions by the thousand on goroutines use it:
+// under the race detector, sync.Pool drops a share of what is put back, so
+// most Env.View calls allocate a new transaction and its table of
+// databases (6.8 MiB with setup's MaxDBs). TestEnv_View_concurrentSlots
+// allocated 13 GB in 2 s that way, and the race detector's shadow of the
+// churned heap took the test binary to 900 MB.
+func setupMaxDBsFlags(t *testing.T, maxDBs int, flags uint) *Env {
+	t.Helper()
 	env, err := NewEnv()
 	if err != nil {
 		t.Fatal(err)
@@ -743,7 +755,7 @@ func setupMaxDBs(t *testing.T, maxDBs int) *Env {
 	if err := env.SetMaxDBs(maxDBs); err != nil {
 		t.Fatal(err)
 	}
-	if err := env.Open(path, testFlags(0), 0o664); err != nil {
+	if err := env.Open(path, testFlags(flags), 0o664); err != nil {
 		t.Fatal(err)
 	}
 	return env
