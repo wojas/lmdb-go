@@ -1,16 +1,180 @@
 # Benchmark results: the Go implementation against lmdb-go v1
 
-The baseline is lmdb-go v1.9.4 on cgo (C LMDB 0.9.35, the pinned copy in
-`../cgolmdb`), including its cgo call overhead. **Ratios are port/cgo of
+The baseline is the pinned cgo reference in `../cgolmdb`: lmdb-go
+v1.9.4's Go code on C LMDB 0.9.36 plus ITS#10615, ITS#10642 and ITS#10643
+(the same C code as LMDB 0.9.37), including its cgo call overhead. Until
+2026-11-02 it was the released v1.9.4, on C LMDB 0.9.35; the sections that
+say so measured that. **Ratios are port/cgo of
 the medians: below 1 means the port is faster.** Times are ns per
 operation (median of all samples; `lmdb-bench` prints the minimum in
 parentheses), allocations are Go heap allocations per operation.
 
-The current numbers come first (final validation, 2026-11-01); what stage
-3 (benchmarks and performance, `PLAN.md`) and stage 4 measured and
-changed follows.
+The current numbers come first (the new reference, 2026-11-02), then the
+final validation (2026-11-01) and what stage 3 (benchmarks and
+performance, `PLAN.md`) and stage 4 measured and changed, all against C
+0.9.35.
 
-## Final validation (2026-11-01)
+## New reference: C 0.9.36 plus fixes (2026-11-02)
+
+The cgo reference changed: `../cgolmdb` is now lmdb-go at `e5af975`, the
+Go code of v1.9.4 on C LMDB 0.9.36 plus ITS#10615, ITS#10642 and
+ITS#10643 (the same C code as LMDB 0.9.37, and as the C oracles' 0.9). The
+port did not change. The sections after this one measured the released
+v1.9.4's C code, 0.9.35, with Go 1.25; they stay as history.
+
+### How it was measured
+
+* `cmd/lmdb-bench -n 1000000 -rounds 3 -reps 5 -sync-commits 1000`, as
+  in the final validation below, built with Go 1.27.3.
+* **macOS**: Apple M1 Pro (8 performance and 2 efficiency cores), 32 GiB
+  RAM, macOS 15, 16 KiB pages, environments in `$TMPDIR` (APFS on the
+  internal SSD). The machine was shared with other work: one-minute load
+  5 to 40 on 10 cores during the full run. `seq_put` and `mixed`, whose
+  medians in the full run were far from their minima, and `read`, whose
+  `readers8_get` median was far from its minimum too, were run again
+  (same options, both implementations) at load 2.5 to 4 and 3 to 21; the
+  summary takes those three groups from those runs (`goapi`, also rerun,
+  agreed with the full run within 0.05 in every ratio but `txn_put`'s,
+  1.10 and 1.34).
+* **Linux arm64**: a Lima VM on the same Mac (8 vCPUs, 12 GiB), container
+  image `golang:1.27-bookworm` (glibc), 4 KiB pages, environments in the
+  container's `/tmp`, a tmpfs (`txn_sync` timings mean nothing there).
+  Load average inside the VM 0 to 4.7 (mean 1.9).
+* **OpenBSD 7.9 arm64**: a 2-vCPU, 2 GiB VM (Apple Virtualization on an
+  Apple silicon Mac), Go 1.26.2, 4 KiB pages, environments in `/tmp` on
+  the VM's disk; `-n 100000 -rounds 3 -reps 3 -sync-commits 100`
+  (smaller, for the VM's memory). Run twice; the ratios below are the
+  first run's, the second agrees within a few percent except where noted.
+* What moved, and why, was checked with interleaved A/Bs (`lmdb-bench
+  -ab`, `-rounds 2` or `3`, `-reps 3`): the old reference against the new
+  one (both built with Go 1.27, `-impl cgo`), and Go 1.25.12 against Go
+  1.27.3 builds of this branch (`-impl port` and `-impl cgo`).
+
+### Summary
+
+Medians in ns/op and the ratio port/cgo (**below 1: the port is
+faster**); "old" is the ratio of the final validation below (C 0.9.35,
+Go 1.25). Allocations per operation are unchanged (full tables).
+
+| workload | macOS cgo | macOS port | macOS port/cgo | old | Linux cgo | Linux port | Linux port/cgo | old |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| ls_scan | 62.3 | 31.0 | 0.50 | 0.35 | 89.0 | 61.8 | 0.69 | 0.60 |
+| ls_update | 6332 | 5993 | 0.95 | 1.01 | 5052 | 4508 | 0.89 | 0.92 |
+| rand_get | 1202 | 889 | 0.74 | 0.70 | 965 | 1002 | 1.04 | 1.07 |
+| readers8_get | 166 | 116 | 0.70 | 0.75 | 145 | 144 | 0.99 | 0.99 |
+| scan_fwd | 58.5 | 28.8 | 0.49 | 0.42 | 76.7 | 48.9 | 0.64 | 0.58 |
+| scan_bwd | 57.4 | 32.8 | 0.57 | 0.48 | 66.8 | 47.7 | 0.71 | 0.56 |
+| rand_put | 2725 | 2763 | 1.01 | 1.01 | 2607 | 2415 | 0.93 | 0.97 |
+| rand_overwrite | 4271 | 4072 | 0.95 | 1.00 | 3500 | 3207 | 0.92 | 0.89 |
+| del_rand | 3326 | 3503 | 1.05 | 0.99 | 4888 | 3532 | 0.72 | 0.71 |
+| txn_nosync | 6833 | 7801 | 1.14 | 1.19 | 5302 | 5907 | 1.11 | 1.09 |
+| txn_sync | 10620272 | 10638233 | **1.00** | 1.95 | 3726 | 4765 | 1.28 | 1.17 |
+| update_put | 31097 | 34584 | 1.11 | 1.22 | 17387 | 17727 | 1.02 | 1.04 |
+| put_64k | 25821 | 16045 | 0.62 | 0.58 | 42146 | 27250 | 0.65 | 0.56 |
+| get_64k | 327 | 273 | 0.83 | 0.70 | 311 | 341 | 1.09 | 1.09 |
+| put_4k | 6299 | 6518 | 1.03 | 1.03 | 4431 | 3565 | 0.80 | 0.75 |
+| mixed_writer | 5172 | 5209 | 1.01 | 1.08 | 5493 | 4909 | 0.89 | 0.93 |
+| mixed_readers | 16.1 | 7.6 | 0.47 | 0.34 | 20.5 | 12.2 | 0.59 | 0.50 |
+| seq_put_append | 106 | 181 | 1.72 | 1.60 | 135 | 223 | 1.65 | 1.39 |
+| dup_put | 902 | 1346 | 1.49 | 1.40 | 986 | 1320 | 1.34 | 1.26 |
+| view_get | 2083 | 1036 | 0.50 | 0.44 | 1373 | 1549 | **1.13** | 0.90 |
+| view_empty | 807 | 139 | 0.17 | 0.15 | 249 | 399 | **1.60** | 0.63 |
+| view8_get | 3288 | 362 | 0.11 | 0.04 | 629 | 457 | 0.73 | 0.66 |
+| txn_get | 2152 | 1103 | 0.51 | 0.51 | 1416 | 1649 | **1.16** | 0.87 |
+| renew_get | 1323 | 984 | 0.74 | 0.81 | 1113 | 1589 | **1.43** | 1.01 |
+
+### What moved, and why
+
+Most ratios are within the noise of such runs (about 10% per workload
+on this machine). Four things moved, three of them not because of the C
+version:
+
+* **`txn_sync` on macOS: 1.95 to 1.00.** The new reference, like the
+  port and C 0.9.36 and later (ITS#10454), follows the meta-page write
+  with `F_FULLFSYNC`: two full flushes per commit, where C 0.9.35 makes
+  one. This is the only workload the C version moves: in the A/B of the
+  old reference against the new one on macOS (`-impl cgo`, every group
+  but `mixed` and `goapi`), `txn_sync` takes 1.95 times as long with the
+  new one, and every other workload is within 0.84 to 1.05 (DUPSORT
+  puts 1.00, sequential appends 1.00). Against the released lmdb-go
+  v1.9.4 the port's synced commits on macOS still take about twice as
+  long, which is durability, not overhead.
+* **Cursor scans on macOS: 0.42 to 0.49 (`scan_fwd`), `ls_scan` 0.35 to
+  0.50, `mixed_readers` 0.34 to 0.47.** The cgo side got faster with Go
+  1.27: in the A/B of Go 1.25.12 against Go 1.27.3 builds, the reference
+  scans in 0.82 (`scan_fwd`), 0.83 (`scan_bwd`) and 0.85 (`ls_scan`) of
+  its Go 1.25 time (cgo calls got cheaper), while the port's times stay
+  within 0.92 to 1.04 (`view_empty` 0.83). On Linux the reference's scans
+  gained less (0.81 to 0.89), and so did the ratios.
+* **Read transactions on Linux: `view_empty` 0.63 to 1.60, `view_get`
+  0.90 to 1.13, `txn_get` 0.87 to 1.16, `renew_get` 1.01 to 1.43.** The
+  port got slower with Go 1.27 on Linux, and only there: in the A/B of Go
+  1.25.12 against Go 1.27.3 builds of the same port code in the same
+  container, `view_empty` takes 2.26 times as long with Go 1.27,
+  `view_get` 1.38, `cursor_renew_set` 1.34, `txn_get` 1.21, `renew_get`
+  1.11, while lookups, scans and commits are within 0.89 to 1.03, and the
+  reference's read transactions got faster (0.82 to 0.97). On macOS the
+  same A/B shows no such change. The cause was not investigated here.
+* **Sequential appends and DUPSORT puts: 1.60 to 1.72 and 1.40 to 1.49
+  on macOS, 1.39 to 1.65 and 1.26 to 1.34 on Linux** (low priority).
+  The C version does not change them (above); the reference's appends
+  got faster (macOS 117 to 106 ns, Linux 150 to 135), the port's stayed
+  within their noise.
+
+`txn_sync` on Linux (1.17 to 1.28) runs on a tmpfs and means nothing.
+`view8_get` on macOS (0.04 to 0.11) moves with the machine's load: the
+reference's median was 9700 ns in the final validation, 3288 here and
+2816 to 2994 in the A/Bs, the port's 350 to 362 throughout.
+The port itself did not change; its allocation counts are the same.
+
+### OpenBSD
+
+Before this change the reference could not run on OpenBSD: C 0.9.35 has
+no ITS#10615, reads stale pages after its own writes there, and the
+benchmark failed with `MDB_NOTFOUND` and crashed in `mdb_put`. With the
+new reference every group runs (`-n 100000`; port/cgo, below 1: the port
+is faster):
+
+| workload | cgo ns/op | port ns/op | port/cgo | second run |
+|---|---:|---:|---:|---:|
+| ls_scan | 44.7 | 26.6 | 0.59 | 0.58 |
+| ls_update | 8914 | 8453 | 0.95 | 0.95 |
+| rand_get | 186 | 188 | 1.01 | 1.01 |
+| readers8_get | 95.5 | 95.3 | 1.00 | 0.99 |
+| scan_fwd | 31.1 | 13.5 | 0.43 | 0.44 |
+| rand_put | 1595 | 1541 | 0.97 | 0.97 |
+| rand_overwrite | 3371 | 3303 | 0.98 | 0.96 |
+| del_rand | 2649 | 2551 | 0.96 | 0.97 |
+| txn_nosync | 33981 | 34907 | 1.03 | 1.00 |
+| txn_sync | 93168 | 103078 | 1.11 | 0.99 |
+| update_put | 60208 | 57818 | 0.96 | 0.97 |
+| put_4k | 10547 | 4141 | 0.39 | 0.39 |
+| put_64k | 75037 | 50572 | 0.67 | 0.57 |
+| get_64k | 93.8 | 94.6 | 1.01 | 1.00 |
+| mixed_writer | 21777 | 27337 | 1.26 | 0.61 |
+| mixed_readers | 56.5 | 12.8 | 0.23 | 0.67 |
+| seq_put_append | 136 | 154 | 1.13 | 1.13 |
+| dup_put | 957 | 969 | 1.01 | 0.98 |
+| dup_next_dup | 53.7 | 36.8 | 0.68 | 0.69 |
+| view_get | 755 | 271 | 0.36 | 0.35 |
+| view_empty | 549 | 78.3 | 0.14 | 0.13 |
+| txn_get | 785 | 297 | 0.38 | 0.36 |
+
+Reads and lookups are at parity with C there (0.99 to 1.01), scans and
+read transactions much faster (0.13 to 0.59), puts, deletes and commits
+at parity or faster (0.96 to 1.03 with `txn_sync` 0.99 to 1.11, on the
+VM's disk), and, unlike on macOS and Linux, sequential appends (1.13) and
+DUPSORT puts (0.98 to 1.01) are close to C. Values of 4 KiB and more are
+written much faster (`put_4k` 0.39, `put_64k` 0.43 to 0.67); why was not
+measured (both invalidate the written range of the map after each write,
+ITS#10615 in C, rlmdb `KNOWN_C_BUGS.md` #39 in the port). `mixed` (the
+writer 1.26 and 0.61, the readers 0.23 and 0.67) has too few CPUs for its
+4 readers to be meaningful. A first
+attempt at this run stopped in its second round when the VM stopped
+responding (no network, both vCPUs busy); two later runs, in fresh VMs,
+did not repeat it, and its cause is unknown.
+
+## Final validation (2026-11-01, C 0.9.35)
 
 The code of `main` after stages 4 and 5 (reader slots kept for reuse,
 the `NoLock` and lifecycle fixes of the reviews, the sync with rlmdb's
@@ -146,7 +310,7 @@ read transaction now keeps its data map referenced across `Reset`, and
 workloads are as fast as in stage 3 or faster (0.83 to 1.01 of stage 3,
 `txn_get` 0.59).
 
-## Stage 3 (2026-10-31)
+## Stage 3 (2026-10-31, C 0.9.35)
 
 ### How it was measured
 
@@ -424,10 +588,157 @@ Both are large changes to `wcursor.go`, `cursorput.go`, `split.go` and
 
 ## Full tables
 
-Each table is one `lmdb-bench -rounds 3 -reps 5` run (n = 1 000 000) of
-both implementations, as printed: ns/op median (minimum), ops/s from the
+Each table is one `lmdb-bench -rounds 3 -reps 5` run (n = 1 000 000;
+OpenBSD: `-rounds 3 -reps 3`, n = 100 000) of both implementations, as printed: ns/op median (minimum), ops/s from the
 median, ratio port/cgo of the medians (below 1: the port is faster), Go
 heap allocations per operation (median over the repetitions).
+
+### New reference: macOS
+
+* macOS 15, arm64, CPU: Apple M1 Pro, 10 cores, 32 GiB RAM
+* OS page size (= LMDB page size): 16384
+* Go: go1.27.3
+* cgo: lmdb-go v1.9.4's Go code at e5af975 (cgo, LMDB 0.9.36: (Aug 6, 2026), plus ITS#10615, ITS#10642, ITS#10643)
+* port: the Go implementation (LMDB 0.9.90: (lmdb-go, Go port of rlmdb))
+
+n = 1000000, 3 round(s) of 5 timed reps after 1 warm-up; ns/op: median (min); allocs/op: Go heap allocations per operation (median); ratio = port median / cgo median (below 1 means port is faster)
+
+| workload | ops/rep | cgo ns/op | port ns/op | cgo ops/s | port ops/s | port/cgo | cgo allocs/op | port allocs/op |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| seq_put_append | 1000000 | 108 (105) | 201 (183) | 9.28M | 4.98M | 1.86 | 0.00 | 0.00 |
+| rand_put | 1000000 | 2725 (2518) | 2763 (2621) | 367.0k | 361.9k | 1.01 | 0.00 | 0.01 |
+| rand_get | 1000000 | 1292 (1138) | 947 (859) | 773.9k | 1.06M | 0.73 | 0.00 | 0.00 |
+| scan_fwd | 1000000 | 63.5 (58.6) | 30.4 (29.8) | 15.74M | 32.85M | 0.48 | 0.00 | 0.00 |
+| scan_bwd | 1000000 | 57.9 (56.3) | 34.6 (32.8) | 17.26M | 28.93M | 0.60 | 0.00 | 0.00 |
+| readers8_get | 8000000 | 276 (151) | 145 (121) | 3.62M | 6.89M | 0.53 | 0.00 | 0.00 |
+| rand_overwrite | 1000000 | 4271 (3703) | 4072 (3768) | 234.2k | 245.6k | 0.95 | 0.00 | 0.00 |
+| dup_put | 1000000 | 902 (787) | 1346 (1183) | 1.11M | 743.2k | 1.49 | 0.00 | 0.00 |
+| dup_get_both | 1000000 | 1145 (1004) | 978 (848) | 873.6k | 1.02M | 0.85 | 0.00 | 0.00 |
+| dup_next_dup | 1000000 | 197 (171) | 118 (115) | 5.06M | 8.48M | 0.60 | 0.20 | 0.00 |
+| put_4k | 50000 | 6299 (5930) | 6518 (6357) | 158.7k | 153.4k | 1.03 | 0.00 | 0.04 |
+| get_4k | 1000000 | 644 (575) | 604 (516) | 1.55M | 1.66M | 0.94 | 0.00 | 0.00 |
+| put_64k | 5000 | 25821 (24441) | 16045 (14460) | 38.7k | 62.3k | 0.62 | 0.00 | 0.22 |
+| get_64k | 1000000 | 327 (304) | 273 (264) | 3.06M | 3.67M | 0.83 | 0.00 | 0.00 |
+| del_rand | 1000000 | 3326 (3106) | 3503 (3249) | 300.6k | 285.4k | 1.05 | 0.00 | 0.00 |
+| txn_nosync | 50000 | 6833 (6457) | 7801 (7412) | 146.3k | 128.2k | 1.14 | 1.00 | 1.01 |
+| txn_sync | 1000 | 10620272 (9746987) | 10638233 (9799242) | 94 | 94 | 1.00 | 1.00 | 1.04 |
+| mixed_writer | 50000 | 5892 (5302) | 9899 (5363) | 169.7k | 101.0k | 1.68 | 0.01 | 0.02 |
+| mixed_readers | 17801216 | 17.7 (15.1) | 10.6 (7.5) | 56.59M | 94.74M | 0.60 | 0.00 | 0.00 |
+| ls_scan | 5000000 | 62.3 (59.8) | 31.0 (30.1) | 16.06M | 32.29M | 0.50 | 0.00 | 0.00 |
+| ls_update | 50000 | 6332 (5679) | 5993 (5248) | 157.9k | 166.9k | 0.95 | 0.00 | 0.00 |
+| get_raw | 1000000 | 1311 (1040) | 917 (799) | 762.9k | 1.09M | 0.70 | 0.00 | 0.00 |
+| get_copy | 1000000 | 1347 (1140) | 937 (836) | 742.6k | 1.07M | 0.70 | 1.00 | 1.00 |
+| get_key_local | 1000000 | 1239 (1137) | 873 (802) | 807.0k | 1.15M | 0.70 | 1.00 | 1.00 |
+| get_key_string | 1000000 | 1292 (1170) | 990 (907) | 773.9k | 1.01M | 0.77 | 1.00 | 1.00 |
+| cursor_set | 1000000 | 1252 (1135) | 952 (900) | 798.7k | 1.05M | 0.76 | 0.00 | 0.00 |
+| cursor_open_set | 1000000 | 1496 (1335) | 915 (829) | 668.5k | 1.09M | 0.61 | 1.00 | 1.00 |
+| view_get | 100000 | 2083 (1928) | 1036 (974) | 480.1k | 965.3k | 0.50 | 1.00 | 1.00 |
+| view_empty | 100000 | 807 (792) | 139 (136) | 1.24M | 7.18M | 0.17 | 1.00 | 1.00 |
+| view8_get | 800000 | 3288 (2570) | 362 (307) | 304.2k | 2.76M | 0.11 | 1.00 | 1.00 |
+| txn_get | 100000 | 2152 (1940) | 1103 (996) | 464.6k | 906.7k | 0.51 | 1.00 | 1.00 |
+| renew_get | 100000 | 1323 (1201) | 984 (961) | 756.0k | 1.02M | 0.74 | 0.00 | 0.00 |
+| cursor_renew_set | 100000 | 1251 (1127) | 1058 (950) | 799.0k | 944.9k | 0.85 | 0.00 | 0.00 |
+| update_put | 100000 | 31097 (26008) | 34584 (29739) | 32.2k | 28.9k | 1.11 | 1.00 | 1.04 |
+| txn_put | 100000 | 32619 (26868) | 36009 (29455) | 30.7k | 27.8k | 1.10 | 1.00 | 1.04 |
+
+
+### New reference: Linux arm64 (container, tmpfs)
+
+* linux arm64, CPU: Apple (model not reported), 8 cores, 12 GiB RAM
+* OS page size (= LMDB page size): 4096
+* Go: go1.27.3
+* cgo: lmdb-go v1.9.4's Go code at e5af975 (cgo, LMDB 0.9.36: (Aug 6, 2026), plus ITS#10615, ITS#10642, ITS#10643)
+* port: the Go implementation (LMDB 0.9.90: (lmdb-go, Go port of rlmdb))
+
+n = 1000000, 3 round(s) of 5 timed reps after 1 warm-up; ns/op: median (min); allocs/op: Go heap allocations per operation (median); ratio = port median / cgo median (below 1 means port is faster)
+
+| workload | ops/rep | cgo ns/op | port ns/op | cgo ops/s | port ops/s | port/cgo | cgo allocs/op | port allocs/op |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| seq_put_append | 1000000 | 135 (133) | 223 (213) | 7.42M | 4.48M | 1.65 | 0.00 | 0.00 |
+| rand_put | 1000000 | 2607 (2375) | 2415 (2177) | 383.5k | 414.0k | 0.93 | 0.00 | 0.01 |
+| rand_get | 1000000 | 965 (849) | 1002 (841) | 1.04M | 997.5k | 1.04 | 0.00 | 0.00 |
+| scan_fwd | 1000000 | 76.7 (70.9) | 48.9 (46.9) | 13.04M | 20.45M | 0.64 | 0.00 | 0.00 |
+| scan_bwd | 1000000 | 66.8 (64.9) | 47.7 (42.7) | 14.98M | 20.97M | 0.71 | 0.00 | 0.00 |
+| readers8_get | 8000000 | 145 (126) | 144 (114) | 6.88M | 6.95M | 0.99 | 0.00 | 0.00 |
+| rand_overwrite | 1000000 | 3500 (3334) | 3207 (2948) | 285.7k | 311.8k | 0.92 | 0.00 | 0.00 |
+| dup_put | 1000000 | 986 (913) | 1320 (1220) | 1.01M | 757.7k | 1.34 | 0.00 | 0.00 |
+| dup_get_both | 1000000 | 1050 (864) | 1036 (894) | 952.5k | 965.1k | 0.99 | 0.00 | 0.00 |
+| dup_next_dup | 1000000 | 160 (148) | 135 (118) | 6.24M | 7.38M | 0.84 | 0.20 | 0.00 |
+| put_4k | 50000 | 4431 (4225) | 3565 (2899) | 225.7k | 280.5k | 0.80 | 0.00 | 0.03 |
+| get_4k | 1000000 | 557 (450) | 595 (431) | 1.80M | 1.68M | 1.07 | 0.00 | 0.00 |
+| put_64k | 5000 | 42146 (36887) | 27250 (20532) | 23.7k | 36.7k | 0.65 | 0.00 | 0.23 |
+| get_64k | 1000000 | 311 (279) | 341 (311) | 3.21M | 2.94M | 1.09 | 0.00 | 0.00 |
+| del_rand | 1000000 | 4888 (4614) | 3532 (3240) | 204.6k | 283.1k | 0.72 | 0.00 | 0.00 |
+| txn_nosync | 50000 | 5302 (4966) | 5907 (5410) | 188.6k | 169.3k | 1.11 | 1.00 | 1.04 |
+| txn_sync | 1000 | 3726 (3571) | 4765 (4545) | 268.4k | 209.9k | 1.28 | 1.00 | 1.08 |
+| mixed_writer | 50000 | 5493 (5003) | 4909 (4773) | 182.1k | 203.7k | 0.89 | 0.01 | 0.03 |
+| mixed_readers | 13704192 | 20.5 (18.7) | 12.2 (11.8) | 48.77M | 82.20M | 0.59 | 0.00 | 0.00 |
+| ls_scan | 5000000 | 89.0 (82.2) | 61.8 (58.9) | 11.23M | 16.19M | 0.69 | 0.00 | 0.00 |
+| ls_update | 50000 | 5052 (4929) | 4508 (4306) | 197.9k | 221.8k | 0.89 | 0.00 | 0.00 |
+| get_raw | 1000000 | 1066 (858) | 1111 (981) | 937.9k | 899.8k | 1.04 | 0.00 | 0.00 |
+| get_copy | 1000000 | 1172 (936) | 1114 (936) | 853.3k | 897.4k | 0.95 | 1.00 | 1.00 |
+| get_key_local | 1000000 | 1062 (881) | 1063 (851) | 942.0k | 940.4k | 1.00 | 1.00 | 1.00 |
+| get_key_string | 1000000 | 1271 (1018) | 1295 (1001) | 786.8k | 772.3k | 1.02 | 1.00 | 1.00 |
+| cursor_set | 1000000 | 1088 (956) | 1019 (933) | 919.0k | 981.1k | 0.94 | 0.00 | 0.00 |
+| cursor_open_set | 1000000 | 1229 (1098) | 1177 (1030) | 814.0k | 849.4k | 0.96 | 1.00 | 1.00 |
+| view_get | 100000 | 1373 (1277) | 1549 (1475) | 728.4k | 645.7k | 1.13 | 1.00 | 1.00 |
+| view_empty | 100000 | 249 (238) | 399 (387) | 4.02M | 2.51M | 1.60 | 1.00 | 1.00 |
+| view8_get | 800000 | 629 (527) | 457 (363) | 1.59M | 2.19M | 0.73 | 1.00 | 1.00 |
+| txn_get | 100000 | 1416 (1198) | 1649 (1391) | 706.0k | 606.3k | 1.16 | 1.00 | 1.00 |
+| renew_get | 100000 | 1113 (916) | 1589 (1241) | 898.4k | 629.3k | 1.43 | 0.00 | 0.00 |
+| cursor_renew_set | 100000 | 1115 (967) | 1588 (1255) | 896.7k | 629.7k | 1.42 | 0.00 | 0.00 |
+| update_put | 100000 | 17387 (14576) | 17727 (16792) | 57.5k | 56.4k | 1.02 | 1.00 | 1.07 |
+| txn_put | 100000 | 17147 (15728) | 17421 (15412) | 58.3k | 57.4k | 1.02 | 1.00 | 1.07 |
+
+
+### New reference: OpenBSD 7.9 arm64 (VM, n = 100 000)
+
+* openbsd arm64, CPU: (model not reported), 2 cores, ? GiB RAM
+* OS page size (= LMDB page size): 4096
+* Go: go1.26.2
+* cgo: lmdb-go v1.9.4's Go code at e5af975 (cgo, LMDB 0.9.36: (Aug 6, 2026), plus ITS#10615, ITS#10642, ITS#10643)
+* port: the Go implementation (LMDB 0.9.90: (lmdb-go, Go port of rlmdb))
+
+n = 100000, 3 round(s) of 3 timed reps after 1 warm-up; ns/op: median (min); allocs/op: Go heap allocations per operation (median); ratio = port median / cgo median (below 1 means port is faster)
+
+| workload | ops/rep | cgo ns/op | port ns/op | cgo ops/s | port ops/s | port/cgo | cgo allocs/op | port allocs/op |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| seq_put_append | 100000 | 136 (135) | 154 (147) | 7.36M | 6.51M | 1.13 | 0.00 | 0.00 |
+| rand_put | 100000 | 1595 (1540) | 1541 (1501) | 626.8k | 648.8k | 0.97 | 0.00 | 0.04 |
+| rand_get | 100000 | 186 (185) | 188 (185) | 5.38M | 5.32M | 1.01 | 0.00 | 0.00 |
+| scan_fwd | 100000 | 31.1 (30.4) | 13.5 (13.1) | 32.18M | 74.07M | 0.43 | 0.00 | 0.00 |
+| scan_bwd | 100000 | 30.3 (29.8) | 14.7 (14.5) | 32.99M | 68.06M | 0.48 | 0.00 | 0.00 |
+| readers8_get | 800000 | 95.5 (95.2) | 95.3 (94.8) | 10.47M | 10.50M | 1.00 | 0.00 | 0.00 |
+| rand_overwrite | 100000 | 3371 (3313) | 3303 (3178) | 296.7k | 302.7k | 0.98 | 0.00 | 0.00 |
+| dup_put | 100000 | 957 (940) | 969 (942) | 1.05M | 1.03M | 1.01 | 0.00 | 0.02 |
+| dup_get_both | 100000 | 242 (240) | 232 (232) | 4.13M | 4.31M | 0.96 | 0.00 | 0.00 |
+| dup_next_dup | 100000 | 53.7 (52.5) | 36.8 (36.4) | 18.62M | 27.21M | 0.68 | 0.20 | 0.00 |
+| put_4k | 5000 | 10547 (9873) | 4141 (3924) | 94.8k | 241.5k | 0.39 | 0.00 | 0.23 |
+| get_4k | 100000 | 141 (139) | 143 (142) | 7.10M | 7.01M | 1.01 | 0.00 | 0.00 |
+| put_64k | 500 | 75037 (69260) | 50572 (29527) | 13.3k | 19.8k | 0.67 | 0.00 | 1.18 |
+| get_64k | 100000 | 93.8 (92.9) | 94.6 (94.4) | 10.66M | 10.57M | 1.01 | 0.00 | 0.00 |
+| del_rand | 100000 | 2649 (2601) | 2551 (2442) | 377.5k | 392.0k | 0.96 | 0.00 | 0.00 |
+| txn_nosync | 5000 | 33981 (32674) | 34907 (33291) | 29.4k | 28.6k | 1.03 | 1.00 | 1.05 |
+| txn_sync | 100 | 93168 (90395) | 103078 (90371) | 10.7k | 9.7k | 1.11 | 1.00 | 1.36 |
+| mixed_writer | 5000 | 21777 (9846) | 27337 (16914) | 45.9k | 36.6k | 1.26 | 0.03 | 0.06 |
+| mixed_readers | 1926144 | 56.5 (19.0) | 12.8 (7.9) | 17.69M | 77.94M | 0.23 | 0.00 | 0.00 |
+| ls_scan | 500000 | 44.7 (43.8) | 26.6 (25.5) | 22.35M | 37.60M | 0.59 | 0.00 | 0.00 |
+| ls_update | 5000 | 8914 (8526) | 8453 (8218) | 112.2k | 118.3k | 0.95 | 0.00 | 0.00 |
+| get_raw | 100000 | 187 (185) | 188 (185) | 5.34M | 5.33M | 1.00 | 0.00 | 0.00 |
+| get_copy | 100000 | 216 (203) | 246 (200) | 4.62M | 4.06M | 1.14 | 1.00 | 1.00 |
+| get_key_local | 100000 | 193 (189) | 195 (194) | 5.19M | 5.12M | 1.01 | 1.00 | 1.00 |
+| get_key_string | 100000 | 206 (197) | 203 (202) | 4.86M | 4.92M | 0.99 | 1.00 | 1.00 |
+| cursor_set | 100000 | 196 (194) | 203 (201) | 5.09M | 4.92M | 1.04 | 0.00 | 0.00 |
+| cursor_open_set | 100000 | 338 (331) | 215 (214) | 2.96M | 4.65M | 0.63 | 1.00 | 1.00 |
+| view_get | 10000 | 755 (736) | 271 (267) | 1.32M | 3.69M | 0.36 | 1.00 | 1.00 |
+| view_empty | 10000 | 549 (538) | 78.3 (77.8) | 1.82M | 12.77M | 0.14 | 1.00 | 1.00 |
+| view8_get | 80000 | 497 (489) | 219 (217) | 2.01M | 4.57M | 0.44 | 1.00 | 1.00 |
+| txn_get | 10000 | 785 (774) | 297 (290) | 1.27M | 3.37M | 0.38 | 1.00 | 1.00 |
+| renew_get | 10000 | 220 (215) | 238 (236) | 4.55M | 4.20M | 1.08 | 0.00 | 0.00 |
+| cursor_renew_set | 10000 | 248 (243) | 246 (243) | 4.03M | 4.07M | 0.99 | 0.00 | 0.00 |
+| update_put | 10000 | 60208 (59003) | 57818 (57279) | 16.6k | 17.3k | 0.96 | 1.00 | 1.06 |
+| txn_put | 10000 | 60716 (59344) | 58694 (58606) | 16.5k | 17.0k | 0.97 | 1.00 | 1.06 |
+
 
 ### Final validation: macOS
 

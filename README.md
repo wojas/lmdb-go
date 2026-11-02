@@ -22,7 +22,7 @@ Point an existing lmdb-go v1 program at a checkout of this repository:
 go mod edit -replace github.com/PowerDNS/lmdb-go=../lmdb-go
 ```
 
-The module declares Go 1.22; development and testing use Go 1.25.
+The module declares Go 1.22; development and testing use Go 1.25 to 1.27.
 
 cgo is used only for the two locks LMDB shares between processes, the writer
 lock and the reader-table lock: libc pthread mutexes on Linux and FreeBSD,
@@ -67,9 +67,10 @@ commands in `cmd/` and `exp/cmd/`. Read the API documentation with
   (`scripts/bsd-cc-check.sh`). OpenBSD is tested on arm64 (OpenBSD 7.9,
   against C LMDB 0.9 and 1.0 built there); FreeBSD, NetBSD, DragonFly and
   OpenBSD on amd64 are untested. On OpenBSD, C LMDB itself needs
-  upstream's fix ITS#10615, which LMDB 0.9.36 and 1.0.2 do not have:
-  without it, C reads stale pages after its own writes there (lmdb-go v1,
-  with C 0.9.35, fails on OpenBSD for that reason). (rlmdb's own suites
+  upstream's fix ITS#10615, which LMDB 0.9.37 and 1.0.3 (2026-10-21) have
+  and earlier releases do not: without it, C reads stale pages after its
+  own writes there (lmdb-go v1.9.4, with C 0.9.35, fails on OpenBSD for
+  that reason). (rlmdb's own suites
   pass on FreeBSD in its CI. The parts macOS's kernel can run, the SysV
   semaphore set of LMDB 1.0 lock files and NetBSD's semaphore names, run
   in the lock-file tests on macOS.) 64-bit only: 32-bit builds
@@ -90,25 +91,35 @@ as `WriteMap`, stricter checks on ended handles) are listed in
 
 ## Performance
 
-Compared with lmdb-go v1.9.4 (cgo, C LMDB 0.9.35), including its cgo call
-overhead, both in one process with interleaved runs, 1,000,000 keys. Times
-are medians in ns per operation on macOS (Apple M1 Pro, 16 KiB pages). The
-ratio is this implementation's time divided by v1's: below 1 means this one
-is faster. The last column is the ratio on Linux arm64 (4 KiB pages).
+Compared with lmdb-go v1.9.4's Go code on C LMDB 0.9.36 plus ITS#10615,
+ITS#10642 and ITS#10643 (the same C code as LMDB 0.9.37; the released
+v1.9.4 bundles 0.9.35), including its cgo call overhead, both in one
+process with interleaved runs, 1,000,000 keys, Go 1.27. Times are medians
+in ns per operation on macOS (Apple M1 Pro, 16 KiB pages). The ratio is
+this implementation's time divided by lmdb-go's: below 1 means this one is
+faster. The last column is the ratio on Linux arm64 (4 KiB pages).
 
-| workload | v1 ns/op | this ns/op | ratio | ratio, Linux |
+| workload | lmdb-go ns/op | this ns/op | ratio | ratio, Linux |
 |---|---:|---:|---:|---:|
-| random get | 1341 | 938 | 0.70 | 1.07 |
-| forward cursor scan | 72.3 | 30.2 | 0.42 | 0.58 |
-| random get, 8 concurrent readers | 166 | 124 | 0.75 | 0.99 |
-| read transaction with one get (`View`) | 2456 | 1076 | 0.44 | 0.90 |
-| random put | 2622 | 2656 | 1.01 | 0.97 |
-| random delete | 3593 | 3540 | 0.99 | 0.71 |
-| commit of one put, no sync | 6973 | 8275 | 1.19 | 1.09 |
-| sequential append | 117 | 187 | 1.60 | 1.39 |
+| random get | 1202 | 889 | 0.74 | 1.04 |
+| forward cursor scan | 58.5 | 28.8 | 0.49 | 0.64 |
+| random get, 8 concurrent readers | 166 | 116 | 0.70 | 0.99 |
+| read transaction with one get (`View`) | 2083 | 1036 | 0.50 | 1.13 |
+| random put | 2725 | 2763 | 1.01 | 0.93 |
+| random delete | 3326 | 3503 | 1.05 | 0.72 |
+| commit of one put, no sync | 6833 | 7801 | 1.14 | 1.11 |
+| commit of one put, synced | 10620272 | 10638233 | 1.00 | (tmpfs) |
+| sequential append | 106 | 181 | 1.72 | 1.65 |
 
-Synced commits on macOS take about twice as long as v1's: like C LMDB 0.9.36
-and later, a commit flushes the drive cache twice, where 0.9.35 flushes once.
+Synced commits on macOS take as long as lmdb-go's here: both flush the
+drive cache twice per commit, as C LMDB does since 0.9.36. The released
+lmdb-go v1.9.4, with C 0.9.35, flushes once, so against it synced commits
+take about twice as long. On Linux, read transactions (`View`, `Renew`)
+cost more with Go 1.27 than with Go 1.25, where the `View` row was 0.90.
+On OpenBSD 7.9 arm64 (a 2-CPU VM, Go 1.26, 100,000 keys) the ratios are
+1.01 for a random get, 0.43 for a forward scan, 0.36 for `View`, 0.97 for a
+random put, 0.96 for a random delete, 1.03 for a commit without sync and
+1.13 for a sequential append.
 All workloads, allocation counts, the method and the remaining gaps:
 [tests/bench/RESULTS.md](tests/bench/RESULTS.md).
 
