@@ -114,8 +114,11 @@ faster. The last column is the ratio on Linux arm64 (4 KiB pages).
 Synced commits on macOS take as long as lmdb-go's here: both flush the
 drive cache twice per commit, as C LMDB does since 0.9.36. The released
 lmdb-go v1.9.4, with C 0.9.35, flushes once, so against it synced commits
-take about twice as long. On Linux, read transactions (`View`, `Renew`)
-cost more with Go 1.27 than with Go 1.25, where the `View` row was 0.90.
+take about twice as long. The Linux column comes from a Linux VM on the
+same Mac, in which the 32-byte vector loads that Go 1.26 and later use to
+copy structs on arm64 are slow: read transactions (`View`, `Renew`) cost
+more there with those Go versions than with Go 1.25, where the `View` row
+was 0.90.
 On OpenBSD 7.9 arm64 (a 2-CPU VM, Go 1.26, 100,000 keys) the ratios are
 1.01 for a random get, 0.43 for a forward scan, 0.36 for `View`, 0.97 for a
 random put, 0.96 for a random delete, 1.03 for a commit without sync and
