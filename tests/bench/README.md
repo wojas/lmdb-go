@@ -1,8 +1,9 @@
 # bench: the Go implementation against lmdb-go v1
 
 Benchmarks of the Go implementation of LMDB (the port) against its
-baseline, lmdb-go v1.9.4 (cgo, C LMDB 0.9.35, including the cost of the
-cgo calls; the pinned copy in `../cgolmdb`), with the workloads and the
+baseline, the pinned reference in `../cgolmdb` (lmdb-go v1.9.4's Go code on
+C LMDB 0.9.36 plus ITS#10615, ITS#10642 and ITS#10643, the same code as
+LMDB 0.9.37; including the cost of the cgo calls), with the workloads and the
 data of rlmdb's benchmark (rlmdb's `bench`: `src/workloads.rs`,
 `c/cbench.c`, `src/data.rs`), plus a group of lmdb-go-specific costs
 (`goapi`). Both implementations run in one process.
@@ -184,10 +185,11 @@ do `n/10` operations, the others `n`.
 
 * lmdb-go opens every environment with `MDB_NOTLS`; cbench uses C's
   default TLS mode (rlmdb behaves like `MDB_NOTLS`).
-* lmdb-go v1.9.4 bundles C LMDB 0.9.35; rlmdb's cbench links 0.9.36 and
-  later commits, which changed DUPSORT page accounting (ITS#9388,
-  ITS#10643) and the meta-page sync on macOS (ITS#10454), so cgo and
-  cbench numbers differ for those reasons too.
+* The reference has the same `mdb.c` as rlmdb's cbench links. The released
+  lmdb-go v1.9.4 bundles C LMDB 0.9.35, from before the changes to DUPSORT
+  page accounting (ITS#9388, ITS#10643) and the meta-page sync on macOS
+  (ITS#10454, a second full flush per commit), so its `dup_put` and
+  `txn_sync` differ from the reference's for those reasons (`RESULTS.md`).
 * Both implementations run in one process, group after group; cbench and
   rlmdb-bench run every group in a fresh process.
 * Readers are goroutines, not threads; while they wait for the start they
