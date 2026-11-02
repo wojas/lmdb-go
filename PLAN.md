@@ -19,7 +19,7 @@ The initial port maps rlmdb's modules onto Go packages roughly like this
 | `internal/engine` | `rlmdb/src/core/*` minus `reader.rs` | env, read and write txns, cursors, put/del, split, rebalance, spill, free list, commit, nested txns, copy, audit |
 | `lmdb` | lmdb-go's `lmdb` (API), rlmdb-capi's behaviour | the public API on top of `engine` |
 | `lmdbscan`, `exp/lmdbsync`, `cmd/*` | lmdb-go | kept, ported to the new `lmdb` |
-| `tests/` (nested module, cgo allowed) | rlmdb tests, interop, `bench` | everything that compares with C: `tests/cgolmdb` (pinned lmdb-go v1.9.4 copy, cgo, C 0.9.35) side by side with the port in one binary; the C binaries from rlmdb's interop build; cross-process tests; benchmarks (`tests/bench`); the Go interop peer (`tests/gopeer`) |
+| `tests/` (nested module, cgo allowed) | rlmdb tests, interop, `bench` | everything that compares with C: `tests/cgolmdb` (pinned copy of lmdb-go at `e5af975`: v1.9.4's Go code, cgo, C 0.9.36 plus ITS#10615, ITS#10642 and ITS#10643) side by side with the port in one binary; the C binaries from rlmdb's interop build; cross-process tests; benchmarks (`tests/bench`); the Go interop peer (`tests/gopeer`) |
 | `tests/gopeer` | `interop/src/bin/rpeer` | the interop peer protocol (`interop/README.md`), so rlmdb's harness can run Go as a fourth implementation |
 
 Names inside packages follow rlmdb's concepts in Go style (`numKeys`,
@@ -116,7 +116,7 @@ uses a test fake of the interface (in-process only).
 3. **Benchmarks and performance.** `tests/bench` with the workloads of rlmdb's
    `bench` (reads, cursor scans, the Lightning Stream scan, random puts,
    overwrites, deletes, one-put commits, big values), interleaved A/B
-   against lmdb-go v1 on cgo. Target: close to lmdb-go+C including its cgo
+   against lmdb-go v1's Go code on cgo (`tests/cgolmdb`). Target: close to lmdb-go+C including its cgo
    overhead, better where cheap. Append and DUPSORT are low priority.
 4. **Review and hardening.** Independent review, fuzzing of page parsing
    (`go test -fuzz`), robustness tests ported from rlmdb, docs.
@@ -230,11 +230,12 @@ reader of the copy uses: C copies its map, which still shows the page as
 it was before the failed commit, and this port, as rlmdb, reads the file
 (`tests/engine`, `TestCopyAfterFailedMetaSync`). C LMDB keeps its map
 coherent with its writes on OpenBSD only since upstream's ITS#10615
-(`MDB_Invalidate`, October 2026, in the vendored sources), which no
-release has (0.9.36 and 1.0.2 do not): lmdb-go v1.9.4 (C 0.9.35) reads
-stale pages there after its own writes (the benchmark's baseline fails
-with `MDB_NOTFOUND` and crashes in `mdb_put`), and such a C writer leaves
-the maps of every process sharing the file stale. The other BSDs, and
+(`MDB_Invalidate`, in the vendored sources and in the cgo reference),
+released in LMDB 0.9.37 and 1.0.3 (2026-10-21; 0.9.36 and 1.0.2 do not
+have it): the released lmdb-go v1.9.4 (C 0.9.35) reads stale pages there
+after its own writes (on it the benchmark fails with `MDB_NOTFOUND` and
+crashes in `mdb_put`), and such a C writer leaves the maps of every
+process sharing the file stale. The other BSDs, and
 OpenBSD on amd64, have not run. All four build,
 vet and compile their test binaries (`go test -c`) for amd64 and arm64
 (DragonFly: amd64 only, as Go), without cgo and with it:
