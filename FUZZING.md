@@ -132,3 +132,25 @@ machine shared with other work):
   `TestSingleItemOnOverflowPages*`, ported from rlmdb's fix) cover it;
   `FuzzWriteModel` generates the case again (no failure in 4 minutes
   after the fix).
+* **`MDB_CURRENT` on a duplicate in a sub-DB that leaves the new item in a
+  leaf searches do not look in** (found by `FuzzWriteModel` with 1.0,
+  256-byte pages; C LMDB 0.9 and 1.0, rlmdb and this port alike). C keeps
+  the new item in the old one's leaf at its index and does not look at the
+  branch keys around the leaf, which need not be its items (deleting a
+  leaf's first item leaves the key above it). Two cases: the first item of
+  a leaf other than the leftmost, replaced by one of another size that
+  sorts before the branch key above the leaf (C 0.9's ITS#8447 path, which
+  lacks the `fix_parent` it does for an item of the same size); and the
+  last item of a leaf other than the rightmost, replaced by one of any
+  size at or after the next leaf's branch key (C 0.9 and 1.0, also
+  `MDB_DUPFIXED`). `MDB_GET_BOTH` then cannot find the new item, and a
+  later put of an item between it and that key lands in the other leaf,
+  out of order in the committed file. (C 1.0, which lacks ITS#8447, writes
+  an item of another size over the old one's key and keeps that key's
+  size.) Fixed: in exactly these cases the replacement deletes the item
+  and puts the new one, as `lmdb.h` describes `MDB_CURRENT` with another
+  size (as for #15 and #38); every other replacement stays C's.
+  `TestDupsortCurrentOutsideLeaf` and `tests/engine`
+  (`TestDifferential*CurrentDupOutsideLeaf`: the files C's
+  `mdb_cursor_del` + `mdb_cursor_put` leave, page for page, also with
+  `MDB_DUPFIXED` and a dirty limit of 16 pages) cover it.
