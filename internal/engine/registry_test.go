@@ -73,7 +73,7 @@ func fileNamesOf(t *testing.T, dir string) []struct {
 // whether the lock file was opened.
 func openCounting(path string, flags uint32, noLock bool) (*Env, bool, error) {
 	opened := false
-	opts := Options{Flags: flags, OpenLock: func(string, os.FileMode, uint32, bool, format.Format) (LockRegion, error) {
+	opts := Options{Flags: flags, OpenLock: func(string, os.FileMode, uint32, bool, format.Format, LockClaim) (LockRegion, error) {
 		opened = true
 		return NewMemLock(0), nil
 	}}
@@ -116,7 +116,7 @@ func TestOpenTwiceWithLockFile(t *testing.T) {
 	// file is opened) is caught once the data file is open.
 	late := filepath.Join(t.TempDir(), "late")
 	var linkErr error
-	e, err := Open(late, Options{Flags: format.NoSubdir, OpenLock: func(string, os.FileMode, uint32, bool, format.Format) (LockRegion, error) {
+	e, err := Open(late, Options{Flags: format.NoSubdir, OpenLock: func(string, os.FileMode, uint32, bool, format.Format, LockClaim) (LockRegion, error) {
 		if linkErr = os.Link(data, late); linkErr != nil {
 			return nil, linkErr
 		}
@@ -176,7 +176,7 @@ func TestNoLockHandlesShare(t *testing.T) {
 		if err != syscall.EBUSY || opened {
 			t.Errorf("open %s with a lock file next to NoLock handles: %v, lock file opened %v (want EBUSY before it)", n.path, err, opened)
 		}
-		e, err = Open(n.path, Options{Flags: n.flags | format.ReadOnly, OpenLock: func(string, os.FileMode, uint32, bool, format.Format) (LockRegion, error) {
+		e, err = Open(n.path, Options{Flags: n.flags | format.ReadOnly, OpenLock: func(string, os.FileMode, uint32, bool, format.Format, LockClaim) (LockRegion, error) {
 			return nil, nil // a read-only file system: no lock file
 		}})
 		if err == nil {

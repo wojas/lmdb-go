@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/PowerDNS/lmdb-go/internal/engine"
 	"github.com/PowerDNS/lmdb-go/internal/format"
 )
 
@@ -49,7 +50,9 @@ func SniffFormat(path string, flags uint) (Format, error) {
 		}
 		return FormatUnknown, err
 	}
-	defer f.Close()
+	// The name may lead to the lock file of an environment open in this
+	// process, whose record locks closing it would drop.
+	defer engine.Dispose(f)
 
 	var buf [format.SniffLen]byte
 	n, err := io.ReadFull(f, buf[:])

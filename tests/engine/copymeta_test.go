@@ -26,11 +26,11 @@ import (
 )
 
 // openLockFile opens the lock file shared with C (lmdb's openLock).
-func openLockFile(path string, mode os.FileMode, maxReaders uint32, readOnly bool, f format.Format) (eng.LockRegion, error) {
+func openLockFile(path string, mode os.FileMode, maxReaders uint32, readOnly bool, f format.Format, claim eng.LockClaim) (eng.LockRegion, error) {
 	if !lockfile.SharedLocksAvailable() {
 		return nil, lockfile.ErrNoSharedLocks
 	}
-	r, err := lockfile.Open(path, mode, maxReaders, readOnly, lockfile.LayoutFor(f))
+	r, err := lockfile.OpenClaimed(path, mode, maxReaders, readOnly, lockfile.LayoutFor(f), claim)
 	if err != nil || r == nil {
 		return nil, err
 	}

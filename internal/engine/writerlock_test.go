@@ -136,7 +136,7 @@ func TestOwnerDeathRepairAfterClose(t *testing.T) {
 		for _, copying := range []bool{false, true} {
 			t.Run(fmt.Sprintf("%v/copy=%v", f, copying), func(t *testing.T) {
 				r := &deadOwnerRegion{}
-				open := func(_ string, _ os.FileMode, n uint32, _ bool, _ format.Format) (LockRegion, error) {
+				open := func(_ string, _ os.FileMode, n uint32, _ bool, _ format.Format, _ LockClaim) (LockRegion, error) {
 					r.MemLock = NewMemLock(n)
 					return r, nil
 				}

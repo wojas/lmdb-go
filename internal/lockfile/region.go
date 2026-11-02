@@ -1,5 +1,5 @@
 // The open lock file and its reader table: rlmdb core/reader.rs
-// (LockRegion). C counterparts, kept exactly: mdb_env_setup_locks (0.9.36
+// (LockRegion). C counterparts, kept exactly: mdb_env_setup_locks (0.9.37
 // line 4882) with mdb_env_excl_lock (4741) and mdb_env_share_locks (4698);
 // the reader-slot part of mdb_txn_renew0 (2758) and mdb_txn_end;
 // mdb_find_oldest (2179); mdb_reader_pid (2718); mdb_reader_list;
@@ -86,6 +86,29 @@ type Region struct {
 // Errors are format.Errno values (LMDB's codes), syscall.Errno values
 // (possibly wrapped in *os.PathError), or ErrNoSharedLocks.
 func Open(path string, mode os.FileMode, maxReaders uint32, readOnly bool, layout *Layout) (*Region, error) {
+	return OpenClaimed(path, mode, maxReaders, readOnly, layout, nil)
+}
+
+// FileClaim is how the process's registry of open environments
+// (internal/engine registry.go) gets to see the lock file before it is
+// locked.
+type FileClaim interface {
+	// ClaimLockFile claims f, just opened and not locked yet. An error
+	// means the process has that file open in another role, under whatever
+	// name; f is then taken over (closed, or kept open if closing it would
+	// drop another handle's record locks), and the open fails with the
+	// error. Record locks do not conflict within a process, so without
+	// this the exclusive lock would be granted and the table of an
+	// environment open in this process initialised again.
+	ClaimLockFile(f *os.File) error
+	// ReleaseLockFile gives the claim back, for an open that closed the
+	// lock file to start again.
+	ReleaseLockFile()
+}
+
+// OpenClaimed is Open with the lock file claimed in claim (nil: none)
+// before it is locked.
+func OpenClaimed(path string, mode os.FileMode, maxReaders uint32, readOnly bool, layout *Layout, claim FileClaim) (*Region, error) {
 	if !sharedLocksAvailable {
 		return nil, ErrNoSharedLocks
 	}
@@ -98,6 +121,11 @@ func Open(path string, mode os.FileMode, maxReaders uint32, readOnly bool, layou
 			return nil, nil
 		}
 		return nil, err
+	}
+	if claim != nil {
+		if err := claim.ClaimLockFile(f); err != nil {
+			return nil, err
+		}
 	}
 	r, err := setup(f, mode, maxReaders, layout)
 	if err != nil {
