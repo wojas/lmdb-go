@@ -56,6 +56,9 @@ type wcursor struct {
 	flags  uint8
 	// subp: the tree is a P_SUBP sub-page (sub-cursors only).
 	subp bool
+	// walk is the walk of the read cursor this one is loaded into
+	// (rcursor.walk), kept from one read operation to the next.
+	walk walk
 }
 
 func (w *wcursor) reset(dbi int, db dbRef, flags uint8) {
@@ -68,6 +71,7 @@ func (w *wcursor) reset(dbi int, db dbRef, flags uint8) {
 	w.snum, w.top = 0, 0
 	w.flags = flags
 	w.subp = false
+	w.walk = walk{}
 }
 
 func newWCursor(dbi int, db dbRef, flags uint8) wcursor {
@@ -388,6 +392,7 @@ func (t *Txn) loadRead(c cref, out *rcursor) error {
 		}
 		out.subpage = sub
 	}
+	out.walk = w.walk
 	out.flags = w.flags
 	out.ki = w.ki
 	out.snum = min(w.snum, format.CursorStack)
@@ -413,6 +418,7 @@ func storeBack(w *wcursor, rc *rcursor) {
 	w.top = rc.top
 	w.ki = rc.ki
 	w.subp = rc.subpage != nil
+	w.walk = rc.walk
 	for i := 0; i < w.snum; i++ {
 		if i == 0 && w.subp {
 			w.pg[i] = subpageNo
@@ -493,6 +499,7 @@ func (t *Txn) descend(w *wcursor, db *format.DB, cmp format.Comparator, key []by
 	if err != nil {
 		return mp, err
 	}
+	w.walk = walk{}
 	w.pg[0] = mp.Pgno()
 	w.pgSlot[0] = slot
 	w.snum = 1
@@ -1115,6 +1122,7 @@ func (t *Txn) xcursorInit1(mc cref) error {
 	x.c.snum, x.c.top = 0, 0
 	x.c.flags = cSub
 	x.c.subp = false
+	x.c.walk = walk{}
 	if subpage {
 		x.c.snum = 1
 		x.c.flags = cInitialized | cSub

@@ -323,7 +323,10 @@ func Open(path string, opts Options) (env *Env, err error) {
 		pageSize = min(pageSize, layout.MaxPageSize)
 		meta = format.NewEnvMeta(layout, uint32(pageSize), format.DefaultMapSize, flags)
 	}
-	if pageSize&(pageSize-1) != 0 || pageSize < format.MinPageSize || pageSize > layout.MaxPageSize {
+	// C does not check the page size of an existing file. The range is the
+	// format's: smaller 0.9 pages cannot hold its largest keys (rlmdb
+	// KNOWN_C_BUGS.md #48).
+	if pageSize&(pageSize-1) != 0 || pageSize < layout.MinPageSize || pageSize > layout.MaxPageSize {
 		return nil, format.Invalid
 	}
 	if layout.Format == format.V10 && !newEnv {
@@ -861,7 +864,8 @@ func (e *Env) SetDupsort(dbi DBI, cmp format.CmpFunc) error {
 }
 
 // FreePages is the number of pages on the free list of the newest
-// snapshot (the "Free pages" line of mdb_stat -f).
+// snapshot (the "Free pages" line of mdb_stat -f). MDB_CORRUPTED if the
+// free DB's keys do not ascend (rlmdb KNOWN_C_BUGS.md #50).
 func (e *Env) FreePages() (uint64, error) {
 	txn, err := e.BeginTxn(nil, format.ReadOnly)
 	if err != nil {
@@ -873,15 +877,20 @@ func (e *Env) FreePages() (uint64, error) {
 		return 0, err
 	}
 	defer c.Close()
-	var pages uint64
+	var pages, prev uint64
+	hasPrev := false
 	for {
-		_, v, err := c.Get(nil, nil, format.Next)
+		k, v, err := c.Get(nil, nil, format.Next)
 		if errors.Is(err, format.NotFound) {
 			return pages, nil
 		}
 		if err != nil {
 			return 0, err
 		}
+		if prev, err = nextTxnidKey(prev, hasPrev, k); err != nil {
+			return 0, err
+		}
+		hasPrev = true
 		n, ok := format.EncodedLen(v)
 		if !ok || pages+n < pages {
 			return 0, format.Corrupted
@@ -982,7 +991,7 @@ func DefaultFormat() format.Format {
 
 // validSetPageSize is the check of 1.0's mdb_env_set_pagesize.
 func validSetPageSize(size int, l *format.Layout) bool {
-	return size&(size-1) == 0 && size >= format.MinPageSize && size <= l.MaxPageSize
+	return size&(size-1) == 0 && size >= l.MinPageSize && size <= l.MaxPageSize
 }
 
 // checkV10Features refuses an existing 1.0 environment that uses what is

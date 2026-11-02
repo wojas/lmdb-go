@@ -305,7 +305,7 @@ func cursorGetInner(t *Txn, mc, mx *rcursor, dcmp format.Comparator, hasDcmp boo
 		if !ok {
 			return nil, nil, format.Corrupted
 		}
-		if err := mx.sibling(t, false); err != nil {
+		if err := mx.step(t, false); err != nil {
 			return nil, nil, err
 		}
 		d, err := mx.fetchMultiple()

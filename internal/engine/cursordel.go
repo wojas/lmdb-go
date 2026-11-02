@@ -755,9 +755,12 @@ func (t *Txn) pageMerge0(csrc, cdst cref) error {
 	depth := t.dbOf(cdst).Depth
 	t.cur(cdst).pop()
 	rc := t.rebalance(cdst)
-	// Did the tree height change?
+	// Did the tree height change? C adds md_depth - depth (as int) and
+	// stores the sum in the 16-bit mc_snum, which is adding the difference
+	// modulo 2^16: done so here, as a signed 16-bit change (a file's
+	// md_depth is not checked, and may be 0x8000).
 	newDepth := t.dbOf(cdst).Depth
-	snum += int(int16(newDepth) - int16(depth))
+	snum += int(int16(newDepth - depth))
 	w := t.cur(cdst)
 	w.snum = snum
 	w.top = max(snum-1, 0)
@@ -1227,7 +1230,18 @@ func (t *Txn) drop0Walk(mc cref, subs bool) error {
 		t.cur(mc).pop()
 	}
 	mx := *t.cur(mc)
+	// C trusts the tree. A sound one has fewer pages than the snapshot, each
+	// named once: a walk that visits more, or a free list that would hold
+	// more pages than there are, is over branch pages that share children,
+	// which would put the shared pages on the free list once per path to
+	// them (rlmdb KNOWN_C_BUGS.md #50).
+	limit := t.nextPgno
+	var visits uint64
 	for t.cur(mc).snum > 0 {
+		visits++
+		if visits > limit || uint64(len(t.w.freePgs)) > limit {
+			return format.Corrupted
+		}
 		top := t.cur(mc).top
 		p, err := t.topPage(mc)
 		if err != nil {

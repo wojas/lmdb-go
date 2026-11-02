@@ -1453,7 +1453,7 @@ func (r *fzRun) open(dir string) *Env {
 var fzShapes = []struct {
 	f  format.Format
 	ps int
-}{{format.V09, 0}, {format.V09, 512}, {format.V10, 256}, {format.V10, 512}, {format.V10, 1024}, {format.V10, 4096}}
+}{{format.V09, 0}, {format.V09, 2048}, {format.V10, 256}, {format.V10, 512}, {format.V10, 1024}, {format.V10, 4096}}
 
 func runFuzzModel(t *testing.T, in []byte) { runFuzzModelHook(t, in, nil) }
 

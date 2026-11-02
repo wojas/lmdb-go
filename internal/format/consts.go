@@ -135,8 +135,9 @@ const (
 	// IDLUMMax is MDB_IDL_UM_MAX, the maximum number of dirty pages in one
 	// write transaction.
 	IDLUMMax = IDLUMSize - 1
-	// MinPageSize is the smallest page size accepted in an existing file.
-	// C does not check; a page must at least hold a header and a meta.
+	// MinPageSize is the smallest page size of any format: what 1.0's
+	// mdb_env_set_pagesize takes, below which a page cannot hold a header
+	// and a meta. Layout.MinPageSize is the one of each format.
 	MinPageSize = 256
 )
 

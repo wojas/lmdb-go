@@ -59,6 +59,9 @@ type Txn struct {
 	// nextPgno is mt_next_pgno: the first page not in this snapshot (write
 	// transactions: the first page never allocated).
 	nextPgno uint64
+	// allocations is the pages a write transaction (with its committed
+	// children) allocated so far, each run counted once: part of walkLimit.
+	allocations uint64
 	// dbs is mt_dbs + mt_dbflags (+ seqs and comparators), one per slot.
 	dbs []txnDB
 	// gen is the generation of dbs (see Txn.dbe).
@@ -146,7 +149,7 @@ func (e *Env) BeginRead(t *Txn) error {
 	t.pageSize = e.pageSize
 	t.l = e.layout
 	t.dmap = nil
-	t.txnid, t.nextPgno = 0, 0
+	t.txnid, t.nextPgno, t.allocations = 0, 0, 0
 	t.dbs = t.dbs[:0]
 	t.w = nil
 	t.slot = -1
@@ -355,6 +358,14 @@ func (t *Txn) setSnapshot(txnid uint64, meta *format.Meta) error {
 	if t.env.fatal.Load() {
 		return format.Panic
 	}
+	// C takes mm_last_pg + 1 as it is. Every snapshot holds the meta pages:
+	// a smaller last page would make a writer hand out meta page 1 as a new
+	// page and overwrite it at commit, the largest value page 0. The open
+	// checks the meta page it reads, but a transaction may take one written
+	// since (rlmdb KNOWN_C_BUGS.md #49).
+	if meta.LastPgno < format.NumMetas-1 || meta.LastPgno == ^uint64(0) {
+		return format.Corrupted
+	}
 	maxPgno := t.maxPgno()
 	if maxPgno < t.nextPgno {
 		// A map shorter than the map size covers the file as it was when it
@@ -379,6 +390,14 @@ func (t *Txn) setSnapshot(txnid uint64, meta *format.Meta) error {
 	}
 	return nil
 }
+
+// walkLimit is how many leaf pages a cursor may step onto in one direction
+// before its walk counts as one over a damaged tree (see walk): the pages
+// of the snapshot, plus the allocations of a write transaction, each of
+// which may put a leaf ahead of a walking cursor again. No sound tree has
+// more leaves than the snapshot has pages; a damaged tree overshoots it by
+// powers of the fan-out.
+func (t *Txn) walkLimit() uint64 { return t.nextPgno + t.allocations }
 
 // maxPgno is me_maxpg for this transaction's map.
 func (t *Txn) maxPgno() uint64 { return uint64(t.dmap.Len() / t.pageSize) }

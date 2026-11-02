@@ -105,8 +105,11 @@ type dupStep struct {
 func leafSizeOf(l *format.Layout, nodemax, ksize, dsize int) int {
 	sz := l.LeafSize(ksize, dsize)
 	if sz > nodemax {
-		// put on overflow page
-		sz -= dsize - l.OvpageSize
+		// put on overflow page: C's sz -= data->mv_size - sizeof(pgno_t),
+		// which wraps (in size_t, to the right value) when a long key makes
+		// the node too big for data shorter than the reference. In this
+		// order nothing goes negative: sz includes the data.
+		sz = sz - dsize + l.OvpageSize
 	}
 	return format.Even(sz + 2)
 }
