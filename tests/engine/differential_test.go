@@ -914,7 +914,7 @@ func runRound(t testing.TB, o *oracle, p *profile, ncur int, g *gen, nops int, l
 		t.Fatalf("%s: %v", tag, err)
 	}
 	// The Go engine reads C's environment as its own.
-	if strings.Join(goDump(t, cdir, []byte("t"), false), "\n") != strings.Join(goDump(t, gdir, []byte("t"), false), "\n") {
+	if strings.Join(goDump(t, cdir, []byte("t"), true), "\n") != strings.Join(goDump(t, gdir, []byte("t"), true), "\n") {
 		t.Fatalf("%s: Go reads C's environment differently", tag)
 	}
 	return true
