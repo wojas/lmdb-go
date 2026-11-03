@@ -19,7 +19,7 @@ The initial port maps rlmdb's modules onto Go packages roughly like this
 | `internal/engine` | `rlmdb/src/core/*` minus `reader.rs` | env, read and write txns, cursors, put/del, split, rebalance, spill, free list, commit, nested txns, copy, audit |
 | `lmdb` | lmdb-go's `lmdb` (API), rlmdb-capi's behaviour | the public API on top of `engine` |
 | `lmdbscan`, `exp/lmdbsync`, `cmd/*` | lmdb-go | kept, ported to the new `lmdb` |
-| `tests/` (nested module, cgo allowed) | rlmdb tests, interop, `bench` | everything that compares with C: `tests/cgolmdb` (pinned copy of lmdb-go at `e5af975`: v1.9.4's Go code, cgo, C 0.9.36 plus ITS#10615, ITS#10642 and ITS#10643) side by side with the port in one binary; the C binaries from rlmdb's interop build; cross-process tests; benchmarks (`tests/bench`); the Go interop peer (`tests/gopeer`) |
+| `tests/` (nested module, cgo allowed) | rlmdb tests, interop, `bench` | everything that compares with C: `tests/cgolmdb` (pinned copy of lmdb-go at `e5af975`: v1.9.4's Go code, cgo, C 0.9.36 plus ITS#10615, ITS#10642 and ITS#10643) side by side with the port in one binary; the C binaries from rlmdb's interop build; cross-process tests; benchmarks (`tests/bench`); the Go interop peer (`tests/gopeer`); handles used after they ended, the port against v1 (`tests/misuse`) |
 | `tests/gopeer` | `interop/src/bin/rpeer` | the interop peer protocol (`interop/README.md`), so rlmdb's harness can run Go as a fourth implementation |
 
 Names inside packages follow rlmdb's concepts in Go style (`numKeys`,
