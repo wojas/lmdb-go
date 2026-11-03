@@ -855,21 +855,26 @@ func runRound(t testing.TB, o *oracle, p *profile, ncur int, g *gen, nops int, l
 		t.Fatalf("%s: commit: C %q, Go %q; C stderr %s", tag, cCommit, gCommit, errOut)
 	}
 	env.Close()
-	// Same committed content, valid page usage, same pages.
-	_, cd, _ := run(t, o.dumpTool(), "-s", "t", cdir)
-	_, gd, _ := run(t, o.dumpTool(), "-s", "t", gdir)
-	if normDump(cd) != normDump(gd) {
-		t.Fatalf("%s: dumps differ", tag)
-	}
+	// Valid page usage (C's page audit of Go's file) and the same pages.
+	// Where the pages are the same, so are the contents and C's audit of
+	// its own file; the C tools run for those only where the pages differ
+	// (three processes fewer per round).
 	if rc, out, errs := run(t, o.peer, "check-freelist", gdir); rc != 0 {
 		t.Fatalf("%s: check-freelist of Go:\n%s\n%s", tag, out, errs)
-	} else if rc, _, errs := run(t, o.peer, "check-freelist", cdir); rc != 0 {
-		// KNOWN_C_BUGS.md row 14: C's MDB_NODUPDATA cursor delete subtracts a
-		// stale count; only md_entries may be off, so files differ there.
-		t.Logf("NOTE: %s: C's page audit: %s", tag, strings.TrimSpace(errs))
-		return true
 	}
 	if err := compareDataFiles(filepath.Join(cdir, "data.mdb"), filepath.Join(gdir, "data.mdb")); err != nil {
+		_, cd, _ := run(t, o.dumpTool(), "-s", "t", cdir)
+		_, gd, _ := run(t, o.dumpTool(), "-s", "t", gdir)
+		if normDump(cd) != normDump(gd) {
+			t.Fatalf("%s: dumps differ", tag)
+		}
+		if rc, _, errs := run(t, o.peer, "check-freelist", cdir); rc != 0 {
+			// KNOWN_C_BUGS.md row 14: C's MDB_NODUPDATA cursor delete
+			// subtracts a stale count; only md_entries may be off, so files
+			// differ there.
+			t.Logf("NOTE: %s: C's page audit: %s", tag, strings.TrimSpace(errs))
+			return true
+		}
 		t.Fatalf("%s: %v", tag, err)
 	}
 	// The Go engine reads C's environment as its own.

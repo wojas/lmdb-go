@@ -19,7 +19,8 @@
 //     instead, also with every goroutine's stack.
 //
 // TuneGC keeps the collector's goal low in the processes of go test -fuzz,
-// whose heaps hold Go's large mutation buffers.
+// whose heaps hold Go's large mutation buffers. LimitMinimize keeps an
+// expensive target from spending its time minimizing.
 //
 // The package is used by tests only.
 package fuzzwatch
@@ -71,6 +72,31 @@ func TuneGC() {
 	if FuzzingProcess() && os.Getenv("GOGC") == "" {
 		debug.SetGCPercent(fuzzGCPercent)
 	}
+}
+
+// minimizeFlag is the testing package's flag for the time or number of
+// runs the fuzzer spends minimizing an input (go test -fuzzminimizetime).
+const minimizeFlag = "test.fuzzminimizetime"
+
+// LimitMinimize limits the minimization of each new interesting or failing
+// input to runs runs of the fuzz function in the coordinator of go test
+// -fuzz, unless -fuzzminimizetime is given; elsewhere it does nothing. A
+// fuzz target calls it before f.Fuzz, which reads the flag. Go's default
+// is a minute per input, and the counter of executions only moves when a
+// minimization ends: for a target whose input takes a tenth of a second,
+// whose inputs seldom get shorter after the first few tries and that finds
+// a new input every few seconds, the workers spend nearly all their time
+// minimizing and the rate falls to about zero.
+func LimitMinimize(runs int) error {
+	if !FuzzingProcess() || Fuzzing() {
+		return nil
+	}
+	given := false
+	flag.Visit(func(f *flag.Flag) { given = given || f.Name == minimizeFlag })
+	if given {
+		return nil
+	}
+	return flag.Set(minimizeFlag, fmt.Sprintf("%dx", runs))
 }
 
 // Run runs fn, the code of one fuzz input, and crashes the process if fn

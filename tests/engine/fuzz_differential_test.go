@@ -9,10 +9,11 @@ package engine
 // script generator in place of its random numbers, so every operation,
 // key and value comes from the input while the generator keeps rlmdb's
 // repairs of the C behaviours KNOWN_C_BUGS.md lists. After every step the
-// cursors of C and Go must agree; the committed files must have the same
-// contents (mdb_dump), pass C's page audit and hold the same pages.
+// cursors of C and Go must agree; the committed files must pass C's page
+// audit and hold the same pages, so the same contents (runRound).
 // Slow (a C process per input); skipped without the C oracles (RLMDB_DIR
-// or RLMDB_BIN).
+// or RLMDB_BIN). Minimizing a new input is limited to 30 runs unless
+// -fuzzminimizetime is given (fuzzwatch.LimitMinimize).
 
 import (
 	"fmt"
@@ -24,6 +25,14 @@ import (
 
 func FuzzWriteDifferential(f *testing.F) {
 	fuzzwatch.TuneGC()
+	// An input takes about a tenth of a second, and beyond cutting its
+	// tail minimizing seldom makes one shorter (dropping a byte shifts
+	// every later operation): enough runs for the tail, not Go's default
+	// minute per input, which left the workers minimizing nearly all the
+	// time.
+	if err := fuzzwatch.LimitMinimize(30); err != nil {
+		f.Fatal(err)
+	}
 	names := fuzzProfileNames()
 	x := uint64(0x9e3779b97f4a7c15)
 	for i, name := range []string{"plain", "dupsort", "dupfixed", "intdup", "nested_plain", "nested_dupsort"} {
