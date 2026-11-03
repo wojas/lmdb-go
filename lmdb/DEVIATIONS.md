@@ -128,7 +128,18 @@ differently from C is in `internal/engine/PORTING.md` and in rlmdb's
   environment removes its semaphores (macOS; OpenBSD, NetBSD and DragonFly),
   an `Open` that finds them gone starts again with the exclusive probe, up
   to 100 times, then fails with `ENOENT`. C and v1 fail with `ENOENT` at
-  once (rlmdb row 47).
+  once (rlmdb row 47). On Windows the kernel destroys the named mutexes
+  with the last user's handles, which it closes before it releases the
+  lock file: an `Open` that finds them gone starts again the same way,
+  where C fails with `ERROR_FILE_NOT_FOUND`.
+* **At most 1,048,576 named databases and reader slots.**
+  `SetMaxDBs` and `SetMaxReaders` beyond 1,048,576 (`1 << 20`) are
+  `EINVAL`. C and v1 take any count (v1 one that fits C's `unsigned
+  int`): C breaks above about 35 million databases, and every transaction
+  has a slot per database (rlmdb row 54); a lock file holds 64 bytes per
+  reader slot, 64 MiB at the limit and 256 GiB at four billion (rlmdb
+  row 60). An existing lock file with a larger table is still attached to
+  with the count its size gives, as in C.
 * **Ignored flags.** `FixedMap`, `WriteMap`, `MapAsync` and `NoMemInit` are
   accepted and ignored (`Flags` reports them), as in rlmdb: the map is
   read-only and never at a fixed address.
@@ -261,9 +272,12 @@ differently from C is in `internal/engine/PORTING.md` and in rlmdb's
   mutex that belongs to its thread (another thread's `Commit` gets
   `ErrTxnWrongThread`, wrapping `ERROR_NOT_OWNER`). An LMDB 0.9 data
   file opened for writing is as long as its map size (C 0.9 extends it
-  in order to map it), and is never
-  shrunk (C 0.9 tries when the map size shrinks; rlmdb does not); an LMDB
-  1.0 file grows with its writes. Errors: LMDB's own errno values are Go's
+  in order to map it), and is never shrunk: C 0.9 sets the length
+  outright, from a meta page it read before, which also shrinks a longer
+  file and can cut pages another process committed meanwhile (rlmdb
+  `KNOWN_C_BUGS.md` row 57); here the file is only extended, and, next to
+  other processes, holding the writer mutex, under which every commit is
+  made. An LMDB 1.0 file grows with its writes. Errors: LMDB's own errno values are Go's
   `syscall` constants (`syscall.EINVAL`, ...), as v1's `error_windows.go`
   made them from the C runtime's errno; system errors keep their Windows
   error code (`syscall.Errno`, e.g. `ERROR_ACCESS_DENIED`, 5), where v1's
