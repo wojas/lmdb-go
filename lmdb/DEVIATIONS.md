@@ -300,8 +300,9 @@ differently from C is in `internal/engine/PORTING.md` and in rlmdb's
   duplicates, which C returns under this key, or none (a new cursor: C
   asserts); after a delete under the cursor C returns the first duplicate
   twice (rlmdb `KNOWN_C_BUGS.md` row 59). Where C's state is right the
-  results are C's, and so are `Count`, `GetCurrent`, `FirstDup` and
-  `LastDup` right after the failed search (`EINVAL`, as in C).
+  results are C's, and so is what `Count`, `GetCurrent`, `FirstDup` and
+  `LastDup` return right after the failed search (`EINVAL` on a key with
+  duplicates, as in C).
 * **Windows** (64-bit: x86-64, and arm64 by the same rules) follows
   rlmdb's Windows port and C LMDB's `_WIN32` paths, without cgo
   (`golang.org/x/sys/windows`): `SharedLockingAvailable` is true with and

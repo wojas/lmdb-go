@@ -3,9 +3,12 @@
 Status of the engine port (PLAN.md). rlmdb sources: `rlmdb/src/core/*.rs`
 and `format/*`.
 
-**Sync point: rlmdb `7c60f17`** (its main with the limits on databases
-and reader slots, ledger rows 53 to 60, and the Windows fixes of the file
-length and of the open race). The previous sync points were `3a52745`
+**Sync point: rlmdb `c263389`** (its main with ledger rows 58 and 59,
+`MDB_CURRENT` keeping the cursor's key and moves after a failed search,
+and row 19's handles at a nested abort aligned with this port's fix).
+The previous sync points were `7c60f17` (its main with the limits on
+databases and reader slots, ledger rows 53 to 60, and the Windows fixes
+of the file length and of the open race), `3a52745`
 (its main with the review-round fixes and the C references at the 0.9.37
 and 1.0.3 releases), `3df6995` (its main with the BSDs, Windows and
 big-endian testing) and `e48ebe0` (its main after the restructuring that made the
@@ -408,8 +411,8 @@ counts of the API's hot paths are pinned by `lmdb/alloc_test.go`.
   invalidates the map after a failed meta write, so on OpenBSD a plain copy
   taken from a map differs from this port's in that page
   (`sameButFailedMetaPage` in `tests/engine`).
-* rlmdb's ledger rows 53 to 60 (58 and 59 are not in the ledger at
-  `7c60f17`), here: rows 53 and 55 are `mdb_load`'s (not here); row 54
+* rlmdb's ledger rows 53 to 60, here: rows 53 and 55 are `mdb_load`'s
+  (not here); row 54
   (`format.MaxDBsLimit`: `SetMaxDBs` and `Open` beyond 1,048,576 are
   EINVAL); row 56 above; row 57 (Windows: a 0.9 data file is only
   extended, holding the writer mutex next to other processes:
@@ -417,21 +420,49 @@ counts of the API's hot paths are pinned by `lmdb/alloc_test.go`.
   `sys.MapNeedsFileLength`; `sys.MapData` maps what the file has); row 60
   (`format.MaxReadersLimit`: `SetMaxReaders` and `Open` beyond 1,048,576
   are EINVAL, before any file is created; an existing lock file with a
-  larger table is attached to, as before).
-* Row 19, ahead of rlmdb `7c60f17`: a nested transaction's abort does not
-  look up the databases its parent has a view of under the same
-  registration (`Txn.hasView`: they exist in the state it reverts to), and
-  `mdb_dbi_open` with `MDB_CREATE` puts the record with the cursor its
-  lookup left positioned, as C does (`findOrCreateNamedDB`). Both matter
-  only in a main DB a caller put out of order (`MDB_CURRENT` with another
-  key, accepted as in C), where searches miss keys that are there: rlmdb
-  then closes the handle of a database the parent changed (its commit
-  fails with MDB_BAD_DBI, or a new database takes the slot, and the
-  changes are lost and their pages leak; found by `FuzzAPI`), and puts a
-  new database's record elsewhere than C. Here both write C's pages
-  (`tests/engine` `TestCgoUnsortedMainChildAbortAndOpen` against C 0.9;
-  the 1.0 format at engine level only: rlmdb's `writeops` works on one
-  database and cannot express it). Not in rlmdb (to be proposed there).
+  larger table is attached to, as before); row 58 and row 59 below.
+* Row 58 (found by this port's `FuzzWriteModel`, fixed in rlmdb first,
+  `be6cf0e`): `MDB_CURRENT` through a main cursor puts the cursor's key
+  whatever the caller passed (`currentKeyIfOther`), for data of every
+  size, on overflow pages and in `MDB_DUPSORT` nodes, rows 15, 38 and 56's
+  delete and insert included. C writes the caller's key over the node
+  where it rewrites it, which leaves the leaf out of order, and keeps the
+  old key where it overwrites the data in place. A key the comparator
+  calls equal is the cursor's and is written as C writes it; the caller's
+  key still decides MDB_BAD_VALSIZE and the spill estimate, as in C. The
+  files are those C writes for the cursor's key (`tests/engine`
+  `TestDifferential*CurrentOtherKey`, the `cw` op of rlmdb's `writeops`;
+  the generated scripts send MDB_CURRENT with another key as `cw`).
+* Row 59 (found by this port's `FuzzWriteModel`, fixed in rlmdb first,
+  `555309b`): a move that enters the duplicates of the node a failed exact
+  search left the cursor on first sets the sub-cursor up from the node
+  (`reenterDups`), where C uses whatever the sub-cursor held (a stale or
+  another key's record, none, a `C_DEL` mark). The port had kept C's
+  behaviour and its model did not check such moves (`fzPos.lost`); the
+  model now tracks them as rlmdb's (`fzPos.missed`). `tests/engine`
+  `TestCgoMovesAfterAFailedSearch` has C 0.9's results next to the port's.
+* Row 19, fixed in this port first (`e559ba3`, `f19cfe7`) and then in
+  rlmdb (`4cfda85`, `593ddd2`), aligned: a nested transaction's abort does
+  not look up the databases its parent has a live view of under the same
+  registration (`Txn.hasView`, rlmdb's `TxnDb::is_live_view`: valid, the
+  same sequence number, not `DB_STALE`, and, here, of the parent's
+  generation of its lazily reset table), so their handles stay, as C
+  keeps them; and `mdb_dbi_open` with `MDB_CREATE` puts the record with
+  the cursor its lookup left positioned, as C does
+  (`findOrCreateNamedDB`, rlmdb's `find_or_create_named_db`). Both matter
+  in a main DB out of order (a comparator changed between opens, a
+  damaged file, a C writer's MDB_CURRENT put with another key, row 58),
+  where searches miss keys that are there; the first also in a 0.9 file
+  whose main DB the parent emptied (row 21), where the abort closed the
+  handles of the databases the parent changed and its commit failed with
+  MDB_BAD_DBI, where C writes their records back. Every other handle is
+  still looked up at a child's abort, also one registered before the
+  child began (its database may have been deleted by another process);
+  row 19 records what remains of the difference to C. Here the pages are
+  C's (`tests/engine` `TestCgoUnsortedMainChildAbortAndOpen`,
+  `TestCgoChildAbortAfterEmptiedMain`, `TestCgoSortedMainManyDatabases`
+  against C 0.9; the 1.0 format at engine level, with the records of
+  rlmdb's `capi_unsorted_main.c` trace of C 1.0).
 * Every KNOWN_C_BUGS.md decision of rlmdb is kept as rlmdb implements it
   (the differential test exercises the cursor-state ones with rlmdb's
   repairs of C's side).
@@ -559,6 +590,32 @@ oldest first, with the same meaning of "already there" and "ported".
 | `e1292d1` | the alias-path test skips where the scratch volume has no links | ported (`fileNamesOf` and the late-link case of `TestOpenTwiceWithLockFile` skip a link the volume refuses on every system, not only on Windows; the other link tests already skipped) |
 | `f4c708e` | refuse `max_readers` beyond 1,048,576 (row 60) | ported (`format.MaxReadersLimit`; `lmdb` `SetMaxReaders`, `engine.Open`; `TestSetMaxReadersLimit`, `TestOpenRefusesCountsBeyondTheLimits`, `TestLockFileBeyondTheReaderLimit`) |
 | `7c60f17` | ledger: row 54 cites `mdb_env_set_maxdbs` at 1.0's line 5231 | not applicable |
+
+## Sync with rlmdb `7c60f17..c263389`
+
+Branch `stage26-rlmdb-sync5`, oldest first, with the same meaning of
+"already there" and "ported". The C-API commits build rlmdb's three C
+libraries (`librlmdb` and two `liblmdb` stand-ins) and ship LMDB 1.0's
+`lmdb.h`; this port has no C API.
+
+| rlmdb | what | here |
+|---|---|---|
+| `be6cf0e` | `MDB_CURRENT` keeps the cursor's key (row 58) | ported (`currentKeyIfOther`; `TestCurrentWithAnotherKey`; `tests/engine`: the `cw` op, `TestDifferential09CurrentOtherKey`, `TestDifferential10CurrentOtherKey`, the generated scripts send another key as `cw`; `lmdb` `TestCursor_Put_currentKeepsTheKey`); rlmdb's `canonical09` fix: already there (`pagecmp` reads an overflow run as its header and value) |
+| `a508e1b` | `mdb_cursor_count` of a cursor after another cursor's put (row 14) | already there, tested (`TestCountAfterAnotherCursorsPut`; `tests/engine` `TestCgoCountAfterAnotherCursorsPut` against C 0.9: C's count stale, the positions C's) |
+| `57e1406` | `mdb_put` and `mdb_del` position on the write cursor's stack in DUPSORT trees too | ported (`seeksInPlace` takes a fresh main cursor whose sub-cursor holds no pages; `resetSubInPlace`, `enterDups`, `firstDupReadable`; `readItem` reports a node with duplicates; `TestPositioningInPlaceMatchesTheReadPath`, `TestPositioningInPlaceMatchesTheReadPathWithDuplicates`, also with `MDB_DUPFIXED`, `TestPositioningOnADamagedSubPageMatchesTheReadPath`); same file bytes; interleaved A/B on x86-64 Linux: DUPSORT puts 3 to 4 % faster, the other rows neutral (the commit message has the numbers) |
+| `5c323c0` | `mdb_put` and `mdb_del` check the DBI without copying its entry out | already there: `dbiEntry` and `refreshed` work on a `*txnDB` (`mdbPut`, `userDBI`), nothing is copied out of the table |
+| `3f09fee` | inline the in-place descent into its two callers | not applicable: a fix to LLVM's code for an out-of-line `Result`; Go's register ABI returns `descend`'s page and error in registers |
+| `027e3f7` | a sub-DB record without a root is corrupt when positioning in place | ported with `57e1406` (`enterDups`; `TestASubDBRecordWithoutARootIsCorrupt`, both formats) |
+| `1a361a3` | the C writer under pinned snapshots is one bounded transaction | not applicable (rlmdb's `mtest` concurrency tests; no `mtest` here) |
+| `555309b` | a move after a failed search sets the sub-cursor up from the node (row 59) | ported (`reenterDups`; `TestMovesAfterAFailedSearch`); rlmdb's cursor differentials against C that accept C's stale walk: not needed here (the write differential moves a cursor whose search failed with `MDB_FIRST` first, and no read differential walks after a failed search) |
+| `1a4625b` | the model moves cursors after failed searches (row 59) | ported to `FuzzWriteModel` (`fzPos.missed` replaces `fzPos.lost`) |
+| `c6c4fdf` | moves after a failed search against C and rlmdb (row 59) | ported (`tests/engine` `TestCgoMovesAfterAFailedSearch` against C 0.9 through `tests/cgolmdb`; the cases C crashes on against the Go engine only) |
+| `7714524` | a fallback format for new environments that ask for none | not applicable: it serves rlmdb's 1.0 stand-in library; here the chain is the request (`SetFormat`), the process default (`SetDefaultFormat`), `LMDBGO_DEFAULT_FORMAT`, then 0.9, as rlmdb's without a fallback |
+| `0e596dd`, `0274572`, `4c0d0d9`, `bfe083a`, `d0dfb7e`, `51e5c78`, `b0f25c4`, `304122c`, `bd3fee0`, `8992e10` | the C libraries, LMDB 1.0's 13 functions, their installation, headers, versions and docs | not applicable (no C API here; `Version` stays 0.9.90) |
+| `5baa6ca` | `RoCursor::is_db` and `RwCursor::is_db`, LMDB 1.0's `mdb_cursor_is_db` | already there in the engine with the same meaning (`Cursor.IsDB`); no API in package `lmdb`, as lmdb-go v2 has none |
+| `4cfda85` | a new database's record goes where C's `mdb_dbi_open` puts it | already there (`findOrCreateNamedDB`, `f19cfe7`); comments aligned |
+| `593ddd2` | a nested transaction's abort keeps the handles of its parent's databases | already there (`Txn.hasView`, `e559ba3`, the same test as `TxnDb::is_live_view` plus the table's generation); rlmdb's tests ported (`TestChildAbortKeepsHandlesAfterTheParentEmptiedTheMainDB`, `TestChildAbortClosesTheHandleOfADatabaseOnlyTheChildHad`, `TestChildAbortClosesTheHandleOfADatabaseDeletedElsewhere`; `tests/engine` `TestCgoChildAbortAfterEmptiedMain` against C 0.9) |
+| `c263389` | a main DB out of order, against C 0.9 and C 1.0 | ported: the unsorted-main tests break the order with a comparator changed for one put (`unsortedMain`) and expect the records of its C trace; `tests/engine` `TestCgoSortedMainManyDatabases` (600 databases) against C 0.9 |
 
 ## Windows: rlmdb's Windows commits (up to `3df6995`)
 
