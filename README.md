@@ -185,8 +185,9 @@ questions of why to use one database or the other.
 
 ## Build
 
-There is no dependency on shared libraries.  So most users can simply install
-using `go get`.
+By default there is no dependency on shared libraries (the LMDB C library is
+bundled and compiled into the package, unless the `rlmdb` build tag is used).
+So most users can simply install using `go get`.
 
 `go get github.com/PowerDNS/lmdb-go/lmdb`
 
@@ -208,6 +209,42 @@ required when committing a transaction. In your own package you can then do
     go build -tags pwritev .
 
 to enable the optimisation.
+
+### Linking against rlmdb
+
+The `rlmdb` build tag leaves out the bundled LMDB C sources and dynamically
+links against the `liblmdb` of [rlmdb](https://github.com/wojas/rlmdb)
+instead, a rewrite of LMDB 0.9 in Rust whose C API (`rlmdb-capi`) is a drop-in
+`liblmdb`.  This is meant for testing: the lmdb-go test suite exercises rlmdb
+and its C API layer, and programs using lmdb-go can try rlmdb without code
+changes.
+
+Build rlmdb's library and point cgo at it:
+
+    (cd /path/to/rlmdb && cargo build --release -p rlmdb-capi)
+    CGO_LDFLAGS="-L/path/to/rlmdb/target/release -Wl,-rpath,/path/to/rlmdb/target/release" \
+        go build -tags rlmdb .
+
+On macOS the `-rpath` is not needed (the library records its absolute path).
+`lmdb.Version()` reports `LMDB 0.9.85: (rlmdb x.y.z)` when rlmdb is linked.
+
+To run the tests of this package against rlmdb:
+
+    make test-rlmdb RLMDB=/path/to/rlmdb
+
+or `RLMDB=/path/to/rlmdb ./rlmdb-test.sh [go test args]`, which builds the
+library, sets the link flags and runs `go test -tags rlmdb`.  With
+`RLMDB_LIB_DIR` instead of `RLMDB` it uses an already built library from that
+directory.
+
+Notes:
+
+- Compilation uses the bundled `lmdb.h`; only the linking changes.  rlmdb is
+  ABI-compatible with LMDB 0.9.
+- Go's test cache does not track the shared library: use `-count=1` (the
+  script does) after rebuilding rlmdb.
+- The `pwritev` build tag has no effect with `rlmdb` (it only affects the
+  bundled sources).
 
 ## Documentation
 

@@ -1,0 +1,42 @@
+# Runs the tests against rlmdb's liblmdb (-tags rlmdb), see rlmdb-test.sh.
+
+name: rlmdb
+
+on:
+  push:
+    branches:
+      - rlmdb-build-tag
+  workflow_dispatch:
+    inputs:
+      rlmdb-ref:
+        description: 'rlmdb branch, tag or commit to test'
+        default: 'main'
+
+jobs:
+
+  rlmdb:
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-24.04
+          - ubuntu-24.04-arm
+          - macos-latest
+
+    runs-on: ${{ matrix.os }}
+    name: rlmdb tests on ${{ matrix.os }}
+    steps:
+    - uses: actions/checkout@v4
+    - name: Check out rlmdb
+      uses: actions/checkout@v4
+      with:
+        repository: wojas/rlmdb
+        ref: ${{ inputs.rlmdb-ref || 'main' }}
+        # A hidden directory, so that ./... does not look into it.
+        path: .rlmdb
+    - name: Set up Go
+      uses: actions/setup-go@v5
+      with:
+        go-version: '1.x'
+    - name: Test against rlmdb
+      run: make test-rlmdb RLMDB=.rlmdb

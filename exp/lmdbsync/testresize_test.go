@@ -57,7 +57,7 @@ func TestResize(t *testing.T) {
 	}
 
 	bin := filepath.Join(tempdir, "testresize")
-	build := exec.Command("go", "build", "-o", bin, "./testresize")
+	build := exec.Command("go", "build", "-tags", buildTags, "-o", bin, "./testresize")
 	build.Stderr = os.Stderr
 	err = build.Run()
 	if err != nil {

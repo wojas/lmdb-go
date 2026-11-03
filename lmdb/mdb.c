@@ -1,3 +1,5 @@
+//go:build !rlmdb
+
 /** @file mdb.c
  *	@brief Lightning memory-mapped database library
  *

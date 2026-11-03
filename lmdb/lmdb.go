@@ -129,6 +129,7 @@ package lmdb
 /*
 #cgo CFLAGS: -pthread -W -Wall -Wno-unused-parameter -Wno-format-extra-args -Wbad-function-cast -Wno-missing-field-initializers -Wno-stringop-overflow -Wno-unknown-warning-option -O2 -g
 #cgo linux,pwritev CFLAGS: -DMDB_USE_PWRITEV
+#cgo rlmdb LDFLAGS: -llmdb
 
 #include "lmdb.h"
 */
