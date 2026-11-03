@@ -57,28 +57,34 @@ type Cursor struct {
 	txn *Txn
 	_c  *engine.Cursor // nil once closed
 
-	// gen is the generation of txn (Txn.gen) _c was positioned in.
-	gen uint32
 	// pooled: _c belongs to a readonly transaction and goes back to the
 	// environment's pool when closed.
 	pooled bool
+	// tok is _c's Owner when it was opened or renewed.  The memory of a
+	// closed read cursor serves later cursors: a handle whose tok is not
+	// _c's Owner any more, detached aside (a copy of a handle that was
+	// closed), must not touch it (see valid).  While tok is _c's Owner,
+	// _c is open and its transaction has neither ended nor been reset
+	// since (see ready).
+	tok uint64
 }
 
 func openCursor(txn *Txn, db DBI) (*Cursor, error) {
 	if txn.invalid() {
 		return nil, errInvalid("mdb_cursor_open")
 	}
-	c := &Cursor{txn: txn, gen: txn.gen}
+	c := &Cursor{txn: txn}
 	if txn.readonly {
 		// The state of a closed read cursor is reused: nothing is
 		// allocated but the Cursor.
 		c._c = txn.env.readCursor()
 		c.pooled = true
 		if err := txn._txn.OpenCursorInto(c._c, engine.DBI(db)); err != nil {
-			c._c.Forget()
+			c._c.Release()
 			txn.env.cursors.Put(c._c)
-			return nil, operr("mdb_cursor_open", err)
+			return nil, txn.dbiErr("mdb_cursor_open", err)
 		}
+		c.attach()
 		return c, nil
 	}
 	_c, err := txn._txn.OpenCursor(engine.DBI(db))
@@ -86,6 +92,7 @@ func openCursor(txn *Txn, db DBI) (*Cursor, error) {
 		return nil, operr("mdb_cursor_open", err)
 	}
 	c._c = _c
+	c.attach()
 	return c, nil
 }
 
@@ -97,7 +104,7 @@ func openCursor(txn *Txn, db DBI) (*Cursor, error) {
 //
 // See mdb_cursor_renew.
 func (c *Cursor) Renew(txn *Txn) error {
-	if c._c == nil || txn == nil || txn.invalid() || !c.pooled || !txn.readonly || txn.env != c.txn.env {
+	if !c.valid() || txn == nil || txn.invalid() || !c.pooled || !txn.readonly || txn.env != c.txn.env {
 		// Closed cursors and transactions (also of a closed environment),
 		// cursors of write transactions, write transactions, and another
 		// environment's transactions (C does not check that one and
@@ -106,26 +113,32 @@ func (c *Cursor) Renew(txn *Txn) error {
 	}
 	// mdb_cursor_renew is mdb_cursor_open into the cursor; not through
 	// the old transaction, whose state may serve another one by now.
-	err := operr("mdb_cursor_renew", txn._txn.OpenCursorInto(c._c, c._c.DBI()))
+	err := txn._txn.OpenCursorInto(c._c, c._c.DBI())
 	if err != nil {
-		return err
+		return txn.dbiErr("mdb_cursor_renew", err)
 	}
+	c.txn.cursors.Remove(c._c)
 	c.txn = txn
-	c.gen = txn.gen
+	c.attach()
 	return nil
 }
 
 func (c *Cursor) close() bool {
 	if c._c != nil {
-		if c.pooled {
+		if !c.valid() {
+			// A copy of a handle that was closed: _c may serve another
+			// cursor by now.
+		} else if c.pooled {
 			// A read cursor holds nothing but its memory, once it
 			// forgets its pages (slices into a map that may be unmapped
 			// while the cursor waits in the pool).
-			c._c.Forget()
+			c.txn.cursors.Remove(c._c)
+			c._c.Release()
 			c.txn.env.cursors.Put(c._c)
 		} else if c.txn.ended() && !c.txn.readonly {
 			// the cursor has already been released by LMDB.
 		} else {
+			c.txn.cursors.Remove(c._c)
 			c._c.Close()
 		}
 		c.txn = nil
@@ -158,7 +171,7 @@ func (c *Cursor) DBI() DBI {
 	// have many open databases in an environment.
 	const dbiInvalid = ^DBI(0)
 
-	if c._c == nil {
+	if !c.valid() {
 		return dbiInvalid
 	}
 	return DBI(c._c.DBI())

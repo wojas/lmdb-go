@@ -60,12 +60,6 @@ type Txn struct {
 	// transaction ends.
 	pooled bool
 
-	// gen counts Reset and Renew.  A cursor remembers the generation it was
-	// opened or renewed in; after a Reset and Renew without Cursor.Renew it
-	// starts over unpositioned, as in rlmdb's C API (in C it would keep
-	// pointers into the old snapshot).
-	gen uint32
-
 	env *Env
 	// _txn is the transaction; nil once it has ended (Commit, Abort, or
 	// the end of its parent).
@@ -82,6 +76,17 @@ type Txn struct {
 	// the child on the finalizer's goroutine, changing this transaction
 	// under its user.
 	child *Txn
+	// cursors are the cursors opened or renewed in the transaction, and
+	// not closed, since it began or was renewed: they hold pages of its
+	// snapshot, and are detached when it ends or is reset
+	// (CursorList.DetachAll): they forget the pages, and their handles
+	// see it (Cursor.ready).  After a Reset and Renew a cursor that was
+	// not renewed with Cursor.Renew starts over unpositioned, as in rlmdb's
+	// C API (in C it would keep pointers into the old snapshot).  The list
+	// holds the engine's cursors, not the Cursor handles, which refer to
+	// the Txn: a cycle through the Txn would keep its finalizer from
+	// running.
+	cursors engine.CursorList
 
 	errLogf func(format string, v ...interface{})
 }
@@ -282,6 +287,7 @@ func (txn *Txn) clearTxn() {
 	// fails cleanly from now on.
 	t := txn._txn
 	txn._txn = nil
+	txn.cursors.DetachAll()
 	txn.endChildren()
 
 	// Return the state of a readonly transaction for reuse.
@@ -306,9 +312,10 @@ func (txn *Txn) Reset() {
 }
 
 func (txn *Txn) reset() {
-	if !txn.invalid() {
+	// mdb_txn_reset does nothing for a write transaction.
+	if txn.readonly && !txn.invalid() {
 		txn._txn.Reset()
-		txn.gen++
+		txn.cursors.DetachAll()
 	}
 }
 
@@ -329,7 +336,6 @@ func (txn *Txn) renew() error {
 		return errInvalid("mdb_txn_renew")
 	}
 	err := txn._txn.Renew()
-	txn.gen++
 
 	// mdb_txn_renew causes txn._txn to pick up a new transaction ID.  It's
 	// slightly confusing in the LMDB docs.  Txn ID corresponds to database
@@ -367,7 +373,8 @@ func (txn *Txn) CreateDBI(name string) (DBI, error) {
 
 // Flags returns the database flags for handle dbi.
 func (txn *Txn) Flags(dbi DBI) (uint, error) {
-	if txn.invalid() {
+	if txn.invalid() || txn.isReset() {
+		// A reset transaction has no handles in C (TXN_DBI_EXIST).
 		return 0, errInvalid("mdb_dbi_flags")
 	}
 	cflags, err := txn._txn.DBIFlags(engine.DBI(dbi))
@@ -406,7 +413,7 @@ func (txn *Txn) Stat(dbi DBI) (*Stat, error) {
 	}
 	_stat, err := txn._txn.Stat(engine.DBI(dbi))
 	if err != nil {
-		return nil, operr("mdb_stat", err)
+		return nil, txn.dbiErr("mdb_stat", err)
 	}
 	stat := Stat{
 		PSize:         uint(_stat.PageSize),
@@ -427,7 +434,7 @@ func (txn *Txn) Drop(dbi DBI, del bool) error {
 	if txn.invalid() {
 		return errInvalid("mdb_drop")
 	}
-	return operr("mdb_drop", txn._txn.Drop(engine.DBI(dbi), del))
+	return txn.dbiErr("mdb_drop", txn._txn.Drop(engine.DBI(dbi), del))
 }
 
 // Sub executes fn in a subtransaction.  Sub commits the subtransaction iff a
@@ -480,7 +487,7 @@ func (txn *Txn) Get(dbi DBI, key []byte) ([]byte, error) {
 	kdata, kn := valBytes(key)
 	val, err := txn._txn.Get(engine.DBI(dbi), kdata[:kn])
 	if err != nil {
-		return nil, getErr(err)
+		return nil, txn.getErr(err)
 	}
 	b := txn.bytes(val)
 	return b, nil
@@ -489,7 +496,7 @@ func (txn *Txn) Get(dbi DBI, key []byte) ([]byte, error) {
 func (txn *Txn) putNilKey(dbi DBI, flags uint) error {
 	// mdb_put with an empty key will always fail
 	err := txn._txn.Put(engine.DBI(dbi), eb[:0], eb[:0], uint32(flags))
-	return operr("mdb_put", err)
+	return txn.dbiErr("mdb_put", err)
 }
 
 // Put stores an item in database dbi.
@@ -509,7 +516,7 @@ func (txn *Txn) Put(dbi DBI, key []byte, val []byte, flags uint) error {
 	}
 
 	err := txn._txn.Put(engine.DBI(dbi), key, val, uint32(flags))
-	return operr("mdb_put", err)
+	return txn.dbiErr("mdb_put", err)
 }
 
 // PutReserve returns a []byte of length n that can be written to, potentially
@@ -528,7 +535,7 @@ func (txn *Txn) PutReserve(dbi DBI, key []byte, n int, flags uint) ([]byte, erro
 	}
 	b, err := txn._txn.PutReserve(engine.DBI(dbi), key, n, uint32(flags))
 	if err != nil {
-		return nil, operr("mdb_put", err)
+		return nil, txn.dbiErr("mdb_put", err)
 	}
 	return b, nil
 }
@@ -546,7 +553,7 @@ func (txn *Txn) Del(dbi DBI, key, val []byte) error {
 	kdata, kn := valBytes(key)
 	vdata := val // nil is NULL
 	err := txn._txn.Del(engine.DBI(dbi), kdata[:kn], vdata)
-	return operr("mdb_del", err)
+	return txn.dbiErr("mdb_del", err)
 }
 
 // OpenCursor allocates and initializes a Cursor to database dbi.

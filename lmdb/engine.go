@@ -223,6 +223,7 @@ func (txn *Txn) endChildren() {
 	txn.child = nil
 	for c != nil && c._txn != nil {
 		c._txn = nil
+		c.cursors.DetachAll()
 		runtime.SetFinalizer(c, nil)
 		next := c.child
 		c.child = nil
@@ -230,20 +231,91 @@ func (txn *Txn) endChildren() {
 	}
 }
 
+// isReset reports a readonly transaction between Reset and Renew.  The
+// caller has checked that txn has not ended.
+func (txn *Txn) isReset() bool {
+	return txn.readonly && txn._txn.IsReset()
+}
+
+// dbiErr is operr for the functions whose first check in C is
+// TXN_DBI_EXIST (mdb_get, mdb_put, mdb_del, mdb_drop, mdb_stat,
+// mdb_cursor_open, mdb_cursor_renew): it fails for every handle of a reset
+// transaction, whose mt_numdbs mdb_txn_reset sets to 0, so they return
+// EINVAL there (as lmdb-go v1 and rlmdb's C API), where the engine says
+// MDB_BAD_TXN, or EACCES for a write.  It is inlined: success costs a
+// comparison.
+func (txn *Txn) dbiErr(op string, err error) error {
+	if err == nil {
+		return nil
+	}
+	return txn.dbiFailed(op, err)
+}
+
+// dbiFailed is dbiErr for an error.
+func (txn *Txn) dbiFailed(op string, err error) error {
+	if txn.isReset() {
+		return errInvalid(op)
+	}
+	return operr(op, err)
+}
+
+// getErr is dbiErr for mdb_get, without an allocation for MDB_NOTFOUND.
+func (txn *Txn) getErr(err error) error {
+	if err == error(format.NotFound) {
+		return errGetNotFound
+	}
+	return txn.dbiFailed("mdb_get", err)
+}
+
+// valid reports that c is open: it was not closed, and it is not a copy
+// of a handle that was closed, whose engine cursor may serve another
+// handle by now (tok).  Its transaction may have ended.
+func (c *Cursor) valid() bool {
+	return c._c != nil && c._c.Owner()&^engine.OwnerDetached == c.tok
+}
+
+// attach records that c was opened or renewed in c.txn: its token, and
+// its place in the transaction's list of cursors (Txn.cursors).
+func (c *Cursor) attach() {
+	c.tok = c._c.Owner()
+	c.txn.cursors.Add(c._c)
+}
+
 // ready checks that c can run the operation op (a C function name for
 // errors): it is open and its transaction can run operations (see
 // Txn.invalid).  If the transaction was reset and renewed since c was
 // positioned, c starts over unpositioned in the new snapshot (rlmdb's C
-// API; C would keep pointers into pages of the old snapshot).
+// API; C would keep pointers into pages of the old snapshot).  The
+// common case costs one comparison more than Txn.invalid: tok is _c's
+// Owner only while c is open and attached (its transaction has neither
+// ended nor been reset since c was opened or renewed).
 func (c *Cursor) ready(op string) error {
-	if c._c == nil || c.txn.invalid() {
+	if c._c != nil && c._c.Owner() == c.tok && !c.txn.invalid() {
+		return nil
+	}
+	return c.notReady(op)
+}
+
+// notReady is ready for a cursor that is closed, a stale copy, or
+// detached (Txn.cursors).  A detached cursor of a transaction that was
+// reset runs the operation, which fails as in C, with MDB_BAD_TXN or, for
+// writes, EACCES (or MDB_INCOMPATIBLE for Count on a database without
+// DupSort): the engine's cursor checks its transaction before it looks at
+// a page.  After Renew it starts over unpositioned.
+func (c *Cursor) notReady(op string) error {
+	if !c.valid() || c.txn.invalid() {
 		return errInvalid(op)
 	}
-	if c.gen != c.txn.gen {
-		if err := c.txn._txn.OpenCursorInto(c._c, c._c.DBI()); err != nil {
-			return operr(op, err)
-		}
-		c.gen = c.txn.gen
+	t := c.txn._txn
+	if t.IsReset() {
+		return nil
+	}
+	if err := t.OpenCursorInto(c._c, c._c.DBI()); err != nil {
+		return operr(op, err)
+	}
+	c.tok = c._c.Owner()
+	if !c.txn.cursors.Has(c._c) {
+		c.txn.cursors.Add(c._c)
 	}
 	return nil
 }
@@ -294,14 +366,6 @@ var (
 	errGetNotFound       = &OpError{Op: "mdb_get", Errno: NotFound}
 	errCursorGetNotFound = &OpError{Op: "mdb_cursor_get", Errno: NotFound}
 )
-
-// getErr is operr for mdb_get.
-func getErr(err error) error {
-	if err == error(format.NotFound) {
-		return errGetNotFound
-	}
-	return operr("mdb_get", err)
-}
 
 // cursorGetErr is operr for mdb_cursor_get.
 func cursorGetErr(err error) error {

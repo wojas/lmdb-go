@@ -110,12 +110,24 @@ differently from C is in `internal/engine/PORTING.md` and in rlmdb's
 * **Handles used after they ended.** A `Txn` used after `Commit` or
   `Abort`, and a `Cursor` used after `Close` or after its transaction
   ended, return `EINVAL` (as rlmdb's C API; v1 passed freed or NULL
-  pointers to C). `Commit` of an ended `Txn` is `EINVAL`, `Abort` and
-  `Close` are no-ops. A nested `Txn` that is still active when its
-  parent commits or aborts ends with it (C commits or aborts it first and
-  frees it; v1's handle then pointed to freed memory, and its finalizer
-  aborted whatever transaction reused it): it fails the same way, and
-  its finalizer does nothing.
+  pointers to C: `Cursor.Get` after `Close` panicked, most cursor
+  operations after the end of the transaction crashed, and a write cursor
+  of a committed transaction could write into the next one). `Commit` and
+  `Sub` of an ended `Txn` are `EINVAL` (v1's `Sub` began a new top-level
+  write transaction), `Abort` and `Close` are no-ops. A copy of a `Cursor`
+  value made before `Close` fails the same way and never touches the
+  cursor that reuses its memory. A nested `Txn` that is still active when
+  its parent commits or aborts ends with it (C commits or aborts it first
+  and frees it; v1's handle then pointed to freed memory, and its
+  finalizer aborted whatever transaction reused it): it fails the same
+  way, and its finalizer does nothing.
+* **Cursors that are not closed.** A cursor that is not closed keeps its
+  memory (about 2 KiB) until its transaction ends or is reset, also when
+  it is no longer reachable; then it drops its references to the map
+  (so that a cursor kept for `Cursor.Renew` holds no pointers into a map
+  that may be unmapped) and is garbage once unreachable. v1 freed a read
+  cursor that was not closed in a finalizer. Close the cursors that a
+  long-running read transaction opens.
 * **Cursors of a renewed transaction.** After `Txn.Reset` and `Txn.Renew`,
   a cursor that was not renewed with `Cursor.Renew` starts over
   unpositioned in the new snapshot (rlmdb's C API). In C it keeps pointers

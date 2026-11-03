@@ -39,6 +39,9 @@ const (
 	allocsCursorGetBoth  = 0
 	allocsResetRenew     = 0
 	allocsCursorRenew    = 0
+	// OpenCursor and Close in a readonly transaction: the *Cursor (the
+	// engine's cursor is reused); lmdb-go v1 also made one.
+	allocsCursorOpenClose = 1
 
 	// Write path. lmdb-go v1 makes one allocation (the *Txn) for Update
 	// and BeginTxn+Commit, none for the operations inside a transaction.
@@ -77,6 +80,7 @@ var allocCases = []allocCase{
 	{"CursorGetBoth", allocsCursorGetBoth, setupCursor(GetBoth, true)},
 	{"ResetRenew", allocsResetRenew, setupRenew(false)},
 	{"CursorRenew", allocsCursorRenew, setupRenew(true)},
+	{"CursorOpenClose", allocsCursorOpenClose, setupCursorOpenClose},
 	{"UpdatePut", allocsUpdatePut, setupUpdatePut(100)},
 	{"Commit", allocsCommit, setupCommit},
 	{"Put", allocsPut, setupInTxn(opPut)},
@@ -314,6 +318,22 @@ func setupRenew(withCursor bool) func(testing.TB, *Env) (func(), func()) {
 				txn.Abort()
 			}
 	}
+}
+
+// setupCursorOpenClose: OpenCursor, a lookup and Close per operation.
+func setupCursorOpenClose(t testing.TB, env *Env) (func(), func()) {
+	keys := allocKeySet(allocKeys)
+	txn := beginRead(t, env, true)
+	db, _ := dbis(t, txn)
+	i := 0
+	return func() {
+		i++
+		cur, err := txn.OpenCursor(db)
+		check(t, err)
+		_, _, err = cur.Get(keys[i%allocKeys], nil, Set)
+		check(t, err)
+		cur.Close()
+	}, txn.Abort
 }
 
 // --- write path -----------------------------------------------------------
