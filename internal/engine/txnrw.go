@@ -375,11 +375,20 @@ func (t *Txn) wroteMeta(meta format.Meta) {
 //
 // A child reverts to the state of parent (nil for a top-level
 // transaction): a database the parent has a view of under the same
-// registration exists there (hasView) and is not looked up. That matters
-// beyond the saved lookups: a caller can put the main DB out of order
-// (MDB_CURRENT with another key, accepted as in C), and the lookup could
-// then miss a database the parent changed; closing its handle would lose
-// those changes at commit, where C keeps the handle and writes them.
+// registration exists there (hasView) and is not looked up, and its handle
+// is kept, as C keeps it. That matters beyond the saved lookups: the main
+// DB can be out of order (a comparator changed between opens, a damaged
+// file, the leaf a C writer leaves after an MDB_CURRENT put with another
+// key, KNOWN_C_BUGS.md row 58), and the lookup could then miss a database
+// the parent changed; closing its handle would make the parent's commit
+// fail with MDB_BAD_DBI, or, once a new database took the slot, lose
+// those changes and leak their pages, where C writes them. So would a 0.9
+// main DB the parent emptied (row 21: the records of the named databases
+// go, their handles stay, and the commit writes the records of the
+// changed ones back). Every other handle is still looked up, also one
+// registered before the child began: its database may have been deleted
+// by another process (row 19 says what remains of the difference to C).
+// rlmdb's RwTxn::close_vanished_handles.
 func (t *Txn) closeVanishedHandles(main format.DB, parent *Txn) {
 	r := &t.env.dbis
 	var candidates []int
@@ -405,9 +414,13 @@ func (t *Txn) closeVanishedHandles(main format.DB, parent *Txn) {
 	}
 }
 
-// hasView reports whether t has a view of slot i's database under
-// registration seq: its record read from t's state or written in it (not
-// DB_STALE), so the database exists in t's state.
+// hasView reports whether t has a live view of slot i's database under
+// registration seq: valid, taken under that registration, and its record
+// read from t's state or written in it (not DB_STALE), so the database is
+// t's: its changes are in this record, which the commit writes back.
+// rlmdb's TxnDb::is_live_view; the generation check is the port's lazy
+// reset of the table (an entry of an earlier transaction in t's memory is
+// no view of t's).
 func (t *Txn) hasView(i int, seq uint32) bool {
 	if i >= len(t.dbs) {
 		return false
@@ -692,9 +705,10 @@ func (t *Txn) findOrCreateNamedDB(key []byte, flags uint32) (format.DB, uint8, e
 	// (mdb_dbi_open): the put's mdb_cursor_set starts where the lookup left
 	// it, which for a positioned cursor first compares the key with the
 	// first and last key of its page. In a main DB in order that puts the
-	// record where a fresh search would; in one a caller put out of order
-	// (MDB_CURRENT with another key, accepted as in C) it can be elsewhere,
-	// and the port writes C's place.
+	// record where a fresh search would; in one out of order (a comparator
+	// changed between opens, a damaged file, a C writer's MDB_CURRENT put
+	// with another key, KNOWN_C_BUGS.md row 58) it can be elsewhere, and
+	// the port writes C's place (rlmdb's find_or_create_named_db, 4cfda85).
 	_, err = t.seekKey(mc, t.dbOf(mc), t.cmpOf(mc), key)
 	if err == nil {
 		rec := db.Bytes()
