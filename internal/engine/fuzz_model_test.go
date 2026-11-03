@@ -108,6 +108,16 @@ func cloneSet(s map[string]struct{}) map[string]struct{} {
 type fzPos struct {
 	k, d []byte
 	ok   bool
+	// lost: unknown since a search failed (MDB_SET, MDB_GET_BOTH, ...) in
+	// a DUPSORT database. The search reset the sub-cursor but not its
+	// cached duplicates record (mx_db), which is not kept up to date while
+	// the sub-cursor is reset; a later relative move onto a key with
+	// duplicates starts from that record, which may be another key's or
+	// outdated by other cursors' writes: wrong counts, skipped duplicates.
+	// C 0.9 and 1.0 and rlmdb do the same (rlmdb KNOWN_C_BUGS.md rows 6
+	// and 14). Where such a move lands is not checked or tracked; a
+	// successful search or a write through the cursor ends it.
+	lost bool
 }
 
 // fzLevel is a transaction of the nesting stack: its model at begin (for
@@ -675,7 +685,7 @@ func (r *fzRun) opPut(viaCursor bool) {
 		}
 		r.put(i, k, d)
 		if c != nil {
-			r.top().pos[i] = fzPos{k, d, true}
+			r.top().pos[i] = fzPos{k: k, d: d, ok: true}
 			kk, dd, err := c.Get(nil, nil, format.GetCurrent)
 			r.expect("cursor after its put", kk, dd, err, &pair{k, d})
 		}
@@ -737,10 +747,10 @@ func (r *fzRun) position(i int, k, d []byte) bool {
 	}
 	r.expect(fmt.Sprintf("position db %d on %x:%x", i, k, d), gk, gd, err, want)
 	if want == nil {
-		lv.pos[i] = fzPos{}
+		lv.pos[i] = fzPos{lost: fzCfgs[i].dupsort()}
 		return false
 	}
-	lv.pos[i] = fzPos{want.k, want.d, true}
+	lv.pos[i] = fzPos{k: want.k, d: want.d, ok: true}
 	return true
 }
 
@@ -833,7 +843,7 @@ func (r *fzRun) opCurrent() {
 		r.del(i, k, d)
 	}
 	r.put(i, k, nd)
-	r.top().pos[i] = fzPos{k, nd, true}
+	r.top().pos[i] = fzPos{k: k, d: nd, ok: true}
 	gk, gd, err := c.Get(nil, nil, format.GetCurrent)
 	r.expect("cursor after CURRENT", gk, gd, err, &pair{k, nd})
 	r.checkGet(i, k)
@@ -881,7 +891,7 @@ func (r *fzRun) opMultiple() {
 		r.put(i, k, it)
 	}
 	if err == nil {
-		r.top().pos[i] = fzPos{k, items[n-1], true}
+		r.top().pos[i] = fzPos{k: k, d: items[n-1], ok: true}
 		gk, gd, err := c.Get(nil, nil, format.GetCurrent)
 		r.expect("cursor after MULTIPLE", gk, gd, err, &pair{k, items[n-1]})
 	} else {
@@ -1126,12 +1136,16 @@ func (r *fzRun) opMove() {
 	if check {
 		r.expect(fmt.Sprintf("cursor db %d op %d from %v", i, op, p), gk, gd, err, want)
 	}
-	if err == nil && (!check || want != nil) && r.contains(i, gk, gd) {
-		lv.pos[i] = fzPos{bytes.Clone(gk), bytes.Clone(gd), true}
-	} else if err == nil && !dupsort && r.has(i, gk) {
-		lv.pos[i] = fzPos{bytes.Clone(gk), bytes.Clone(gd), true}
-	} else {
-		lv.pos[i] = fzPos{}
+	search := op == format.Set || op == format.SetRange || op == format.GetBoth || op == format.GetBothRange
+	switch {
+	case p.lost && !search && op != format.First && op != format.Last:
+		lv.pos[i] = fzPos{lost: true}
+	case err == nil && (!check || want != nil) && r.contains(i, gk, gd):
+		lv.pos[i] = fzPos{k: bytes.Clone(gk), d: bytes.Clone(gd), ok: true}
+	case err == nil && !dupsort && r.has(i, gk):
+		lv.pos[i] = fzPos{k: bytes.Clone(gk), d: bytes.Clone(gd), ok: true}
+	default:
+		lv.pos[i] = fzPos{lost: search && err != nil && dupsort}
 	}
 }
 
@@ -1189,7 +1203,7 @@ func (r *fzRun) opMultipleGet(i int, c *Cursor, p fzPos) {
 	if !slices.ContainsFunc(run, func(x []byte) bool { return bytes.Equal(x, target) }) {
 		r.fail("op %d: run does not contain %s", op, target)
 	}
-	lv.pos[i] = fzPos{p.k, bytes.Clone(run[len(run)-1]), true}
+	lv.pos[i] = fzPos{k: p.k, d: bytes.Clone(run[len(run)-1]), ok: true}
 }
 
 func (r *fzRun) opDrop() {

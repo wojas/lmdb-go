@@ -157,3 +157,21 @@ machine shared with other work):
   `mdb_cursor_del` + `mdb_cursor_put` leave, page for page, also with
   `MDB_DUPFIXED` and a dirty limit of 16 pages;
   `TestCgoCurrentMultipleOutsideLeaf` for `MDB_MULTIPLE`) cover it.
+* **The duplicate count and the duplicates of a cursor that a failed search
+  left on a key** (found by `FuzzWriteModel`; C LMDB 0.9 and 1.0, rlmdb and
+  this port alike, so not changed here; rlmdb `KNOWN_C_BUGS.md` rows 6 and
+  14 describe the cause). A failed `MDB_SET` or `MDB_GET_BOTH` resets the
+  sub-cursor but leaves the main cursor on a node and keeps the sub-cursor's
+  cached duplicates record (`mx_db`), which other cursors' writes then no
+  longer update (C's `mdb_xcursor_init2` and this port's record sharing skip
+  a reset sub-cursor). `MDB_NEXT` onto that key's duplicates starts from the
+  record: `mdb_cursor_count` stays at the old count, and after the sub-DB's
+  root split the walk covers only the old root's items and then moves to
+  the next key. Where the key's duplicates are in a sub-page that moved,
+  C instead treats the main leaf page as the sub-tree root (its sub-page
+  has the leaf's page number) and crashes in `mdb_xcursor_init1` with a
+  null `mc_xcursor` (0.9 lines 6030, 6401 and 7747; 1.0 lines 7908, 8287
+  and 9621); rlmdb and this port find the sub-page through the main
+  cursor's node. `FuzzWriteModel` does not check where such a cursor
+  lands until a successful search or a write through it positions it
+  again (`fzPos.lost`).
