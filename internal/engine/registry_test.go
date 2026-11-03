@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"runtime"
 	"sync"
 	"syscall"
 	"testing"
@@ -38,16 +37,14 @@ func fileNamesOf(t *testing.T, dir string) []struct {
 			flags uint32
 		}{path, flags})
 	}
-	// made reports whether a link could be made. On Windows some file
-	// systems have no symlinks or hard links (exFAT, FAT), and NTFS
-	// symlinks need a privilege: the names that can be made are checked.
+	// made reports whether a link could be made. Some file systems have
+	// no symlinks or hard links (exFAT, FAT; also as the scratch volume of
+	// a Unix system), and NTFS symlinks need a privilege: the names that
+	// can be made are checked (rlmdb e1292d1).
 	made := func(what string, err error) bool {
 		t.Helper()
 		if err == nil {
 			return true
-		}
-		if runtime.GOOS != "windows" {
-			t.Fatal(err)
 		}
 		t.Logf("no %s here: %v", what, err)
 		return false
@@ -126,7 +123,7 @@ func TestOpenTwiceWithLockFile(t *testing.T) {
 		e.Close()
 	}
 	switch {
-	case linkErr != nil && runtime.GOOS == "windows":
+	case linkErr != nil:
 		t.Logf("no hard link here: %v", linkErr)
 	case err != syscall.EBUSY:
 		t.Errorf("open of a hard link made during the open: %v (want EBUSY)", err)
