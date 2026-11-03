@@ -289,7 +289,7 @@ func (t *Txn) end(keep bool) error {
 	w.dirty.recycle()
 	clear(w.spilled)
 	if !keep && w.hasBaseMain {
-		t.closeVanishedHandles(w.baseMain)
+		t.closeVanishedHandles(w.baseMain, nil)
 	}
 	w.freePgs = w.freePgs[:0]
 	w.loose = w.loose[:0]
@@ -372,12 +372,21 @@ func (t *Txn) wroteMeta(meta format.Meta) {
 // dropped so reads see the state it reverts to (whose main DB record is
 // main), close the handles that name a database which does not exist
 // there. C closes only DB_NEW handles (KNOWN_C_BUGS.md row 19).
-func (t *Txn) closeVanishedHandles(main format.DB) {
+//
+// A child reverts to the state of parent (nil for a top-level
+// transaction): a database the parent has a view of under the same
+// registration exists there (hasView) and is not looked up. That matters
+// beyond the saved lookups: a caller can put the main DB out of order
+// (MDB_CURRENT with another key, accepted as in C), and the lookup could
+// then miss a database the parent changed; closing its handle would lose
+// those changes at commit, where C keeps the handle and writes them.
+func (t *Txn) closeVanishedHandles(main format.DB, parent *Txn) {
 	r := &t.env.dbis
 	var candidates []int
 	for i := format.CoreDBs; i < t.ndbs; i++ {
 		e := t.dbe(i)
-		if e.state&dbValid != 0 && e.state&dbNew == 0 && e.seq == r.seqOf(i) {
+		if e.state&dbValid != 0 && e.state&dbNew == 0 && e.seq == r.seqOf(i) &&
+			(parent == nil || !parent.hasView(i, e.seq)) {
 			candidates = append(candidates, i)
 		}
 	}
@@ -394,6 +403,17 @@ func (t *Txn) closeVanishedHandles(main format.DB) {
 			r.close(DBI(i))
 		}
 	}
+}
+
+// hasView reports whether t has a view of slot i's database under
+// registration seq: its record read from t's state or written in it (not
+// DB_STALE), so the database exists in t's state.
+func (t *Txn) hasView(i int, seq uint32) bool {
+	if i >= len(t.dbs) {
+		return false
+	}
+	e := &t.dbs[i]
+	return e.gen == t.gen && e.state&dbValid != 0 && e.state&dbStale == 0 && e.seq == seq
 }
 
 // abortWrite is mdb_txn_abort of a write transaction (an active nested
