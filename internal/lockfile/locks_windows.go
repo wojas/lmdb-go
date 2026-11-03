@@ -16,11 +16,16 @@
 //     "Global\MDB", 'r' or 'w', then up to ten base-85 digits of the stored
 //     hash (MUTEXNAME). What is in the file is read, never recomputed.
 //   - The kernel destroys a named mutex with its last handle, so there is
-//     nothing to remove when an environment closes.
+//     nothing to remove when an environment closes. The last user closes
+//     its handles before it releases the lock file (as C's mdb_env_close0
+//     does), so an opener that waited for its shared lock meanwhile finds
+//     the mutexes gone: attachLocks then reports errLocksRemoved and the
+//     open probes again, where C fails it (rlmdb KNOWN_C_BUGS.md row 47).
 
 package lockfile
 
 import (
+	"errors"
 	"os"
 	"syscall"
 
@@ -69,6 +74,8 @@ func createLocks(m *lockMap, fd uintptr, mode os.FileMode, l *Layout) (*sharedLo
 
 // attachLocks opens the mutexes another process created: named in the
 // lock file (version 1), or named after the hash stored in it (version 2).
+// errLocksRemoved if one does not exist (ERROR_FILE_NOT_FOUND: the kernel
+// destroyed it with the last user's handles; see the file comment).
 func attachLocks(m *lockMap, l *Layout) (*sharedLocks, error) {
 	var rname, wname string
 	switch {
@@ -88,12 +95,20 @@ func attachLocks(m *lockMap, l *Layout) (*sharedLocks, error) {
 	}
 	r, err := openMutex(rname)
 	if err != nil {
-		return nil, err
+		return nil, gone(err)
 	}
 	w, err := openMutex(wname)
 	if err != nil {
 		r.close(false)
-		return nil, err
+		return nil, gone(err)
 	}
 	return &sharedLocks{r: r, w: w}, nil
+}
+
+// gone is err, or errLocksRemoved for a mutex that does not exist.
+func gone(err error) error {
+	if errors.Is(err, windows.ERROR_FILE_NOT_FOUND) {
+		return errLocksRemoved
+	}
+	return err
 }

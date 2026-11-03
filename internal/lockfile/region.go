@@ -91,11 +91,13 @@ type Region struct {
 // (semaphores, Objects.removedByLastUser), it does so holding byte 0
 // exclusively, and an opener that failed its exclusive probe while that
 // process still held the environment open gets its shared lock only after
-// they are gone. C fails the open then (rlmdb KNOWN_C_BUGS.md row 47); here the
-// lock file is closed, which releases the shared lock, and the open starts
-// again with the exclusive probe, which then either succeeds (this process
-// creates the locks) or waits for the process that does create them to
-// downgrade. Locks are only ever created under the exclusive lock, so every
+// they are gone. (On Windows nobody removes the named mutexes, but the
+// kernel destroys them with the last user's handles, which it closes
+// before it releases the lock file: the same.) C fails the open then
+// (rlmdb KNOWN_C_BUGS.md row 47); here the lock file is closed, which
+// releases the shared lock, and the open starts again with the exclusive
+// probe, which then either succeeds (this process creates the locks) or
+// waits for the process that does create them to downgrade. Locks are only ever created under the exclusive lock, so every
 // process that attaches uses the same ones. After removedRetries tries (a
 // lock file that names locks which do not exist while other processes hold
 // it open: damage), the open fails with ENOENT.

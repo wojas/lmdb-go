@@ -1,17 +1,20 @@
-//go:build darwin || openbsd || netbsd || dragonfly
+//go:build darwin || openbsd || netbsd || dragonfly || windows
 
 package lmdb
 
 // Opening an environment while its last user closes it, on the platforms
-// whose lock objects the last user removes: POSIX named semaphores (macOS;
-// OpenBSD, NetBSD and DragonFly with 0.9 lock files) and SysV semaphore sets
-// (those three BSDs with 1.0 lock files). rlmdb tests/lockfile_open_race.rs.
+// whose lock objects go away with the last user: POSIX named semaphores
+// (macOS; OpenBSD, NetBSD and DragonFly with 0.9 lock files) and SysV
+// semaphore sets (those three BSDs with 1.0 lock files), which it removes,
+// and Windows' named mutexes, which the kernel destroys with its handles.
+// rlmdb tests/lockfile_open_race.rs.
 //
-// The last user takes byte 0 of the lock file exclusively and removes the
-// objects (mdb_env_close0). An opener whose exclusive probe failed because
-// that process still held its lock waits for a shared lock, gets it once the
-// closer has gone, and finds the lock file naming objects that no longer
-// exist. C fails the open there (rlmdb KNOWN_C_BUGS.md row 47); here the open
+// The last user removes the objects holding byte 0 of the lock file
+// exclusively, or on Windows closes its mutex handles, before it releases
+// the lock file (mdb_env_close0). An opener whose exclusive probe failed
+// because that process still held its lock waits for a shared lock, gets it
+// once the closer has gone, and finds the lock file naming objects that no
+// longer exist. C fails the open there (rlmdb KNOWN_C_BUGS.md row 47); here the open
 // goes back to the exclusive probe (lockfile.OpenClaimed).
 //
 // Several processes (this test binary run again) open the environment, begin
