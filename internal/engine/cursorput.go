@@ -23,6 +23,7 @@
 package engine
 
 import (
+	"bytes"
 	"syscall"
 
 	"github.com/PowerDNS/lmdb-go/internal/format"
@@ -154,6 +155,41 @@ func (t *Txn) currentSingleOverflows(mc cref, ksize, dsize int) (bool, error) {
 		return false, format.Corrupted
 	}
 	return !node.IsDupData(), nil
+}
+
+// currentKeyIfOther: for MDB_CURRENT through a main cursor, the key of the
+// item under it if key is not that key, else nil (key is put, as in C).
+//
+// lmdb.h requires the caller's key to match the cursor's; C does not
+// check. Where it rewrites the node (new_ksize: data of another size, or
+// not fitting the overflow pages in place; a MDB_DUPSORT node it rebuilds)
+// it writes the caller's key at the cursor's index, which leaves the leaf
+// unsorted; where it overwrites the data in place it keeps the old key.
+// The put keeps the cursor's key in every case instead (KNOWN_C_BUGS.md
+// row 58). The keys are compared as searches compare them: a key the
+// comparator calls equal is the same key, and is written where C writes
+// it. The key returned is a copy: the put changes the page it is in.
+// rlmdb's RwTxn::current_key_if_other.
+func (t *Txn) currentKeyIfOther(mc cref, key []byte) ([]byte, error) {
+	page, err := t.topPage(mc)
+	if err != nil {
+		return nil, err
+	}
+	if page.IsLeaf2() {
+		return nil, nil // not a main DB's page (KNOWN_C_BUGS.md row 17)
+	}
+	node, ok := page.Node(t.cur(mc).kiTop())
+	if !ok {
+		return nil, format.Corrupted
+	}
+	current, ok := node.Key()
+	if !ok {
+		return nil, format.Corrupted
+	}
+	if bytes.Equal(current, key) || t.cmpOf(mc).CompareInPage(key, current, node.KeyTail()) == 0 {
+		return nil, nil
+	}
+	return bytes.Clone(current), nil
 }
 
 // replaceCurrent is MDB_CURRENT as lmdb.h describes it for an item of
@@ -371,6 +407,19 @@ func (t *Txn) putAt0(mc cref, key []byte, data putData, flags uint32) (int, erro
 	if w := t.cur(mc); w.flags&cDel != 0 {
 		w.flags ^= cDel
 	}
+	// MDB_CURRENT keeps the key under the cursor, also where the caller
+	// passed another (KNOWN_C_BUGS.md row 58). The spill estimate stays
+	// C's, from the caller's key.
+	callerKey := key
+	if flags&format.Current != 0 && !t.cur(mc).isSub() {
+		cursorKey, err := t.currentKeyIfOther(mc, key)
+		if err != nil {
+			return 0, err
+		}
+		if cursorKey != nil {
+			key = cursorKey
+		}
+	}
 	if dupsort && uint32(db.Flags)&format.DupFixed != 0 && pos == posFound {
 		if err := t.checkDupFixedSize(mc, data.size); err != nil {
 			return 0, err
@@ -422,7 +471,7 @@ func (t *Txn) putAt0(mc cref, key []byte, data putData, flags uint32) (int, erro
 		if flags&format.Multiple != 0 {
 			rsize = data.size * dcount
 		}
-		if err := t.spillCheck(mc, db.Depth, true, len(key), rsize); err != nil {
+		if err := t.spillCheck(mc, db.Depth, true, len(callerKey), rsize); err != nil {
 			return 0, err
 		}
 	}

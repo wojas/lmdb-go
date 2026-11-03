@@ -312,8 +312,27 @@ func (g *gen) next(prevOp, prevLine string, hasPrev bool, depth int) string {
 	// row 13).
 	f := strings.Split(op, ":")
 	if f[0] == "cp" && f[4] == strconv.Itoa(int(format.Current)) {
-		if !(hasPrev && strings.Contains(prevLine, fmt.Sprintf("| c%s rc=0 ", f[1]))) {
+		n, _ := strconv.Atoi(f[1])
+		var ck string
+		var on bool
+		if hasPrev && strings.Contains(prevLine, fmt.Sprintf("| c%s rc=0 ", f[1])) {
+			ck, _, on = itemOf(prevLine, n)
+		}
+		if !on {
 			return strings.Join(f[:4], ":") + ":0"
+		}
+		// The generated key, of the length of the cursor's: where it is
+		// another key, C puts the cursor's (C would write the other over
+		// the node where it rewrites it), Go the other one, which the Go
+		// writer's MDB_CURRENT replaces by the cursor's (KNOWN_C_BUGS.md
+		// row 58). Of that length, the spill estimates (C counts the
+		// caller's key) are the same.
+		w := unhex(f[2])
+		for len(w) < len(ck)/2 {
+			w = append(w, 'w')
+		}
+		if ws := hexs(w[:len(ck)/2]); ws != ck {
+			return fmt.Sprintf("cw:%s:%s:%s:%s", f[1], ck, ws, f[3])
 		}
 	}
 	return op
@@ -619,7 +638,7 @@ func (d *driver) compare(op, cl, rlRaw string) bool {
 func cursorOf(op string) (int, bool) {
 	f := strings.Split(op, ":")
 	switch f[0] {
-	case "g", "cp", "cd", "cr":
+	case "g", "cp", "cd", "cr", "cw":
 		n, err := strconv.Atoi(f[1])
 		return n, err == nil
 	}
@@ -673,6 +692,11 @@ func (d *driver) goStep(txn *eng.Txn, dbi eng.DBI, cur []*eng.Cursor, op string)
 		// C deletes and puts (writeops.c), which is what the Go writer's
 		// MDB_CURRENT does where C's in-place replacement goes wrong.
 		err = cur[atoi(f[1])].Put(unhex(f[2]), unhex(f[3]), format.Current)
+	case "cw":
+		// C puts with the cursor's key, Go with another one, which the Go
+		// writer's MDB_CURRENT replaces by the cursor's (KNOWN_C_BUGS.md
+		// row 58).
+		err = cur[atoi(f[1])].Put(unhex(f[3]), unhex(f[4]), format.Current)
 	case "g":
 		var k, v []byte
 		if len(f) > 3 {

@@ -275,6 +275,19 @@ differently from C is in `internal/engine/PORTING.md` and in rlmdb's
   same bug there); with two or more values it replaces the item in place
   with each in turn, as C does. Every other replacement is C's, byte for
   byte.
+* **`Current` with another key** (a C bug, not ported). `Cursor.Put(key,
+  val, Current)` and `Cursor.PutReserve(key, n, Current)` with a key other
+  than the one under the cursor (`lmdb.h` requires the same key; C never
+  checks) keep the cursor's key, for values of every size. C stores the
+  value under the old key where it overwrites it in place (a value of the
+  same size, or one that fits the overflow pages it replaces), and
+  otherwise writes the other key over the item at the cursor's position,
+  which leaves the database out of order: searches for the new key and
+  for keys around it can miss them (rlmdb `KNOWN_C_BUGS.md` row 58). A
+  key the database's comparator calls equal to the cursor's is that key,
+  and the other key still decides `BadValSize`, as in C. For a caller that
+  passes the cursor's key nothing changes; for another one the file is
+  the one C writes for the cursor's key.
 * **Windows** (64-bit: x86-64, and arm64 by the same rules) follows
   rlmdb's Windows port and C LMDB's `_WIN32` paths, without cgo
   (`golang.org/x/sys/windows`): `SharedLockingAvailable` is true with and
