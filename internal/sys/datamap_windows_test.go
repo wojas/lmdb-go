@@ -3,7 +3,8 @@
 // reserved_map_shows_the_file_growing,
 // reserved_map_follows_the_file_past_the_first_mib,
 // committed_pages_show_in_other_views,
-// data_map_read_only_handle_maps_what_exists).
+// data_map_read_only_handle_maps_what_exists,
+// extend_file_never_shortens_the_file).
 
 package sys
 
@@ -63,11 +64,17 @@ func slice(t *testing.T, m *DataMap, off, n int) []byte {
 	return b
 }
 
-// TestDataMapBounds is rlmdb's data_map_bounds: LMDB 0.9's map through a
-// writable handle extends the file to the map size.
+// TestDataMapBounds is rlmdb's data_map_bounds: LMDB 0.9's map of a
+// writable environment's file, which is extended to the map size first.
 func TestDataMapBounds(t *testing.T) {
 	f := rwFile(t, filepath.Join(t.TempDir(), "data.mdb"))
 	if err := WriteAt(f, fill(8192, 7), 0); err != nil {
+		t.Fatal(err)
+	}
+	if !MapNeedsFileLength(false) || MapNeedsFileLength(true) {
+		t.Fatal("MapNeedsFileLength: 0.9's map needs the length, 1.0's not")
+	}
+	if err := ExtendFile(f, 1<<20); err != nil {
 		t.Fatal(err)
 	}
 	m := mustMap(t, f, 1<<20, 2048, false)
@@ -265,6 +272,49 @@ func TestReadOnlyHandleMapsWhatExists(t *testing.T) {
 	if m, err := MapData(ro, 4096, false, 0, false); err == nil {
 		m.Release()
 		t.Fatal("mapped an empty file")
+	}
+}
+
+// TestExtendFileNeverShortensTheFile is rlmdb's
+// extend_file_never_shortens_the_file: the map covers what the file has,
+// extending it is the caller's; a longer file (another process's larger
+// map, a page committed at its end) is left as it is, where C's
+// SetEndOfFile cuts it (rlmdb KNOWN_C_BUGS.md row 57); through a read-only
+// handle nothing changes.
+func TestExtendFileNeverShortensTheFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "data.mdb")
+	if err := os.WriteFile(path, fill(8192, 5), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	f := rwFile(t, path)
+	m, err := MapData(f, 1<<20, false, 0, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m.Len() != 8192 || size(t, f) != 8192 {
+		t.Fatalf("len %d, file %d", m.Len(), size(t, f))
+	}
+	m.Release()
+	if err := ExtendFile(f, 1<<20); err != nil || size(t, f) != 1<<20 {
+		t.Fatalf("extend: %v, size %d", err, size(t, f))
+	}
+	if err := WriteAt(f, fill(4096, 9), 3<<20-4096); err != nil {
+		t.Fatal(err)
+	}
+	if err := ExtendFile(f, 1<<20); err != nil || size(t, f) != 3<<20 {
+		t.Fatalf("extend of a longer file: %v, size %d", err, size(t, f))
+	}
+	last := make([]byte, 1)
+	if _, err := ReadAt(f, last, 3<<20-1); err != nil || last[0] != 9 {
+		t.Fatalf("last byte %d, %v", last[0], err)
+	}
+	ro, err := OpenEnvFile(path, true, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ro.Close()
+	if err := ExtendFile(ro, 8<<20); err != nil || size(t, f) != 3<<20 {
+		t.Fatalf("extend through a read-only handle: %v, size %d", err, size(t, f))
 	}
 }
 

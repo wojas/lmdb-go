@@ -150,7 +150,7 @@ func TestLongReader(t *testing.T) {
 				opts := Options{}
 				if mode == "nolock" {
 					opts.Flags = format.NoLock
-					opts.OpenLock = func(string, os.FileMode, uint32, bool, format.Format) (LockRegion, error) {
+					opts.OpenLock = func(string, os.FileMode, uint32, bool, format.Format, LockClaim) (LockRegion, error) {
 						t.Fatal("OpenLock called under NoLock")
 						return nil, nil
 					}

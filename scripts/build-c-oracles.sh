@@ -3,8 +3,8 @@
 # it runs on (glibc or musl): the C 0.9 and C 1.0 peers (cpeer, cpeer10),
 # the C tools (mdb_stat, mdb_dump, mdb_load, mdb_copy and their *10
 # versions) and layout_dump / layout_dump10, from the C sources rlmdb
-# vendors (tests/lmdb-c/0.9: LMDB 0.9.36; tests/lmdb-c/1.0: the pinned
-# mdb.RE/1.0 commit; see tests/lmdb-c/README.md there). On macOS, rlmdb's
+# vendors (tests/lmdb-c/0.9: LMDB 0.9.37; tests/lmdb-c/1.0: LMDB 1.0.3;
+# see tests/lmdb-c/README.md there). On macOS, rlmdb's
 # interop build provides the same binaries; this script is for the Linux
 # containers, where those macOS binaries do not run.
 #

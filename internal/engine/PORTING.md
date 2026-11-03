@@ -3,14 +3,17 @@
 Status of the engine port (PLAN.md). rlmdb sources: `rlmdb/src/core/*.rs`
 and `format/*`.
 
-**Sync point: rlmdb `3df6995`** (its main with the BSDs, Windows and
-big-endian testing). The previous sync point was `e48ebe0` (its main after
-the restructuring that made the repository root the Cargo workspace and
-vendored the C sources in `tests/lmdb-c`); the stages before were ported
-from `9ea2373`, whose `rust/` tree is `5a2ebd2` of the restructured
-history. The "Sync with rlmdb" sections below list what happened to each
-commit since; rlmdb's BSD commits are the BSD port's (branch
-`stage7-bsd`).
+**Sync point: rlmdb `7c60f17`** (its main with the limits on databases
+and reader slots, ledger rows 53 to 60, and the Windows fixes of the file
+length and of the open race). The previous sync points were `3a52745`
+(its main with the review-round fixes and the C references at the 0.9.37
+and 1.0.3 releases), `3df6995` (its main with the BSDs, Windows and
+big-endian testing) and `e48ebe0` (its main after the restructuring that made the
+repository root the Cargo workspace and vendored the C sources in
+`tests/lmdb-c`); the stages before were ported from `9ea2373`, whose
+`rust/` tree is `5a2ebd2` of the restructured history. The "Sync with
+rlmdb" sections below list what happened to each commit since; rlmdb's
+BSD commits up to `3df6995` are the BSD port's (branch `stage7-bsd`).
 
 ## File map
 
@@ -20,7 +23,7 @@ commit since; rlmdb's BSD commits are the BSD port's (branch
 | `internal/sys/*` | `os/unix.rs`, `os/windows.rs`, `os/mod.rs` minus shared locks and the lock file | done (data map, pread/pwrite, fdatasync, file opens; `*_unix.go`, `*_windows.go`) |
 | `lockregion.go` | `core/reader.rs` (interface only) | done |
 | `memlock.go` | `core/reader.rs` `LocalReaders`, `core/registry.rs` `LocalShared` | in-memory region: NoLock reader table, committed txnid and writer lock; test stand-in for the lock file |
-| `registry.go` | `core/registry.rs` | done (claims keyed by the data file, see the ledger) |
+| `registry.go` | `core/registry.rs` | done (claims keyed by the data file and the lock file, see the ledger) |
 | `slotpool.go` | (none) | reader slots kept for reuse (not in rlmdb) |
 | `slotpool.go` | (none; C's TLS-mode slot reuse) | idle reader slots kept for the next read transaction |
 | `env.go` | `core/env.rs` | done |
@@ -117,11 +120,26 @@ commit since; rlmdb's BSD commits are the BSD port's (branch
   `RLMDB_DEFAULT_FORMAT` (experimental; read at every open of a new
   environment).
 
-* The transaction's DB table is `me_maxdbs` long; `Txn.ndbs` (C's
-  `mt_numdbs`) bounds every loop over it, and the top-level write
-  transaction reuses its predecessor's table (C reuses `me_txn0`), so a
-  write transaction costs O(DBs in use), not O(`MaxDBs`) (stage 2:
-  lmdb-go's tests set `MaxDBs` to 65536).
+* The transaction's DB table is as long as the environment's DBI table
+  when the transaction begins (`me_numdbs`, at least `minDBTable`, 16
+  slots), not `me_maxdbs` as in C and rlmdb, and grows when the
+  transaction touches a later slot (`Txn.reach`: a handle opened after it
+  began, by it or by a child; doubling, up to `me_maxdbs`). A reused `Txn`
+  keeps what its table grew to (`Env.BeginRead`, the top-level write
+  transaction, a parent's spare child). `Txn.ndbs` (C's `mt_numdbs`)
+  bounds every loop over it, and the top-level write transaction reuses
+  its predecessor's table (C reuses `me_txn0`), so a transaction costs
+  O(DBs in use), not O(`MaxDBs`) (stage 2: lmdb-go's tests set `MaxDBs`
+  to 65536; stage 20: at that setting a table of `MaxDBs` slots was 6.8
+  MiB, made anew for every read transaction a `Txn` pool did not supply).
+  `Txn.dbe` does not grow the table, so that it stays inlinable: the slot
+  indices that do not come from a checked handle (`dbiEntry`), a core DB
+  or `ndbs` are reached first (`openDB`, `adoptRegistration`, `createDB`,
+  `recreateDB`, and the parent at the end of a child). Handles behave as
+  with tables of `me_maxdbs` slots: `MDB_DBS_FULL` at `MaxDBs`, `EINVAL`
+  beyond it, a handle opened elsewhere usable at once. The environment's
+  sequence numbers (`dbiRegistry.seqs`, 4 bytes a slot) stay `me_maxdbs`
+  long: they are read without a lock on every use of a handle.
 * `Env.Close` with transactions still alive (stage 2, for lmdb-go's
   finalizers; C requires them all to end first): `BeginRead`, `Renew` and
   write `BeginTxn` fail with `EINVAL`, and the live ones keep working
@@ -281,18 +299,25 @@ counts of the API's hot paths are pinned by `lmdb/alloc_test.go`.
   in `mti_numreaders`, as for a C process in TLS mode; the environment's
   teardown releases them. Not in rlmdb (to be proposed there).
 * The registry of open environments (registry.go, rlmdb
-  core/registry.rs since d3d9239): a data file is claimed exclusively
-  with a lock file (a second open is EBUSY, before the lock file is
-  touched) and shared under NoLock (any number of handles, one MemLock);
-  the two kinds refuse each other, and a read-only handle on a read-only
-  file system claims exclusively. Claims are by the data file's resolved
-  path (before anything is opened) and by device and inode (once it
-  exists, again from the opened descriptor). rlmdb claims the path given
-  (the directory, or the file with MDB_NOSUBDIR) and then device and
-  inode, which refuses and shares the same opens, only later in the open
-  (after the lock file of the other mode was opened). Processes that open
-  a data file in different modes use different lock files (`lock.mdb`,
-  `<file>-lock`), in C as here: they do not exclude each other.
+  core/registry.rs since d3d9239, as of 4762f54): a data file is claimed
+  exclusively with a lock file (a second open is EBUSY, before the lock
+  file is touched) and shared under NoLock (any number of handles, one
+  MemLock); the two kinds refuse each other, and a read-only handle on a
+  read-only file system claims exclusively. Claims are by the data file's
+  resolved path (before anything is opened) and by device and inode (once
+  it exists, from `stat` before the lock file is touched, again from each
+  opened descriptor, the meta descriptor too). The lock file is claimed by
+  device and inode once it is open, before it is locked
+  (`lockfile.OpenClaimed` with the `LockClaim` of `OpenLockFunc`). A
+  descriptor a refused open cannot keep is closed, or parked in the registry
+  until the handle holding that lock file is gone (`regParked`, `Dispose`,
+  also for `SniffFormat`). rlmdb claims the path given (the directory, or
+  the file with MDB_NOSUBDIR), then opens the data file read-only to claim
+  it and sniffs its format from that descriptor; here `stat` gives the
+  identity without a descriptor to park, and the sniff opens by name after
+  it. Both refuse and share the same opens. Processes that open a data file
+  in different modes use different lock files (`lock.mdb`, `<file>-lock`),
+  in C as here: they do not exclude each other.
 * `MDB_DUPFIXED` items of one byte: from stage 2 on the port inserted,
   deleted and split them as C does, but its SIZELEFT saturated where a
   64 KiB page's `mp_upper` wraps (every later insert split the page) and
@@ -372,6 +397,27 @@ counts of the API's hot paths are pinned by `lmdb/alloc_test.go`.
   and 44 as above; row 42 (`OpenProcess` with `SYNCHRONIZE`) and row 43 (the
   Windows lock-file size in 64 bits) are the Windows port's, which follows
   both (`internal/lockfile/filelock_windows.go`).
+* rlmdb's ledger rows 45 to 52, here: row 45 as in rlmdb (`takeSnapshot`
+  pins what mti_txnid names, also on read-only handles while it is 0; test
+  hook `Env.AfterNextMetaWrite`); row 46 (`checkReusable`); row 47
+  (`lockfile.OpenClaimed`, `errLocksRemoved`; on Windows since the sync to
+  `7c60f17`: a named mutex that does not exist); row 48 (`Layout.MinPageSize`);
+  row 49 (`setSnapshot`); row 50 (`walk`, `rcursor.step`, `Txn.walkLimit`,
+  `nextTxnidKey`, the limits of `drop0Walk`, the check in `freelistSave`);
+  row 51 has nothing to port (no chunked map); row 52: as C and rlmdb, nothing
+  invalidates the map after a failed meta write, so on OpenBSD a plain copy
+  taken from a map differs from this port's in that page
+  (`sameButFailedMetaPage` in `tests/engine`).
+* rlmdb's ledger rows 53 to 60 (58 and 59 are not in the ledger at
+  `7c60f17`), here: rows 53 and 55 are `mdb_load`'s (not here); row 54
+  (`format.MaxDBsLimit`: `SetMaxDBs` and `Open` beyond 1,048,576 are
+  EINVAL); row 56 above; row 57 (Windows: a 0.9 data file is only
+  extended, holding the writer mutex next to other processes:
+  `Env.extendForMap`, `extendUnder`, `sys.ExtendFile`,
+  `sys.MapNeedsFileLength`; `sys.MapData` maps what the file has); row 60
+  (`format.MaxReadersLimit`: `SetMaxReaders` and `Open` beyond 1,048,576
+  are EINVAL, before any file is created; an existing lock file with a
+  larger table is attached to, as before).
 * Every KNOWN_C_BUGS.md decision of rlmdb is kept as rlmdb implements it
   (the differential test exercises the cursor-state ones with rlmdb's
   repairs of C's side).
@@ -430,6 +476,76 @@ port's (`stage7-bsd`).
 | `5d8bc38` | a compacting copy stops when it outgrows its source (row 44) | ported (`copyWriter.limit`; rlmdb's hand-built test, `TestCompactingCopyOfSharedPagesStops`) |
 | `3df6995` | interop holds outlast slow scenarios; stale reader and row 42 on Windows | the holds: `tests/lockfile` gives its C peers' `--until-stdin` holds 600 s (`holdSecs`); row 42: Windows port |
 
+## Sync with rlmdb `3df6995..3a52745`
+
+Branch `stage11-rlmdb-sync3`, oldest first. "Already there" means the
+test named also passes on the code before this sync; the tests of
+"ported" rows fail there.
+
+| rlmdb | what | here |
+|---|---|---|
+| `bd5d644` | docs: Windows tested in CI with MSVC and MinGW | not applicable (rlmdb's CI) |
+| `f679226` | a differential dump mismatch shows where, and if it was a misread | ported: `tests/engine` `dumpDiff`, the second dump, `keepEnv` |
+| `9dc16eb` | the Windows toolchain file for `windows-test.sh` is in the repository | ported: `scripts/windows-env.cmd`, the script's header points at it |
+| `3a97557` | a leaked nested transaction blocks every ancestor | not applicable as such: Go cannot leak a child that took its parent's state (`mem::forget`), and the end of an ancestor ends its descendants, as in C; already there, tested (`TestActiveDescendantsAtAnyDepth`, `TestFailedDescendantFailsTheCommit`, `lmdb` `TestTxn_Commit_descendants`, from `capi_write.c`) |
+| `a91d9f5` | read-only readers pin mti_txnid's snapshot also while it is 0 (row 45) | ported (`takeSnapshot`, `Env.AfterNextMetaWrite`, `tests/engine` `TestReadOnlyReaderSkipsUnpublishedFirstCommit` with C's `mdb_dump` and `mdb_dump10`) |
+| `4762f54` | refuse an environment under another name before its lock file | the data file under another name was refused before the lock file already (`register`); ported: the lock file's claim, parked descriptors, the meta descriptor's claim (ledger; `TestEnvUnderAnotherNameIsRefusedBeforeItsLockFile`, `tests/engine` `TestSecondOpenUnderAnotherNameLeavesTheFirstAlone` with C's `mdb_stat -r`) |
+| `fe9fd67` | `mdb_del` does not read the data of a non-DUPSORT database | already there, tested (`lmdb` `TestTxn_Del_ignoresVal`) |
+| `769f352` | a read cursor searches with the comparators set after it opened | ported (`Cursor.refreshOrders`; `TestComparatorsSetAfterAReadCursorOpened`); `lmdb` has no comparator API, so only the engine's callers see it |
+| `54a8645` | `mdb_cmp` and `mdb_dcmp` take the C function from the core | no C API here; the comparators already live in the DBI slot that a reopen restores, tested (`TestComparatorsFollowAReopenedHandle`) |
+| `0bfd914` | `mdb_load -N` does not count skipped records toward a batch | not applicable (no `mdb_load` here) |
+| `16feee5` | `mdb_cursor_get` checks a failed transaction before its operation | already there, tested (`lmdb` `TestCursor_Get_failedTxn`) |
+| `a59627f` | `mdb_env_copyfd` of descriptor -1 is `EBADF` | already there, tested (`lmdb` `TestEnv_CopyFD_badDescriptor`) |
+| `2fb635e` | refuse a SysV set at the lock file's key that is not ours (row 46) | ported (`checkReusable`, `sysvHasThird`; `TestSysVCreateRefusesALargerSet`, `TestSysVCreateReusesASetOfTwo`) |
+| `7d9054f` | an opener that finds the semaphores removed probes again (row 47) | ported (`lockfile.OpenClaimed`; `lmdb` `TestOpenCloseRace`, which fails within a few dozen opens without it; `TestOpenWithItsSemaphoresRemoved`) |
+| `607fc5a` | take the data file's size before mapping it | ported (`sys.MapData` on Unix; on Windows the size was read first already) |
+| `7b11099` | refuse 0.9 files of pages below 2 KiB (row 48) | ported (`Layout.MinPageSize`; `TestSmall09PagesAreRefused`; the root-split test and the fuzz seeds at 2 KiB) |
+| `cafb356` | `leaf_size` computes the overflow node size without wrapping | already the right value (Go's signed `int`); the order follows rlmdb's; tested (`TestLeafSizeOfAnOverflowNode`) |
+| `b405e6a` | `page_merge` adds a depth change of a lying `md_depth` as C does | already the right value (Go's `int16` wraps instead of panicking); tested (`TestMergeWithALyingDepthCommits`) |
+| `f4003a3` | no transaction begins on a snapshot without its meta pages (row 49) | ported (`setSnapshot`; `TestSnapshotsWithoutTheirMetaPagesAreRefused`) |
+| `0d455ff`, `0c9c238` | walks over branch pages that share children stop; the limit is the snapshot's pages plus the allocations (row 50) | ported (`walk`, `rcursor.step`, `Txn.walkLimit`, `Txn.allocations`, `nextTxnidKey`, `FreePages`; `TestWalksOfAFreeDBWithSharedChildrenStop`, `TestCursorWalksOverSharedChildrenStop`, `TestQueueWalksInAWriteTxnAreNotBoundedByTheFile`); the leaf-step fast path is untouched |
+| `270fe7a` | dropping a tree of shared children fails instead of listing pages twice (row 50) | ported (`drop0Walk`, `freelistSave`; `TestDropsOfSharedChildrenStop`) |
+| `bb97159` | link `-ldl` only where `dlopen` is a library of its own | already there (`tests/cmd/build-c-oracles` `hasLibdl`) |
+| `5f8b5c8` | the shared-children dump test reads the tools' output as text | not applicable (no C-tool clones here) |
+| `6329f7f` | the Windows env template says how to put build output and scratch on another drive | ported with `9dc16eb` |
+| `c37a067` | the shared C builds are keyed by toolchain too | not applicable (the tests here take built oracles) |
+| `c6a6760` | tests that touch files behind an open environment work on OpenBSD | already there in this port's own form (`writeAsCommit`, `sameButFailedMetaPage`); the new tests use it (`writeBehind`) |
+| `26c2fc5` | OpenBSD's `getopt` messages and `mdb_stat -r` exit code | not applicable (no C-tool clones here; the tests here do not check `mdb_stat -r`'s exit code) |
+| `fd6b00a`, `4e8d5c5` | the mtest programs' `rand()` shim | not applicable (no mtest here) |
+| `27b108b` | the interop matrix runs on OpenBSD | rlmdb's harness; the Go peer runs in it as `Peer::External` |
+| `fc1d99a` | docs: OpenBSD tested by hand in a VM | not applicable (rlmdb's status; this port's is `PLAN.md` "The BSDs") |
+| `7de9dfb` | the Windows `maxreaders=-1` load case runs the C tool only | not applicable (no `mdb_load` here) |
+| `81cc892`, `0f902b4` | `Peer::External`, the scenario matrix with an external peer | rlmdb's harness; `tests/gopeer` is that peer |
+| `a1ec6cc` | ledger rows 51 and 52 | ledger above; row 52 as C (nothing to change) |
+| `3a52745` | the C references are the 0.9.37 and 1.0.3 releases | `Env.EngineVersion` (0.9.37, 1.0.3; `Version` stays 0.9.90), the comments and docs that name the reference; `mdb.c` is unchanged, so the line numbers cited hold |
+
+## Sync with rlmdb `3a52745..7c60f17`
+
+Branch `stage19-rlmdb-sync4` (which merged `stage11-rlmdb-sync3`),
+oldest first, with the same meaning of "already there" and "ported".
+
+| rlmdb | what | here |
+|---|---|---|
+| `e584fe9` | `mdb_load` takes only the `maxreaders` value `mdb_dump` writes (row 53) | not applicable (no `mdb_load` here) |
+| `d7f23e1` | AGENTS: changes to what is written are opt-in features, never the default | the rule holds here through `AGENTS.md` rule 3 (layout exactness is the default oracle, a divergence needs rlmdb's justification); no opt-in feature exists |
+| `3b06072` | refuse `max_dbs` beyond 1,048,576 (row 54), junk `mdb_load` headers (rows 53, 55) | ported for `max_dbs` (`format.MaxDBsLimit`; `lmdb` `SetMaxDBs`, `engine.Open`; `TestSetMaxDBsLimit`, `TestOpenRefusesCountsBeyondTheLimits`); `mdb_load`: not applicable |
+| `49bb8bd` | the capability API is gone; the version string reports versions only | not applicable (this port never had the capability API) |
+| `d23941a` | rlmdb-capi README: the shipped header's patch level is 37 | not applicable |
+| `340b318` | version 0.0.0 | not applicable (`Version` reports 0.9.90, `EngineVersion` the C releases) |
+| `ca9598c` | AGENTS: performance is judged on x86-64 Linux first | the same rule holds here (benchmarks lead with real x86-64 Linux) |
+| `8d494b6` | `linux-test.sh` runs a 2 GiB container; large interop environments one at a time | already there (`scripts/linux-test.sh`, `AGENTS.md` "2 GB of RAM"); the interop part is rlmdb's harness |
+| `ed2377e` | FreeBSD: the harness and the tools know its libc | the harness is rlmdb's (its `killed_writer` scenario expects the recovery on FreeBSD, which the Go peer has had since `7bfc806`); no tools here |
+| `2c62301` | interop: `concurrent_writers_readers` runs on a 1 GiB map | rlmdb's harness |
+| `4e1856b` | AGENTS: benchmark numbers are relative, in commit messages | the same rule holds here |
+| `96f57b1` | `MDB_CURRENT` keeps a sub-DB duplicate where searches find it (row 56) | already there: fixed here first and aligned with rlmdb's fix (`b778cca` before the restructuring of its history) on branch `stage18-current-56` |
+| `a9bbd2c` | cite ledger rows as "row nn", never "#nn" | already there (`f4d60c1`), and the comments merged from `stage11-rlmdb-sync3` |
+| `25240d2` | copy: the free-DB walk's double-count comment cites row 50 | the comment in `copy.go` cites it |
+| `be4f7b0` | a 0.9 data file on Windows is extended under the writer mutex, never cut (row 57) | ported (`Env.extendForMap` in `Open` and `SetMapSize`, `extendUnder`, `sys.ExtendFile`, `sys.MapNeedsFileLength`; `sys.MapData` no longer extends the file; `TestExtendingReadsTheSizeAgainUnderTheLock`, `TestExtendingUnderTheLockNeverCutsACommit` on every system, `TestExtendFile`, Windows `TestExtendFileNeverShortensTheFile`) |
+| `9e54d28` | on Windows too, an opener that finds the lock objects gone probes again (row 47) | ported (`attachLocks` on Windows: `ERROR_FILE_NOT_FOUND` is `errLocksRemoved`; `lmdb` `TestOpenCloseRace` builds on Windows) |
+| `e1292d1` | the alias-path test skips where the scratch volume has no links | ported (`fileNamesOf` and the late-link case of `TestOpenTwiceWithLockFile` skip a link the volume refuses on every system, not only on Windows; the other link tests already skipped) |
+| `f4c708e` | refuse `max_readers` beyond 1,048,576 (row 60) | ported (`format.MaxReadersLimit`; `lmdb` `SetMaxReaders`, `engine.Open`; `TestSetMaxReadersLimit`, `TestOpenRefusesCountsBeyondTheLimits`, `TestLockFileBeyondTheReaderLimit`) |
+| `7c60f17` | ledger: row 54 cites `mdb_env_set_maxdbs` at 1.0's line 5231 | not applicable |
+
 ## Windows: rlmdb's Windows commits (up to `3df6995`)
 
 The Windows port of rlmdb, ported on branch `stage7-windows`; the other
@@ -441,7 +557,8 @@ comment, `os/windows.rs`).
 
 | rlmdb | what | here |
 |---|---|---|
-| `0bf0553` | the OS layer on 64-bit Windows | ported without cgo (`golang.org/x/sys/windows`, ntdll for `NtCreateSection`, `NtMapViewOfSection`, `NtExtendSection`): `sys.MapData` (0.9 extended to the map size and mapped whole; 1.0 reserved section, `DataMap.CommitPages` where pages are taken from the end of the map, section extended to the file size), `Env.renewShortMap` for read-only maps of the file as it was, the files with C's sharing, `FILE_FLAG_WRITE_THROUGH` meta handle, copy target, file identity, `IsMissing`, registry key of an unresolvable directory; the lock file (`MutexNames`, `MutexHash`, `LockFileEx`, named mutexes, abandoned mutexes as dead owners, no pid locks, `OpenProcess` liveness with `SYNCHRONIZE`, `mr_tid` a `DWORD` at 12, `mti_format` `0x1` and `0x08138002`); rlmdb's Windows unit tests (`*_windows_test.go`) and the Windows layout, computed on every host |
+| `0bf0553` | the OS layer on 64-bit Windows | ported without cgo (`golang.org/x/sys/windows`, ntdll for `NtCreateSection`, `NtMapViewOfSection`, `NtExtendSection`): `sys.MapData` (0.9 extended to the map size and mapped whole, since
+`be4f7b0` extended by the engine first, see the sync to `7c60f17`; 1.0 reserved section, `DataMap.CommitPages` where pages are taken from the end of the map, section extended to the file size), `Env.renewShortMap` for read-only maps of the file as it was, the files with C's sharing, `FILE_FLAG_WRITE_THROUGH` meta handle, copy target, file identity, `IsMissing`, registry key of an unresolvable directory; the lock file (`MutexNames`, `MutexHash`, `LockFileEx`, named mutexes, abandoned mutexes as dead owners, no pid locks, `OpenProcess` liveness with `SYNCHRONIZE`, `mr_tid` a `DWORD` at 12, `mti_format` `0x1` and `0x08138002`); rlmdb's Windows unit tests (`*_windows_test.go`) and the Windows layout, computed on every host |
 | `24571fa` | rlmdb-capi, tools, tests and interop on Windows | the parts that apply: the C oracles built with MinGW-w64 as interop/build.rs builds them (`tests/cmd/build-c-oracles`), `.exe` names (`coracle.Exe`), `scripts/windows-test.sh`; test expectations that differ on Windows (lock byte not writable through another handle, owner-death tests); rlmdb-capi and rlmdb-tools: not applicable |
 | `bf7d115` | CI workflow and docs | docs here (`PLAN.md`, `README.md`, `AGENTS.md`, `lmdb/DEVIATIONS.md`); no CI in this repository |
 | `a933f11` | refer to `KNOWN_C_BUGS.md` rows 42 and 43 | the comments cite them |

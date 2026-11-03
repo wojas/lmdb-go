@@ -55,6 +55,11 @@ func TestEnv_Format(t *testing.T) {
 	if ev.Major != wantMajor {
 		t.Errorf("EngineVersion.Major = %d, want %d for %v", ev.Major, wantMajor, got)
 	}
+	// The C releases rlmdb follows (its V09_RELEASE, V10_RELEASE).
+	want := map[Format]EnvVersion{V09: {Major: 0, Minor: 9, Patch: 37}, V10: {Major: 1, Minor: 0, Patch: 3}}[got]
+	if ev.Major != want.Major || ev.Minor != want.Minor || ev.Patch != want.Patch {
+		t.Errorf("EngineVersion = %d.%d.%d, want %d.%d.%d", ev.Major, ev.Minor, ev.Patch, want.Major, want.Minor, want.Patch)
+	}
 	if ev.Release == "" {
 		t.Error("empty EngineVersion.Release")
 	}

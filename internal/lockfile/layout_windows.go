@@ -1,4 +1,4 @@
-// The lock-file platform of Windows C builds (_WIN32, mdb.c 0.9.36 lines
+// The lock-file platform of Windows C builds (_WIN32, mdb.c 0.9.37 lines
 // 776-811 and 1.0 lines 923-955; rlmdb format/lockfile.rs, the Windows
 // platform): two named kernel mutexes, kept as the macOS semaphores are
 // (names in version 1, their hash in version 2, no mt2 in version 2), and

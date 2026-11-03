@@ -74,5 +74,6 @@ type LockRegion interface {
 // OpenLockFunc opens the lock file at path for an environment of data
 // format f, as lockfile.Open does (mdb_env_setup_locks): it returns nil,
 // nil for a read-only environment on a read-only file system, which then
-// runs without a lock file.
-type OpenLockFunc func(path string, mode os.FileMode, maxReaders uint32, readOnly bool, f format.Format) (LockRegion, error)
+// runs without a lock file. A real lock file is claimed in claim once it is
+// open, before it is locked (lockfile.OpenClaimed).
+type OpenLockFunc func(path string, mode os.FileMode, maxReaders uint32, readOnly bool, f format.Format, claim LockClaim) (LockRegion, error)

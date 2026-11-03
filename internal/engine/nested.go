@@ -14,16 +14,17 @@
 //   - The child shares the parent's cursor arena, so its page moves keep
 //     the parent's cursors up to date as C's fixups do on shadowed
 //     cursors; a copy of their state (mc_backup) restores them on abort.
-//   - The DB table, mt_next_pgno, mt_dirty_room, the flags and a copy of
-//     the reclaimed free pages (me_pghead) are copied; the child starts
-//     with an empty free list and no loose pages.
+//   - The DB table, mt_next_pgno, mt_dirty_room, the flags, the count of
+//     allocations (Txn.walkLimit) and a copy of the reclaimed free pages
+//     (me_pghead) are copied; the child starts with an empty free list and
+//     no loose pages.
 //
 // A commit merges: the free list is appended to the parent's, the child's
 // dirty pages replace the parent's (and leave its spill list), pages the
 // child spilled leave the parent's dirty list and join its spill list,
-// loose pages are appended, the DB table, next page number, dirty room,
-// flags and free-page state replace the parent's (keeping the parent's
-// DB_NEW marks). An abort restores the parent's cursors and closes the
+// loose pages are appended, the DB table, next page number, allocation
+// count, dirty room, flags and free-page state replace the parent's (keeping
+// the parent's DB_NEW marks). An abort restores the parent's cursors and closes the
 // handles of databases the child created.
 
 package engine
@@ -62,15 +63,17 @@ func (t *Txn) beginNested() (*Txn, error) {
 	cw := c.w
 	c.env, c.pageSize, c.l, c.dmap = t.env, t.pageSize, t.l, t.dmap
 	c.txnid, c.nextPgno, c.gen = t.txnid, t.nextPgno, t.gen
+	c.allocations = t.allocations
 	c.slot, c.state = -1, txnActive
 	c.owner++
 	// Copy parent's mt_dbflags, but clear DB_NEW. Entries the previous
-	// child looked at (below its ndbs) are cleared; the rest are zero.
+	// child looked at (below its ndbs) are cleared; the rest are zero. The
+	// table is the whole capacity, as in initDBs.
 	if cap(c.dbs) < len(t.dbs) {
 		c.dbs = make([]txnDB, len(t.dbs))
 	} else {
 		clear(c.dbs[:min(c.ndbs, len(c.dbs))])
-		c.dbs = c.dbs[:len(t.dbs)]
+		c.dbs = c.dbs[:cap(c.dbs)]
 	}
 	for i := 0; i < t.ndbs; i++ {
 		c.dbs[i] = *t.dbe(i)
@@ -141,8 +144,11 @@ func (t *Txn) endNested(how int) {
 		// Append our free list to parent's.
 		pw.freePgs = append(pw.freePgs, w.freePgs...)
 		p.nextPgno = t.nextPgno
+		p.allocations = t.allocations
 		pw.flags = w.flags
-		// Update parent's DB table, preserving parent's DB_NEW status.
+		// Update parent's DB table, preserving parent's DB_NEW status. The
+		// child's table may have grown past the parent's.
+		p.reach(t.ndbs - 1)
 		for i, n := 0, max(p.ndbs, t.ndbs); i < n; i++ {
 			pe, ce := p.dbe(i), t.dbe(i)
 			var keepNew uint8
@@ -188,7 +194,9 @@ func (t *Txn) endNested(how int) {
 		}
 		// Reopen the handles the child closed with Drop (KNOWN_C_BUGS.md
 		// row 20).
+		p.reach(t.ndbs - 1)
 		for _, d := range w.dropped {
+			p.reach(d.i)
 			pe := p.dbe(d.i)
 			// Only a handle of the database the parent has a view of.
 			same := d.slot.name != nil && nameID(d.slot.name) == pe.nameID

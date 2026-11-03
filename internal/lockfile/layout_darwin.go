@@ -1,5 +1,5 @@
 // The lock-file platform of macOS C builds: MDB_USE_POSIX_SEM (mdb.c lines
-// 143-149, 0.9.36), named semaphores, so the layout does not depend on
+// 143-149, 0.9.37), named semaphores, so the layout does not depend on
 // pthread_mutex_t.
 
 package lockfile

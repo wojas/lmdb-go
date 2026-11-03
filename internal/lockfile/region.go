@@ -1,5 +1,5 @@
 // The open lock file and its reader table: rlmdb core/reader.rs
-// (LockRegion). C counterparts, kept exactly: mdb_env_setup_locks (0.9.36
+// (LockRegion). C counterparts, kept exactly: mdb_env_setup_locks (0.9.37
 // line 4882) with mdb_env_excl_lock (4741) and mdb_env_share_locks (4698);
 // the reader-slot part of mdb_txn_renew0 (2758) and mdb_txn_end;
 // mdb_find_oldest (2179); mdb_reader_pid (2718); mdb_reader_list;
@@ -18,6 +18,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"syscall"
+	"time"
 
 	"github.com/PowerDNS/lmdb-go/internal/format"
 )
@@ -85,13 +86,77 @@ type Region struct {
 //
 // Errors are format.Errno values (LMDB's codes), syscall.Errno values
 // (possibly wrapped in *os.PathError), or ErrNoSharedLocks.
+//
+// Where the last user of the environment removes the shared locks
+// (semaphores, Objects.removedByLastUser), it does so holding byte 0
+// exclusively, and an opener that failed its exclusive probe while that
+// process still held the environment open gets its shared lock only after
+// they are gone. (On Windows nobody removes the named mutexes, but the
+// kernel destroys them with the last user's handles, which it closes
+// before it releases the lock file: the same.) C fails the open then
+// (rlmdb KNOWN_C_BUGS.md row 47); here the lock file is closed, which
+// releases the shared lock, and the open starts again with the exclusive
+// probe, which then either succeeds (this process creates the locks) or
+// waits for the process that does create them to downgrade. Locks are only ever created under the exclusive lock, so every
+// process that attaches uses the same ones. After removedRetries tries (a
+// lock file that names locks which do not exist while other processes hold
+// it open: damage), the open fails with ENOENT.
 func Open(path string, mode os.FileMode, maxReaders uint32, readOnly bool, layout *Layout) (*Region, error) {
+	return OpenClaimed(path, mode, maxReaders, readOnly, layout, nil)
+}
+
+// FileClaim is how the process's registry of open environments
+// (internal/engine registry.go) gets to see the lock file before it is
+// locked.
+type FileClaim interface {
+	// ClaimLockFile claims f, just opened and not locked yet. An error
+	// means the process has that file open in another role, under whatever
+	// name; f is then taken over (closed, or kept open if closing it would
+	// drop another handle's record locks), and the open fails with the
+	// error. Record locks do not conflict within a process, so without
+	// this the exclusive lock would be granted and the table of an
+	// environment open in this process initialised again.
+	ClaimLockFile(f *os.File) error
+	// ReleaseLockFile gives the claim back, for an open that closed the
+	// lock file to start again.
+	ReleaseLockFile()
+}
+
+// OpenClaimed is Open with the lock file claimed in claim (nil: none)
+// before it is locked.
+func OpenClaimed(path string, mode os.FileMode, maxReaders uint32, readOnly bool, layout *Layout, claim FileClaim) (*Region, error) {
 	if !sharedLocksAvailable {
 		return nil, ErrNoSharedLocks
 	}
 	if layout == nil || maxReaders == 0 {
 		return nil, syscall.EINVAL
 	}
+	for retries := 0; ; retries++ {
+		r, err := openOnce(path, mode, maxReaders, readOnly, layout, claim)
+		if err != errLocksRemoved {
+			return r, err
+		}
+		if retries == removedRetries {
+			return nil, syscall.ENOENT
+		}
+		// Openers that raced the same closer start again at the same time;
+		// a pause lets the first one's probe find the others gone.
+		time.Sleep(time.Duration(min(retries+1, 10)) * 200 * time.Microsecond)
+	}
+}
+
+// removedRetries is how many times OpenClaimed goes back to the exclusive
+// probe after finding the shared locks removed, before it gives up.
+const removedRetries = 100
+
+// errLocksRemoved: attachLocks found that the locks the lock file names do
+// not exist (any more).
+var errLocksRemoved = errors.New("lockfile: the shared locks were removed")
+
+// openOnce is one pass of OpenClaimed: open, claim, set up. errLocksRemoved
+// if it should start again, with the lock file closed and its claim given
+// back.
+func openOnce(path string, mode os.FileMode, maxReaders uint32, readOnly bool, layout *Layout, claim FileClaim) (*Region, error) {
 	f, err := openLockFile(path, mode)
 	if err != nil {
 		if readOnly && isReadOnlyFS(err) {
@@ -99,11 +164,19 @@ func Open(path string, mode os.FileMode, maxReaders uint32, readOnly bool, layou
 		}
 		return nil, err
 	}
+	if claim != nil {
+		if err := claim.ClaimLockFile(f); err != nil {
+			return nil, err
+		}
+	}
 	r, err := setup(f, mode, maxReaders, layout)
 	if err != nil {
 		// Closing the descriptor drops our record locks.
 		unlockLockFile(f.Fd())
 		f.Close()
+		if err == errLocksRemoved && claim != nil {
+			claim.ReleaseLockFile()
+		}
 		return nil, err
 	}
 	return r, nil

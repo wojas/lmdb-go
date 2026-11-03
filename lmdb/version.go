@@ -113,8 +113,8 @@ func (v EnvVersion) String() string { return v.Release }
 // The C releases whose data format and behaviour this implementation
 // matches, per format (rlmdb's version_info, v09 and v10).
 var (
-	envVersion09 = EnvVersion{0, 9, 36, "LMDB 0.9.36 format (" + versionString + ")"}
-	envVersion10 = EnvVersion{1, 0, 2, "LMDB 1.0.2 format (" + versionString + ")"}
+	envVersion09 = EnvVersion{0, 9, 37, "LMDB 0.9.37 format (" + versionString + ")"}
+	envVersion10 = EnvVersion{1, 0, 3, "LMDB 1.0.3 format (" + versionString + ")"}
 )
 
 // SetFormat requests the on-disk format used if Open creates a NEW
@@ -154,7 +154,7 @@ func (env *Env) Format() Format {
 }
 
 // EngineVersion returns the LMDB release whose data format and behaviour
-// this environment matches: 0.9.36 for an LMDB 0.9 environment, 1.0.2 for an
+// this environment matches: 0.9.37 for an LMDB 0.9 environment, 1.0.3 for an
 // LMDB 1.0 one (the releases rlmdb follows).  Before Open it reports the
 // explicitly requested format, if any; otherwise it returns
 // ErrVersionUndetermined.

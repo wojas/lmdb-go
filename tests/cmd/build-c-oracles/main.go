@@ -4,8 +4,8 @@
 // program, so that it also runs on Windows (no sh there), where it builds
 // with MinGW-w64's gcc as rlmdb's interop/build.rs does.
 //
-// It builds, against C LMDB 0.9 (tests/lmdb-c/0.9, LMDB 0.9.36) and C LMDB
-// 1.0 (tests/lmdb-c/1.0, the pinned mdb.RE/1.0 commit; names ending in 10):
+// It builds, against C LMDB 0.9 (tests/lmdb-c/0.9, LMDB 0.9.37) and C LMDB
+// 1.0 (tests/lmdb-c/1.0, LMDB 1.0.3; names ending in 10):
 // the interop peer cpeer, the C tools mdb_stat, mdb_dump, mdb_load and
 // mdb_copy, layout_dump, the write-differential script runner writeops,
 // and writeops10_ndebug (writeops against a 1.0 library built with

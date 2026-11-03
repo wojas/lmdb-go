@@ -5,7 +5,7 @@ package lmdb
 //
 // The fuzz input is a whole data file. The seeds are small valid
 // environments of both formats written by this package (LMDB 0.9 with
-// 512-byte and 1 KiB pages, LMDB 1.0 with 256-byte to 1 KiB pages; small
+// 2 KiB pages, LMDB 1.0 with 256-byte to 1 KiB pages; small
 // pages give deep trees, overflow runs and sub-DBs in a few KiB) holding
 // named databases, DupSort and DupFixed duplicates in sub-pages and
 // sub-DBs, integer and reverse keys, overflow values and a free list;
@@ -55,7 +55,7 @@ const (
 var fuzzSeedShapes = []struct {
 	f  Format
 	ps int
-}{{V09, 512}, {V09, 1024}, {V10, 256}, {V10, 512}, {V10, 1024}}
+}{{V09, 2048}, {V10, 256}, {V10, 512}, {V10, 1024}}
 
 // buildFuzzSeed writes a seed environment in dir and returns its data
 // file. For LMDB 0.9, whose page size is the OS's for a new environment,

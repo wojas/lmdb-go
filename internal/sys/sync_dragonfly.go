@@ -1,5 +1,5 @@
 // MDB_FDATASYNC on DragonFly: fsync, as C LMDB picks for every BSD but
-// FreeBSD (mdb.c 0.9.36 lines 143-149); MDB_DSYNC is O_SYNC, since
+// FreeBSD (mdb.c 0.9.37 lines 143-149); MDB_DSYNC is O_SYNC, since
 // DragonFly has no O_DSYNC; rlmdb os/unix.rs (fdatasync, MDB_DSYNC).
 
 package sys
@@ -11,7 +11,7 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// oDSync is MDB_DSYNC (mdb.c 0.9.36 lines 456-461): O_SYNC, C's choice
+// oDSync is MDB_DSYNC (mdb.c 0.9.37 lines 456-461): O_SYNC, C's choice
 // where O_DSYNC is not defined.
 const oDSync = syscall.O_SYNC
 

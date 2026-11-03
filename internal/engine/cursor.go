@@ -16,6 +16,7 @@
 //	pageSearch, pageSearchRoot  mdb_page_search, mdb_page_search_root
 //	nodeSearch, searchPage      mdb_node_search
 //	sibling                     mdb_cursor_sibling
+//	step                        mdb_cursor_sibling in a walk, counted (walk)
 //	cursorFirst, cursorLast     mdb_cursor_first, mdb_cursor_last
 //	cursorNext, cursorPrev      mdb_cursor_next, mdb_cursor_prev
 //	cursorSet                   mdb_cursor_set
@@ -56,6 +57,26 @@ const (
 // slots: it has no keys.
 var emptyPage = make([]byte, 24)
 
+// walk is the leaf pages a cursor stepped onto in one direction since it
+// was last positioned from the root (rcursor.step): what bounds a walk over
+// a damaged tree (rlmdb Walk, KNOWN_C_BUGS.md row 50).
+//
+// A walk in one direction over a sound tree reaches each of its leaves
+// once. Changes to the tree (in a write transaction) can put a leaf ahead
+// of the cursor again only by allocating it: a split's new page, the copy
+// of a page touched, a freed page reused. So a walk makes fewer steps than
+// Txn.walkLimit, the pages of the snapshot plus those the write transaction
+// allocated. In a tree whose branch pages share a child (two branches, or
+// two slots of one, naming one page) a walk reaches that child once per
+// path to it: exponentially often with sharing at several levels, which C
+// walks to the end.
+type walk struct {
+	// steps is the number of steps taken.
+	steps uint64
+	// backward is their direction: true for steps to the left.
+	backward bool
+}
+
 // rcursor is MDB_cursor without the sub-cursor, with the bytes of each
 // page on its stack.
 type rcursor struct {
@@ -73,6 +94,8 @@ type rcursor struct {
 	// root of its one-page tree); nil otherwise.
 	subpage []byte
 	l       *format.Layout
+	// walk is the walk since the cursor was last positioned from the root.
+	walk walk
 }
 
 // init is mdb_cursor_init / mdb_xcursor_init0: an unpositioned cursor.
@@ -84,6 +107,7 @@ func (c *rcursor) init(db format.DB, cmp format.Comparator, flags uint8, l *form
 	c.subpage = nil
 	c.l = l
 	c.pg[0] = emptyPage
+	c.walk = walk{}
 }
 
 // forget drops the cursor's pages (the stack and the sub-page), slices
@@ -174,6 +198,7 @@ func (c *rcursor) nodeSearch(key []byte) (found, exact bool, err error) {
 // the leaf for key (or the first/last leaf with psFirst/psLast).
 // MDB_NOTFOUND for an empty tree.
 func (c *rcursor) pageSearch(t *Txn, key []byte, flags uint8) error {
+	c.walk = walk{}
 	var root []byte
 	if c.subpage != nil {
 		root = c.subpage
@@ -303,6 +328,25 @@ func (c *rcursor) sibling(t *Txn, right bool) error {
 	if !right {
 		c.setKiTop(max(mp.NumKeys()-1, 0))
 	}
+	return nil
+}
+
+// step is sibling as a step of a walk (mdb_cursor_next, mdb_cursor_prev,
+// MDB_PREV_MULTIPLE), counted in the cursor's walk: MDB_CORRUPTED, with the
+// cursor where it was, once the walk in this direction has made
+// Txn.walkLimit steps, which no walk over a sound tree does.
+func (c *rcursor) step(t *Txn, right bool) error {
+	var steps uint64
+	if c.walk.backward != right {
+		steps = c.walk.steps
+	}
+	if steps >= t.walkLimit() {
+		return format.Corrupted
+	}
+	if err := c.sibling(t, right); err != nil {
+		return err
+	}
+	c.walk = walk{steps: steps + 1, backward: !right}
 	return nil
 }
 
@@ -485,6 +529,7 @@ func xcursorInit1(mc, mx *rcursor, node format.Node) error {
 	if !ok {
 		return format.Corrupted
 	}
+	mx.walk = walk{}
 	if node.IsSubData() {
 		db, ok := format.ReadDB(data)
 		if !ok {
@@ -746,7 +791,7 @@ func cursorNextAny(t *Txn, mc, mx *rcursor, op format.CursorOp) ([]byte, []byte,
 	if mc.flags&cDel != 0 {
 		mc.flags ^= cDel
 	} else if mc.kiTop()+1 >= mp.NumKeys() {
-		if err := mc.sibling(t, true); err != nil {
+		if err := mc.step(t, true); err != nil {
 			mc.flags |= cEOF
 			return nil, nil, err
 		}
@@ -805,7 +850,7 @@ func cursorPrevAny(t *Txn, mc, mx *rcursor, op format.CursorOp) ([]byte, []byte,
 	}
 	mc.flags &^= cEOF | cDel
 	if mc.kiTop() == 0 {
-		if err := mc.sibling(t, false); err != nil {
+		if err := mc.step(t, false); err != nil {
 			return nil, nil, err
 		}
 		mc.setKiTop(max(mc.topPage().NumKeys()-1, 0))

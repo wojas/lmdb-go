@@ -43,11 +43,11 @@ func SharedLockingAvailable() bool {
 
 // openLock opens the lock file of a new or existing environment of data
 // format f for the engine (engine.OpenLockFunc).
-func openLock(path string, mode os.FileMode, maxReaders uint32, readOnly bool, f format.Format) (engine.LockRegion, error) {
+func openLock(path string, mode os.FileMode, maxReaders uint32, readOnly bool, f format.Format, claim engine.LockClaim) (engine.LockRegion, error) {
 	if !lockfile.SharedLocksAvailable() {
 		return nil, lockfile.ErrNoSharedLocks
 	}
-	r, err := lockfile.Open(path, mode, maxReaders, readOnly, lockfile.LayoutFor(f))
+	r, err := lockfile.OpenClaimed(path, mode, maxReaders, readOnly, lockfile.LayoutFor(f), claim)
 	if err != nil {
 		return nil, err
 	}

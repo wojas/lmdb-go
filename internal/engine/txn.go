@@ -13,7 +13,9 @@
 //     until stable. From then on writers do not reuse pages this snapshot
 //     needs.
 //  3. Read the meta page of that txnid (txnid & 1) and take the free/main
-//     DB records and last_pgno from it.
+//     DB records and last_pgno from it. C's read-only handles take the
+//     newest meta page instead while mti_txnid is 0; here they do not (rlmdb
+//     KNOWN_C_BUGS.md row 45).
 //
 // Step 3 races with writers: a writer committing N+2 rewrites the meta
 // page our N uses. C accepts the torn read; here mti_txnid is re-checked
@@ -59,13 +61,18 @@ type Txn struct {
 	// nextPgno is mt_next_pgno: the first page not in this snapshot (write
 	// transactions: the first page never allocated).
 	nextPgno uint64
+	// allocations is the pages a write transaction (with its committed
+	// children) allocated so far, each run counted once: part of walkLimit.
+	allocations uint64
 	// dbs is mt_dbs + mt_dbflags (+ seqs and comparators), one per slot.
+	// It is as long as the slots the environment had when the transaction
+	// began (at least minDBTable), and grows when it touches a later one
+	// (Txn.dbe); C makes it me_maxdbs long.
 	dbs []txnDB
 	// gen is the generation of dbs (see Txn.dbe).
 	gen uint32
 	// ndbs is mt_numdbs: dbs[ndbs:] has not been looked at in this
-	// generation, so loops over the table stop there (dbs is me_maxdbs
-	// long).
+	// generation, so loops over the table stop there.
 	ndbs int
 
 	// Read transactions: the reader slot (-1: none) and the state.
@@ -146,7 +153,7 @@ func (e *Env) BeginRead(t *Txn) error {
 	t.pageSize = e.pageSize
 	t.l = e.layout
 	t.dmap = nil
-	t.txnid, t.nextPgno = 0, 0
+	t.txnid, t.nextPgno, t.allocations = 0, 0, 0
 	t.dbs = t.dbs[:0]
 	t.w = nil
 	t.slot = -1
@@ -216,15 +223,11 @@ func (t *Txn) takeSnapshot() error {
 	}
 	torn := 0
 	for {
+		// The snapshot mti_txnid names, also while it is 0, where C's
+		// read-only handles take the newest meta page instead: that can be
+		// the first commit's, written but not yet published, or failed, and
+		// writers build on mti_txnid (rlmdb KNOWN_C_BUGS.md row 45).
 		txnid = e.lock.PublishCurrentTxnID(t.slot)
-		if txnid == 0 && e.isReadOnly() {
-			if meta, err = e.pickMetaIn(m); err != nil {
-				return err
-			}
-			e.lock.SetSlotTxnID(t.slot, meta.TxnID)
-			txnid = meta.TxnID
-			break
-		}
 		if meta, err = e.snapshotMeta(m, int(txnid&1)); err != nil {
 			if torn+1 < maxTornCopies && e.lock.TxnID() != txnid {
 				// Torn by a commit meanwhile (maxTornCopies): again.
@@ -355,6 +358,14 @@ func (t *Txn) setSnapshot(txnid uint64, meta *format.Meta) error {
 	if t.env.fatal.Load() {
 		return format.Panic
 	}
+	// C takes mm_last_pg + 1 as it is. Every snapshot holds the meta pages:
+	// a smaller last page would make a writer hand out meta page 1 as a new
+	// page and overwrite it at commit, the largest value page 0. The open
+	// checks the meta page it reads, but a transaction may take one written
+	// since (rlmdb KNOWN_C_BUGS.md row 49).
+	if meta.LastPgno < format.NumMetas-1 || meta.LastPgno == ^uint64(0) {
+		return format.Corrupted
+	}
 	maxPgno := t.maxPgno()
 	if maxPgno < t.nextPgno {
 		// A map shorter than the map size covers the file as it was when it
@@ -379,6 +390,14 @@ func (t *Txn) setSnapshot(txnid uint64, meta *format.Meta) error {
 	}
 	return nil
 }
+
+// walkLimit is how many leaf pages a cursor may step onto in one direction
+// before its walk counts as one over a damaged tree (see walk): the pages
+// of the snapshot, plus the allocations of a write transaction, each of
+// which may put a leaf ahead of a walking cursor again. No sound tree has
+// more leaves than the snapshot has pages; a damaged tree overshoots it by
+// powers of the fan-out.
+func (t *Txn) walkLimit() uint64 { return t.nextPgno + t.allocations }
 
 // maxPgno is me_maxpg for this transaction's map.
 func (t *Txn) maxPgno() uint64 { return uint64(t.dmap.Len() / t.pageSize) }

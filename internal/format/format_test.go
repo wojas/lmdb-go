@@ -12,7 +12,7 @@ import (
 func TestLayoutNumbers(t *testing.T) {
 	l := LayoutV09
 	if l.PageHdr != 16 || l.PtrBase != 0 || l.EvenNodes || l.OvpageSize != 8 ||
-		l.SubpageFlags != 0x52 || l.MaxPageSize != 0x8000 || l.DBNameNUL || l.LoosensRebalancedRoot() {
+		l.SubpageFlags != 0x52 || l.MaxPageSize != 0x8000 || l.MinPageSize != 0x800 || l.DBNameNUL || l.LoosensRebalancedRoot() {
 		t.Fatalf("V09 layout: %+v", l)
 	}
 	if l.PadOffset() != 8 || l.FlagsOffset() != 10 || l.LowerOffset() != 12 || l.UpperOffset() != 14 ||
@@ -50,7 +50,7 @@ func TestLayoutNumbers(t *testing.T) {
 
 	l = LayoutV10
 	if l.PageHdr != 24 || l.PtrBase != 24 || !l.EvenNodes || l.OvpageSize != 24 ||
-		l.SubpageFlags != 0x42 || l.MaxPageSize != 0x10000 || !l.DBNameNUL || !l.LoosensRebalancedRoot() {
+		l.SubpageFlags != 0x42 || l.MaxPageSize != 0x10000 || l.MinPageSize != 0x100 || !l.DBNameNUL || !l.LoosensRebalancedRoot() {
 		t.Fatalf("V10 layout: %+v", l)
 	}
 	if off, ok := l.TxnIDOffset(); !ok || off != 8 {

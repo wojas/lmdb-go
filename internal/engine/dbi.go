@@ -68,8 +68,15 @@ type dbiSlot struct {
 type dbiRegistry struct {
 	mu    sync.RWMutex
 	slots []dbiSlot // len is me_numdbs
-	seqs  []atomic.Uint32
+	// seqs is me_dbiseqs, me_maxdbs long (4 bytes a slot): read without
+	// the lock on every use of a handle, so it never moves.
+	seqs []atomic.Uint32
 }
+
+// minDBTable is the least number of slots a transaction's table is made
+// with (txnDB is about 100 bytes): room for the core DBs and a few named
+// ones before it has to grow.
+const minDBTable = 16
 
 func (r *dbiRegistry) init(maxDBs uint32) {
 	total := int(maxDBs) + format.CoreDBs
@@ -245,7 +252,9 @@ func dbNameKey(l *format.Layout, name []byte) ([]byte, error) {
 }
 
 // dbe is the transaction's entry for slot i, reset if it belongs to an
-// earlier generation (the lazy mdb_txn_renew0 reset).
+// earlier generation (the lazy mdb_txn_renew0 reset). i must be below the
+// table's length: a handle the transaction checked (dbiEntry), a core DB,
+// a slot below ndbs, or one reach made room for.
 func (t *Txn) dbe(i int) *txnDB {
 	e := &t.dbs[i]
 	if e.gen != t.gen {
@@ -255,15 +264,39 @@ func (t *Txn) dbe(i int) *txnDB {
 	return e
 }
 
+// reach makes the table cover slot i (below the environment's capacity,
+// me_maxdbs): a handle opened in the environment after the transaction
+// began, by the transaction itself, or by a child. The table grows to i at
+// least, doubling; the entries keep their generation, so the new ones are
+// not looked at yet. Entry pointers taken before move with the table: no
+// caller holds one across a reach. dbe does not grow the table itself, so
+// that it stays small enough to inline.
+func (t *Txn) reach(i int) {
+	if i < len(t.dbs) {
+		return
+	}
+	n := min(max(2*len(t.dbs), minDBTable), t.env.dbis.capacity())
+	dbs := make([]txnDB, max(n, i+1))
+	copy(dbs, t.dbs)
+	t.dbs = dbs
+}
+
 // initDBs fills the view for a transaction starting on snapshot coreDBs,
 // as mdb_txn_renew0: the core records come from the meta page, every
-// other slot is looked at lazily.
+// other slot is looked at lazily. The table is as long as the
+// environment's DBI table (me_numdbs, at least minDBTable), not
+// me_maxdbs, and keeps what it grew to for the next transaction in t;
+// handles opened later make it grow (reach).
 func (t *Txn) initDBs(coreDBs *[2]format.DB) {
 	r := &t.env.dbis
-	if cap(t.dbs) < r.capacity() {
-		t.dbs = make([]txnDB, r.capacity())
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if n := len(r.slots); cap(t.dbs) < n {
+		t.dbs = make([]txnDB, min(max(n, minDBTable), r.capacity()))
 	}
-	t.dbs = t.dbs[:r.capacity()]
+	// The whole capacity: entries of earlier generations count as not
+	// looked at, and reach grows the table only past its capacity.
+	t.dbs = t.dbs[:cap(t.dbs)]
 	t.ndbs = 0
 	t.gen++
 	if t.gen == 0 {
@@ -271,8 +304,6 @@ func (t *Txn) initDBs(coreDBs *[2]format.DB) {
 		clear(t.dbs)
 		t.gen = 1
 	}
-	r.mu.RLock()
-	defer r.mu.RUnlock()
 	for i := 0; i < format.CoreDBs; i++ {
 		e := t.dbe(i)
 		e.db = coreDBs[i]
@@ -292,7 +323,7 @@ func (t *Txn) initDBs(coreDBs *[2]format.DB) {
 func (t *Txn) dbiEntry(dbi DBI, validity uint8) (*txnDB, error) {
 	i := int(dbi)
 	if i >= len(t.dbs) {
-		return nil, syscall.EINVAL
+		return t.dbiEntryBeyond(dbi, validity)
 	}
 	e := t.dbe(i)
 	if e.state == 0 {
@@ -307,6 +338,20 @@ func (t *Txn) dbiEntry(dbi DBI, validity uint8) (*txnDB, error) {
 		return nil, format.BadDBI
 	}
 	return e, nil
+}
+
+// dbiEntryBeyond is dbiEntry for a handle the table does not reach:
+// EINVAL beyond me_maxdbs or for a transaction without a table (a write
+// transaction that ended); otherwise the table grows to it first. A
+// function of its own, so that dbiEntry's path for the handles the table
+// reaches is what it was before tables could grow.
+func (t *Txn) dbiEntryBeyond(dbi DBI, validity uint8) (*txnDB, error) {
+	i := int(dbi)
+	if len(t.dbs) == 0 || i >= t.env.dbis.capacity() {
+		return nil, syscall.EINVAL
+	}
+	t.reach(i)
+	return t.dbiEntry(dbi, validity)
 }
 
 // firstUse takes a stale view of the environment's slot i.
@@ -470,6 +515,7 @@ func (t *Txn) openDB(name []byte) (DBI, error) {
 		valid: true,
 	})
 	seq := r.bumpSeq(i)
+	t.reach(i)
 	e := t.dbe(i)
 	e.keyCmp, e.dupCmp, e.hasDup = comparatorsFor(&r.slots[i], i, db.Flags)
 	r.mu.Unlock()
@@ -533,6 +579,7 @@ func (t *Txn) reopenLiveView(name []byte) (DBI, bool) {
 // Returns false in that case.
 func (t *Txn) adoptRegistration(i int, name []byte) bool {
 	seq := t.env.dbis.seqOf(i)
+	t.reach(i)
 	e := t.dbe(i)
 	if e.state == 0 || e.seq == seq {
 		return true

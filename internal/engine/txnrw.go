@@ -206,6 +206,7 @@ func (e *Env) beginWrite() (*Txn, error) {
 	t.env, t.pageSize, t.l, t.dmap = e, e.pageSize, e.layout, m
 	t.slot, t.state = -1, txnActive
 	t.owner++
+	t.allocations = 0
 	if err := t.setSnapshot(last+1, &meta); err != nil {
 		t.releaseMap()
 		unlock()
@@ -641,6 +642,7 @@ func (t *Txn) createDB(name []byte, flags uint32) (DBI, error) {
 		valid: state&dbNew == 0,
 	})
 	seq := r.bumpSeq(i)
+	t.reach(i)
 	e := t.dbe(i)
 	e.keyCmp, e.dupCmp, e.hasDup = comparatorsFor(&r.slots[i], i, db.Flags)
 	e.db = db
@@ -683,6 +685,7 @@ func (t *Txn) recreateDB(i int, key []byte, flags uint32) error {
 	}
 	r := &t.env.dbis
 	r.mu.RLock()
+	t.reach(i)
 	e := t.dbe(i)
 	e.keyCmp, e.dupCmp, e.hasDup = comparatorsFor(&r.slots[i], i, db.Flags)
 	r.mu.RUnlock()

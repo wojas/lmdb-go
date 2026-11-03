@@ -367,19 +367,25 @@ func (e *Env) copyCompact(out io.Writer) error {
 	if root != format.PInvalid {
 		// Count free pages + freeDB pages. Subtract from last_pg to find
 		// the new last_pg, which also becomes the new root.
-		var freecount uint64
+		var freecount, prev uint64
+		hasPrev := false
 		c, err := txn.OpenCursor(FreeDBI)
 		if err != nil {
 			return err
 		}
 		for {
-			_, v, err := c.Get(nil, nil, format.Next)
+			k, v, err := c.Get(nil, nil, format.Next)
 			if err == format.NotFound {
 				break
 			}
 			if err != nil {
 				return err
 			}
+			// Records read twice would be counted twice (rlmdb row 50).
+			if prev, err = nextTxnidKey(prev, hasPrev, k); err != nil {
+				return err
+			}
+			hasPrev = true
 			n, ok := format.EncodedLen(v)
 			if !ok {
 				return format.Corrupted

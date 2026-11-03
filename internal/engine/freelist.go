@@ -36,6 +36,23 @@ func txnidKey(key []byte) (uint64, error) {
 	return v, nil
 }
 
+// nextTxnidKey reads free DB key key in a walk of the free DB, after key
+// prev if hasPrev. The keys are the ids of the transactions that freed the
+// pages: unique, so a walk meets them in ascending order. A key not larger
+// than the one before is a damaged tree, out of order or with branch pages
+// that share a child, whose records a walk would read once per path to it
+// (rlmdb next_txnid_key, KNOWN_C_BUGS.md row 50): MDB_CORRUPTED.
+func nextTxnidKey(prev uint64, hasPrev bool, key []byte) (uint64, error) {
+	id, err := txnidKey(key)
+	if err != nil {
+		return 0, err
+	}
+	if hasPrev && id <= prev {
+		return 0, format.Corrupted
+	}
+	return id, nil
+}
+
 // txnidBytes writes the free DB key of txnid id into buf and returns it.
 // The key reaches comparators through function values, so a local array
 // would escape: callers pass a buffer of their wstate (reclaimRun's and
@@ -79,6 +96,8 @@ func (t *Txn) pageAllocCopy(src []byte) (uint64, pageSlot, error) {
 // initialised here).
 func (t *Txn) pageAllocWith(num int, init pageInit) (uint64, pageSlot, error) {
 	w := t.w
+	// Counted first, whatever the outcome (see Txn.walkLimit).
+	t.allocations++
 	// If there are any loose pages, just use them.
 	if num == 1 && len(w.loose) > 0 {
 		pgno := w.loose[len(w.loose)-1]
@@ -208,6 +227,7 @@ func (t *Txn) reclaimRun(num int) (int, bool, error) {
 		}
 		var k, v []byte
 		var err error
+		first := op == format.First
 		switch op {
 		case format.First:
 			k, v, err = cursorFirst(t, m2, nil)
@@ -224,7 +244,12 @@ func (t *Txn) reclaimRun(num int) (int, bool, error) {
 		if err != nil {
 			return 0, false, err
 		}
-		if last, err = txnidKey(k); err != nil {
+		// C reads on whatever the key. last is one past the key read before,
+		// or past pglast where the search started: a smaller key is a damaged
+		// tree, and with branch pages that share a child this loop would read
+		// its records once per path to it, holding the writer lock (rlmdb
+		// KNOWN_C_BUGS.md row 50).
+		if last, err = nextTxnidKey(last-1, !first, k); err != nil {
 			return 0, false, err
 		}
 		if oldest <= last {
@@ -440,6 +465,11 @@ func (t *Txn) freelistSave0(mc cref) error {
 				}
 			}
 			w.freePgs.Sort()
+			// C writes the list as it is. A page in it twice would be handed
+			// out twice (rlmdb KNOWN_C_BUGS.md row 50).
+			if !w.freePgs.IsSortedDesc() {
+				return format.Corrupted
+			}
 			out, err := t.dataLocBytes(mc)
 			if err != nil {
 				return err

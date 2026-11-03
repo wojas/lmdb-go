@@ -103,6 +103,15 @@ type Layout struct {
 	SubpageFlags uint16
 	// MaxPageSize is MAX_PAGESIZE.
 	MaxPageSize int
+	// MinPageSize is the smallest page size of an environment of the format
+	// that is opened. 1.0: that of mdb_env_set_pagesize, which scales the
+	// largest key with the page. 0.9 creates environments with the OS page
+	// size only (4 KiB or more everywhere) but opens any page size, and its
+	// largest key is the constant MDB_MAXKEYSIZE (511): below 2 KiB a node
+	// with such a key no longer fits me_nodemax and a P_LEAF2 page holds a
+	// single such item, so C writes past its pages (rlmdb KNOWN_C_BUGS.md
+	// row 48). Smaller 0.9 pages are refused.
+	MinPageSize int
 	// DBNameNUL: the key of a named database includes the name's
 	// terminating NUL (1.0).
 	DBNameNUL bool
@@ -118,6 +127,7 @@ var LayoutV09 = &Layout{
 	OvpageSize:   8,
 	SubpageFlags: PLeaf | PDirty | PSubp, // mdb.c line 6920
 	MaxPageSize:  0x8000,
+	MinPageSize:  0x800,
 	DBNameNUL:    false,
 }
 
@@ -131,6 +141,7 @@ var LayoutV10 = &Layout{
 	OvpageSize:   24,
 	SubpageFlags: PLeaf | PSubp, // mdb.c 1.0 line 8806: no P_DIRTY in 1.0
 	MaxPageSize:  0x10000,
+	MinPageSize:  0x100,
 	DBNameNUL:    true,
 }
 

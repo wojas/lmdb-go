@@ -396,8 +396,11 @@ func (env *Env) SetMaxReaders(size int) error {
 	if env.closed {
 		return errClosed
 	}
-	// As C: EINVAL once open, and for fewer than one reader.
-	if env.opened || size < 1 || uint64(size) > uint64(^uint32(0)) {
+	// As C: EINVAL once open, and for fewer than one reader. Not as C:
+	// EINVAL for more than 1,048,576 readers, a 64 MiB lock file; C takes
+	// any count and makes a 256 GiB lock file for four billion (rlmdb
+	// KNOWN_C_BUGS.md row 60).
+	if env.opened || size < 1 || size > format.MaxReadersLimit {
 		return &OpError{Op: "mdb_env_set_maxreaders", Errno: syscall.EINVAL}
 	}
 	env.opts.MaxReaders = uint32(size)
@@ -444,7 +447,10 @@ func (env *Env) SetMaxDBs(size int) error {
 	if env.closed {
 		return errClosed
 	}
-	if env.opened || uint64(size) > uint64(^uint32(0)) {
+	// As C: EINVAL once open. Not as C: EINVAL for more than 1,048,576
+	// databases; C takes any count and breaks above about 35 million
+	// (rlmdb KNOWN_C_BUGS.md row 54).
+	if env.opened || size > format.MaxDBsLimit {
 		return &OpError{Op: "mdb_env_set_maxdbs", Errno: syscall.EINVAL}
 	}
 	env.opts.MaxDBs = uint32(size)

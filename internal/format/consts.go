@@ -1,4 +1,4 @@
-// The numeric constants of C LMDB 0.9 (lmdb.h and mdb.c, 0.9.36): flag
+// The numeric constants of C LMDB 0.9 (lmdb.h and mdb.c, 0.9.37): flag
 // bits, cursor operation numbers and format limits. Port of rlmdb's
 // consts.rs. Everything has exactly the value C uses; the on-disk and
 // lock-file formats depend on several of them, so they must never be
@@ -114,6 +114,19 @@ const (
 	DefaultMapSize = 1048576
 	// DefaultReaders is the default size of the reader table.
 	DefaultReaders = 126
+	// MaxDBsLimit is the most named databases an environment can be
+	// configured for (mdb_env_set_maxdbs; rlmdb MAX_DBS_LIMIT, not in C):
+	// 1,048,576. Every transaction has a slot per database, so a larger
+	// count is of no practical use; C takes any count and breaks above
+	// about 35 million (rlmdb KNOWN_C_BUGS.md row 54).
+	MaxDBsLimit = 1 << 20
+	// MaxReadersLimit is the most reader slots a new lock file can be
+	// configured for (mdb_env_set_maxreaders; rlmdb MAX_READERS_LIMIT, not
+	// in C): 1,048,576, a lock file of 64 MiB (a slot is 64 bytes in both
+	// lock-file versions). C takes any count above zero and makes a 256 GiB
+	// lock file at four billion (rlmdb KNOWN_C_BUGS.md row 60). An existing
+	// lock file with a larger table is still attached to.
+	MaxReadersLimit = 1 << 20
 	// CursorStack is the maximum depth of a B-tree (and of a cursor's
 	// page stack).
 	CursorStack = 32
@@ -135,8 +148,9 @@ const (
 	// IDLUMMax is MDB_IDL_UM_MAX, the maximum number of dirty pages in one
 	// write transaction.
 	IDLUMMax = IDLUMSize - 1
-	// MinPageSize is the smallest page size accepted in an existing file.
-	// C does not check; a page must at least hold a header and a meta.
+	// MinPageSize is the smallest page size of any format: what 1.0's
+	// mdb_env_set_pagesize takes, below which a page cannot hold a header
+	// and a meta. Layout.MinPageSize is the one of each format.
 	MinPageSize = 256
 )
 

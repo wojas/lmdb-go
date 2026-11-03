@@ -4,7 +4,7 @@
 // mutexes in the lock file (Linux, FreeBSD), named POSIX semaphores (macOS;
 // OpenBSD, NetBSD and DragonFly in version 1) or a SysV semaphore set
 // (OpenBSD, NetBSD and DragonFly in version 2), as mdb_env_setup_locks
-// makes and finds them (0.9.36 lines 4964-5079, 1.0 lines 6064-6182).
+// makes and finds them (0.9.37 lines 4964-5079, 1.0 lines 6064-6182).
 
 package lockfile
 
@@ -83,7 +83,11 @@ func createLocks(m *lockMap, fd uintptr, mode os.FileMode, l *Layout) (*sharedLo
 // attachLocks uses the locks another process created: the mutexes in the
 // file, the semaphores named in it (version 1) or after the hash stored in
 // it (version 2), or the SysV set whose id is stored in it. What is in the
-// file is read, never recomputed.
+// file is read, never recomputed. errLocksRemoved if the semaphores or the
+// set do not exist (any more): that is what an opener finds when the last
+// user of the environment removed them (sharedLocks.close) between its
+// failed exclusive probe and its shared lock; Open then probes again (rlmdb
+// KNOWN_C_BUGS.md row 47).
 func attachLocks(m *lockMap, l *Layout) (*sharedLocks, error) {
 	switch l.Objects {
 	case PthreadMutexes:
@@ -121,16 +125,25 @@ func attachLocks(m *lockMap, l *Layout) (*sharedLocks, error) {
 		}
 		r, err := openSemaphore(rname)
 		if err != nil {
-			return nil, err
+			return nil, semaphoreGone(err)
 		}
 		w, err := openSemaphore(wname)
 		if err != nil {
 			r.close(false)
-			return nil, err
+			return nil, semaphoreGone(err)
 		}
 		return &sharedLocks{r: r, w: w}, nil
 	case SysVSemaphores:
 		return attachSysVLocks(m, l)
 	}
 	return nil, syscall.EINVAL
+}
+
+// semaphoreGone is the error of attachLocks for a sem_open that failed:
+// ENOENT means there is no semaphore of that name.
+func semaphoreGone(err error) error {
+	if err == syscall.ENOENT {
+		return errLocksRemoved
+	}
+	return err
 }

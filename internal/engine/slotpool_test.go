@@ -23,7 +23,7 @@ func openPoolTest(t *testing.T, maxReaders uint32) (*Env, *MemLock) {
 func openPoolTestMap(t *testing.T, maxReaders uint32, mapSize int64) (*Env, *MemLock) {
 	t.Helper()
 	var region *MemLock
-	open := func(_ string, _ os.FileMode, n uint32, _ bool, _ format.Format) (LockRegion, error) {
+	open := func(_ string, _ os.FileMode, n uint32, _ bool, _ format.Format, _ LockClaim) (LockRegion, error) {
 		region = NewMemLock(n)
 		return region, nil
 	}

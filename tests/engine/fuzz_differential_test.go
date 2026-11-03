@@ -3,7 +3,7 @@ package engine
 // FuzzWriteDifferential: the lock-step write differential against C
 // (differential_test.go) with the script chosen by the fuzzer (go test
 // -fuzz, see FUZZING.md at the repository root). The input picks the C
-// oracle (writeops for C 0.9.36; writeops10 for C 1.0 with 1 and 4 KiB
+// oracle (writeops for C 0.9.37; writeops10 for C 1.0 with 1 and 4 KiB
 // pages; the Go side optionally spilling), one of the profiles of
 // TestDifferential09 and the number of cursors; the rest feeds the
 // script generator in place of its random numbers, so every operation,
