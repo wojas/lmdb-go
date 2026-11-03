@@ -505,9 +505,9 @@ Divergences from rlmdb on the BSDs (none changes a file):
 * The read-only-file-system path (OpenLock returning nil) is exercised
   only through NoLock.
 * Performance: see `tests/bench/RESULTS.md` (stage 3).
-* Windows: tested on x86-64 (PLAN.md "Windows"); arm64 built and vetted,
-  not run. Not run there: `-race` (needs cgo for every package), rlmdb's
-  interop matrix with the Go peer.
+* Windows: tested on x86-64, with `-race` and in rlmdb's interop matrix
+  with the Go peer (PLAN.md "Windows"); arm64 built and vetted, not run.
+  vet warns about `tests/cgolmdb` there (PLAN.md "Windows").
 * The BSDs: built, vetted and cross-compiled (`go test -c`) for amd64
   and arm64 (DragonFly: amd64), with cgo against each BSD's headers too,
   their lock-file layouts checked against C compiled for them
