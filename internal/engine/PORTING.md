@@ -315,6 +315,20 @@ counts of the API's hot paths are pinned by `lmdb/alloc_test.go`.
   when it becomes a duplicate, and they are freed before the sub-page or
   sub-DB root is built (an item longer than the maximum key size is
   MDB_CORRUPTED).
+* MDB_CURRENT on a duplicate in a sub-DB that C leaves in a leaf searches
+  do not look in (found by this port's FuzzWriteModel; C 0.9, C 1.0 and
+  rlmdb alike; no rlmdb ledger row yet). C keeps the new item in the old
+  one's leaf at its index: the first item of a leaf other than the
+  leftmost, replaced by one of another size that sorts before the branch
+  key above the leaf (0.9's ITS#8447 path, without fix_parent), or the
+  last item of a leaf other than the rightmost, replaced by one of any
+  size at or after the next leaf's branch key, which a delete of that
+  leaf's first item leaves behind (0.9 and 1.0). MDB_GET_BOTH then does
+  not find the item, and later puts land out of order. Exactly these
+  replacements are caught right after the positioning and run as
+  mdb_cursor_del + mdb_cursor_put (`currentDupOutsideLeaf`, then
+  `replaceCurrent`, as for #38); the files are C's for those two calls
+  (`TestDifferential*CurrentDupOutsideLeaf`).
 * A failed sync after the meta page write (macOS: the `F_FULLFSYNC` after
   the `O_DSYNC` write; stage 4 review, round 2, P2-4; rlmdb
   `KNOWN_C_BUGS.md` #41) is handled as C handles a failed meta page write:

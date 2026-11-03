@@ -156,9 +156,10 @@ func (t *Txn) currentSingleOverflows(mc cref, ksize, dsize int) (bool, error) {
 // replaceCurrent is MDB_CURRENT as lmdb.h describes it for an item of
 // another size: delete the item under mc, then put data under key through
 // mc (which ends on it), as mdb_cursor_del + mdb_cursor_put would. For the
-// replacements C gets wrong in place (KNOWN_C_BUGS.md #15, #38). Once the
-// delete is done a failed insert leaves the transaction half changed, so
-// it fails. rlmdb's RwTxn::replace_current.
+// replacements C gets wrong in place (KNOWN_C_BUGS.md #15, #38, and
+// currentDupOutsideLeaf). Once the delete is done a failed insert
+// leaves the transaction half changed, so it fails. rlmdb's
+// RwTxn::replace_current.
 func (t *Txn) replaceCurrent(mc cref, key []byte, data putData) error {
 	if err := t.delAt(mc, 0); err != nil {
 		return err
@@ -188,6 +189,101 @@ func (t *Txn) currentDupFits(mc cref, fp []byte, size int) bool {
 	}
 	oldk := node.KeySize()
 	return oldk == size || sizeLeft(l, fp)+format.Even(l.LeafSize(oldk, 0))+2 >= format.Even(l.LeafSize(size, 0)+2)
+}
+
+// currentDupOutsideLeaf: for MDB_CURRENT on a duplicate in a sub-DB,
+// would C's replacement leave the new item where searches cannot find it?
+// C keeps the new item in the old one's leaf, at the old one's index: in
+// place (an item of the same size, which fix_parent makes the branch key
+// above the leaf if it is the leaf's first), or, for one of another size,
+// by deleting the node and adding the new one there (new_ksize, ITS#8447,
+// without fix_parent). The branch keys around the leaf need not be its
+// items: deleting a leaf's first item leaves the key above it. So the new
+// item can sort before the branch key above its leaf (the leaf's first
+// item, replaced by one of another size) or at or after the branch key of
+// the next leaf (the leaf's last item, any size). Searches then go to the
+// neighbouring leaf: MDB_GET_BOTH says MDB_NOTFOUND, and later puts of
+// items between the new one and that key land there, out of order.
+func (t *Txn) currentDupOutsideLeaf(mc cref, data putData) (bool, error) {
+	if data.count != 1 || len(data.bytes) != data.size {
+		return false, nil
+	}
+	main, err := t.topPage(mc)
+	if err != nil {
+		return false, err
+	}
+	node, ok := main.Node(t.cur(mc).kiTop())
+	if !ok || !node.IsDupData() || !node.IsSubData() {
+		return false, nil
+	}
+	mx := subRef(mc.slot)
+	x := t.cur(mx)
+	if !x.isInit() || x.subp || x.top == 0 {
+		return false, nil // a sub-page or a single leaf: no branch keys
+	}
+	leaf, err := t.topPage(mx)
+	if err != nil {
+		return false, err
+	}
+	ki, nkeys := int(x.ki[x.top]), leaf.NumKeys()
+	if ki >= nkeys {
+		return false, nil
+	}
+	cmp := t.cmpOf(mx)
+	if ki == 0 && !leaf.IsLeaf2() {
+		old, ok := leaf.Node(0)
+		if !ok {
+			return false, format.Corrupted
+		}
+		if old.KeySize() != data.size {
+			// The branch key above the leaf: slot 0 of a branch page has
+			// none, so it is the nearest one not on slot 0.
+			top := x.top - 1
+			for top > 0 && x.ki[top] == 0 {
+				top--
+			}
+			if x.ki[top] != 0 {
+				sep, err := t.branchKey(mx, top, int(x.ki[top]))
+				if err != nil {
+					return false, err
+				}
+				if cmp.Compare(data.bytes, sep) < 0 {
+					return true, nil
+				}
+			}
+		}
+	}
+	if ki == nkeys-1 {
+		// The branch key of the next leaf: the nearest one right of the
+		// path.
+		for top := x.top - 1; top >= 0; top-- {
+			branch, err := t.pageOfLevel(mx, top)
+			if err != nil {
+				return false, err
+			}
+			if next := int(x.ki[top]) + 1; next < branch.NumKeys() {
+				sep, err := t.branchKey(mx, top, next)
+				if err != nil {
+					return false, err
+				}
+				return cmp.Compare(data.bytes, sep) >= 0, nil
+			}
+		}
+	}
+	return false, nil
+}
+
+// branchKey is the key of node i of c's branch page at level.
+func (t *Txn) branchKey(c cref, level, i int) ([]byte, error) {
+	branch, err := t.pageOfLevel(c, level)
+	if err != nil {
+		return nil, err
+	}
+	key, ok := branch.NodeKey(i)
+	if !ok || !branch.IsBranch() {
+		return nil, format.Corrupted
+	}
+	return key, nil
 }
 
 // putAt is _mdb_cursor_put: store key/data at cursor mc. Returns the
@@ -274,6 +370,18 @@ func (t *Txn) putAt0(mc cref, key []byte, data putData, flags uint32) (int, erro
 			// instead, before anything else, as mdb_cursor_del and
 			// mdb_cursor_put would: the item goes to a sub-DB, as a new
 			// key's first item of that size does (KNOWN_C_BUGS.md #38).
+			return 0, t.replaceCurrent(mc, key, data)
+		}
+	}
+	if dupsort && flags&(format.Current|format.AppendDup) == format.Current {
+		outside, err := t.currentDupOutsideLeaf(mc, data)
+		if err != nil {
+			return 0, err
+		}
+		if outside {
+			// C would keep the new item in a leaf where searches do not
+			// look for it: delete and insert instead, before anything
+			// else, as mdb_cursor_del and mdb_cursor_put would.
 			return 0, t.replaceCurrent(mc, key, data)
 		}
 	}
