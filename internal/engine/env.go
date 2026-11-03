@@ -51,10 +51,13 @@ type Options struct {
 	// MapSize is mdb_env_set_mapsize; 0 uses the size recorded in the file
 	// (1 MiB for a new one). It is raised if the file holds more data.
 	MapSize int64
-	// MaxReaders is mdb_env_set_maxreaders (0: 126). An existing lock file
-	// keeps its size.
+	// MaxReaders is mdb_env_set_maxreaders (0: 126), at most
+	// format.MaxReadersLimit (Open fails with EINVAL beyond it, rlmdb
+	// KNOWN_C_BUGS.md row 60). An existing lock file keeps its size, also a
+	// larger one.
 	MaxReaders uint32
-	// MaxDBs is mdb_env_set_maxdbs.
+	// MaxDBs is mdb_env_set_maxdbs, at most format.MaxDBsLimit (Open fails
+	// with EINVAL beyond it, rlmdb KNOWN_C_BUGS.md row 54).
 	MaxDBs uint32
 	// Flags are the MDB_* environment flags. Bits that are not 0.9
 	// environment flags fail with EINVAL (also 1.0's MDB_PREVSNAPSHOT).
@@ -210,7 +213,8 @@ func Open(path string, opts Options) (env *Env, err error) {
 	if maxReaders == 0 {
 		maxReaders = format.DefaultReaders
 	}
-	if flags&^(format.Changeable|format.Changeless) != 0 {
+	if flags&^(format.Changeable|format.Changeless) != 0 ||
+		maxReaders > format.MaxReadersLimit || opts.MaxDBs > format.MaxDBsLimit {
 		return nil, syscall.EINVAL
 	}
 	mode := opts.Mode
