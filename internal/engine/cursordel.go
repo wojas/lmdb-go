@@ -1019,8 +1019,8 @@ func (t *Txn) del0With(mc cref, key, data []byte, hasData bool, flags uint32) er
 		op = format.Set
 	}
 	if !hasData && t.seeksInPlace(mc) {
-		// The cursor of mdb_del in a tree without duplicates: on its own
-		// stack.
+		// The cursor of mdb_del deleting a key with all its items: on its
+		// own stack.
 		db := *t.dbOf(mc)
 		found, err := t.seekKey(mc, &db, t.cmpOf(mc), key)
 		if err != nil {
