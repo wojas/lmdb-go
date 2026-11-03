@@ -22,7 +22,8 @@ check:
 
 # Run the tests against rlmdb's liblmdb (-tags rlmdb), see rlmdb-test.sh.
 # Usage: make test-rlmdb RLMDB=<rlmdb checkout>
-#    or: make test-rlmdb RLMDB_LIB_DIR=<directory with liblmdb>
+#    or: make test-rlmdb RLMDB_LIB_DIR=<directory with librlmdb>
+#    or: make test-rlmdb (rlmdb installed, found by pkg-config)
 .PHONY: test-rlmdb
 test-rlmdb:
 	./rlmdb-test.sh -cover ./...

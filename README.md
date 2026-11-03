@@ -213,19 +213,25 @@ to enable the optimisation.
 ### Linking against rlmdb
 
 The `rlmdb` build tag leaves out the bundled LMDB C sources and dynamically
-links against the `liblmdb` of [rlmdb](https://github.com/wojas/rlmdb)
-instead, a rewrite of LMDB 0.9 in Rust whose C API (`rlmdb-capi`) is a drop-in
-`liblmdb`.  This is meant for testing: the lmdb-go test suite exercises rlmdb
-and its C API layer, and programs using lmdb-go can try rlmdb without code
-changes.
+links against `librlmdb` (`-lrlmdb`) of [rlmdb](https://github.com/wojas/rlmdb)
+instead, a rewrite of LMDB 0.9 in Rust whose C API (`rlmdb-capi`) has the
+same symbols and ABI as LMDB's `liblmdb`.  The library has its own name so
+that it does not clash with an installed C LMDB.  This is meant for testing:
+the lmdb-go test suite exercises rlmdb and its C API layer, and programs using
+lmdb-go can try rlmdb without code changes.
 
-Build rlmdb's library and point cgo at it:
+With rlmdb installed (rlmdb's `scripts/install-libs.sh`, which also installs
+`rlmdb.pc`), point cgo at its library directory:
 
-    (cd /path/to/rlmdb && cargo build --release -p rlmdb-capi)
+    CGO_LDFLAGS="$(pkg-config --libs-only-L rlmdb)" go build -tags rlmdb .
+
+To use the library from an rlmdb checkout instead, build it and add an rpath
+so that the program finds it at run time:
+
+    (cd /path/to/rlmdb && cargo build --release -p librlmdb)
     CGO_LDFLAGS="-L/path/to/rlmdb/target/release -Wl,-rpath,/path/to/rlmdb/target/release" \
         go build -tags rlmdb .
 
-On macOS the `-rpath` is not needed (the library records its absolute path).
 `lmdb.Version()` reports `LMDB 0.9.85: (rlmdb x.y.z)` when rlmdb is linked.
 
 To run the tests of this package against rlmdb:
@@ -235,7 +241,7 @@ To run the tests of this package against rlmdb:
 or `RLMDB=/path/to/rlmdb ./rlmdb-test.sh [go test args]`, which builds the
 library, sets the link flags and runs `go test -tags rlmdb`.  With
 `RLMDB_LIB_DIR` instead of `RLMDB` it uses an already built library from that
-directory.
+directory, and with neither the installed rlmdb that `pkg-config` finds.
 
 Notes:
 

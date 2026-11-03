@@ -1,4 +1,4 @@
-# Runs the tests against rlmdb's liblmdb (-tags rlmdb), see rlmdb-test.sh.
+# Runs the tests against rlmdb's librlmdb (-tags rlmdb), see rlmdb-test.sh.
 
 name: rlmdb
 
