@@ -1,6 +1,6 @@
 // Names of the named semaphores (macOS; OpenBSD, NetBSD and DragonFly in
 // version 1) and the Windows mutexes: mdb_hash_val, mdb_pack85 and
-// mdb_hash_enc of mdb.c 0.9.36 (lines 4823-4880), mdb_hash, mdb_pack85 and
+// mdb_hash_enc of mdb.c 0.9.37 (lines 4823-4880), mdb_hash, mdb_pack85 and
 // mdb_env_mname_init / MUTEXNAME of mdb.c 1.0 (lines 5920-5945); and the
 // key of the BSDs' SysV semaphore set (ftok, mdb.c 1.0 line 6098). rlmdb
 // os/shared_lock.rs and os/windows.rs (hash_val, pack85, hash_enc,
@@ -57,7 +57,7 @@ func hashEnc(b []byte) string {
 // semNamesV09 are the names LMDB 0.9's exclusive opener writes into
 // mti_rmname and mti_wmname: "/MDBr" and "/MDBw" followed by
 // mdb_hash_enc of the lock file's identity. With short (NetBSD's
-// MDB_SHORT_SEMNAMES, mdb.c 0.9.36 lines 4999-5011) the encoding is cut to
+// MDB_SHORT_SEMNAMES, mdb.c 0.9.37 lines 4999-5011) the encoding is cut to
 // nine characters, for names of 14 characters.
 func semNamesV09(id []byte, short bool) (r, w string) {
 	enc := hashEnc(id)

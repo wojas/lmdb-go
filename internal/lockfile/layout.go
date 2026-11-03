@@ -1,7 +1,7 @@
 // Layout of the lock file, MDB_txninfo plus the reader table, in both
 // lock-file versions: rlmdb format/lockfile.rs (LockLayout, LOCK_V09,
 // LOCK_V10); mdb.c's MDB_txbody, MDB_txninfo, MDB_reader and
-// MDB_LOCK_FORMAT (0.9.36 lines 668-790; LMDB 1.0, mdb.RE/1.0 at 4865523,
+// MDB_LOCK_FORMAT (0.9.37 lines 668-790; LMDB 1.0, mdb.RE/1.0 at d4dc8e2,
 // lines 865-1017 with MDB_lock_desc).
 //
 //	Version 1 (LMDB 0.9), MDB_txninfo:
@@ -54,7 +54,7 @@
 // arm64 by the same rules; readers take no pid locks there, MDB_PIDLOCK
 // 0, which shows in both versions' mti_format.)
 //
-// The BSDs follow C's selection there (mdb.c 0.9.36 lines 135-149, 1.0
+// The BSDs follow C's selection there (mdb.c 0.9.37 lines 135-149, 1.0
 // lines 184-203). FreeBSD (11+) is Linux's case with an 8-byte
 // pthread_mutex_t (a pointer; the process-shared mutex itself lives in a
 // kernel object keyed by its address). OpenBSD, NetBSD and DragonFly use
@@ -274,7 +274,7 @@ type platform struct {
 	// (OpenBSD, NetBSD, DragonFly; mdb.c 1.0 lines 192-198).
 	sysvV2 bool
 	// shortSemNames: MDB_SHORT_SEMNAMES, version 1 semaphore names of 14
-	// characters (NetBSD; mdb.c 0.9.36 lines 4999-5011).
+	// characters (NetBSD; mdb.c 0.9.37 lines 4999-5011).
 	shortSemNames bool
 	// windowsMutexes: _WIN32, named kernel mutexes (kept in the lock file as
 	// the macOS semaphores are), and no pid locks (MDB_PIDLOCK 0, "currently

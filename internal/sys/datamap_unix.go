@@ -33,6 +33,14 @@ func MapData(f *os.File, size int, random bool, metaEnd int, reserve bool) (*Dat
 	if err != nil {
 		return nil, err
 	}
+	// Before the mmap, so that nothing can fail from it until the DataMap
+	// that unmaps it exists (rlmdb 607fc5a). A file that grows meanwhile is
+	// seen by the next refresh of the size.
+	var st syscall.Stat_t
+	if err := syscall.Fstat(fd, &st); err != nil {
+		syscall.Close(fd)
+		return nil, err
+	}
 	data, err := syscall.Mmap(fd, 0, size, syscall.PROT_READ, syscall.MAP_SHARED)
 	if err != nil {
 		syscall.Close(fd)
@@ -42,12 +50,6 @@ func MapData(f *os.File, size int, random bool, metaEnd int, reserve bool) (*Dat
 		adviseRandom(data)
 	}
 	m := &DataMap{data: data, metaEnd: metaEnd, osMap: osMap{fd: fd}}
-	var st syscall.Stat_t
-	if err := syscall.Fstat(fd, &st); err != nil {
-		_ = syscall.Munmap(data)
-		syscall.Close(fd)
-		return nil, err
-	}
 	m.knownSize.Store(st.Size)
 	m.refs.Store(1)
 	return m, nil

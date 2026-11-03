@@ -25,6 +25,7 @@
 //	sysvGet(key, mode) (semid, errno)   semget(key, 2, (mode & 0777) | IPC_CREAT)
 //	sysvSetAll(semid) errno             semctl(semid, 0, SETALL, {1, 1})
 //	sysvCheck(semid) errno              semctl(IPC_STAT), then semctl(IPC_SET) with what it read
+//	sysvHasThird(semid) (bool, errno)   semctl(semid, 2, GETVAL): whether semaphore 2 exists (EINVAL says not)
 //	sysvOp(semid, num, op) errno        one semop of op on semaphore num, with SEM_UNDO; EINTR is returned
 //	sysvRemove(semid) errno             semctl(semid, 0, IPC_RMID)
 //
@@ -33,6 +34,9 @@
 // these BSDs, on a real kernel there, as rlmdb's tests do; no macOS lock
 // file uses it. macOS builds without cgo have no SysV calls
 // (sysv_nocgo_darwin.go: ENOTSUP).
+//
+// Unlike C, the exclusive opener refuses an existing set of the key that is
+// not its to reset (checkReusable, rlmdb KNOWN_C_BUGS.md #46).
 
 package lockfile
 
@@ -53,6 +57,7 @@ var (
 	_ func(int64, uint32) (int32, syscall.Errno) = sysvGet
 	_ func(int32) syscall.Errno                  = sysvSetAll
 	_ func(int32) syscall.Errno                  = sysvCheck
+	_ func(int32) (bool, syscall.Errno)          = sysvHasThird
 	_ func(int32, uint16, int16) syscall.Errno   = sysvOp
 	_ func(int32) syscall.Errno                  = sysvRemove
 )
@@ -117,10 +122,41 @@ func sysvLocks(m *lockMap, semid int32, l *Layout) *sharedLocks {
 	}
 }
 
+// checkReusable checks that set semid, which semget returned for the lock
+// file's key, is one createSysVLocks may reset. C 1.0 resets whatever set it
+// gets (rlmdb KNOWN_C_BUGS.md #46); the key is ftok's, which keeps 8 bits of
+// the device and 16 of the inode, so another program's set can have it.
+//
+//   - sysvCheck passes, which every other opener must pass too
+//     (attachSysVLocks). If it does not, the set is another user's: its
+//     error (EACCES, EPERM).
+//   - The set has exactly two semaphores, else EEXIST. semget with nsems 2
+//     returns an existing set only if it has at least two, and semaphore
+//     number 2 exists only in a larger one: GETVAL of it fails with EINVAL in
+//     a set of two (POSIX). SETALL of a larger set would read one value per
+//     semaphore from a two-element array and overwrite the other program's
+//     semaphores.
+//
+// A refused set is left as it is.
+func checkReusable(semid int32) error {
+	if e := sysvCheck(semid); e != 0 {
+		return e
+	}
+	third, e := sysvHasThird(semid)
+	if e != 0 {
+		return e
+	}
+	if third {
+		return syscall.EEXIST
+	}
+	return nil
+}
+
 // createSysVLocks creates (or finds again) the set of a lock file of
 // layout l that this process holds exclusively, sets both semaphores to 1,
 // and stores the set's id and cleared flags (mdb_env_setup_locks, *excl >
-// 0).
+// 0). An existing set of the key that is not ours to reset is refused
+// (checkReusable).
 func createSysVLocks(m *lockMap, fd uintptr, mode os.FileMode, l *Layout) (*sharedLocks, error) {
 	if !sysvLayout(l) {
 		return nil, syscall.EINVAL
@@ -133,6 +169,9 @@ func createSysVLocks(m *lockMap, fd uintptr, mode os.FileMode, l *Layout) (*shar
 	if e != 0 {
 		return nil, e
 	}
+	if err := checkReusable(semid); err != nil {
+		return nil, err
+	}
 	if e := sysvSetAll(semid); e != 0 {
 		return nil, e
 	}
@@ -144,12 +183,18 @@ func createSysVLocks(m *lockMap, fd uintptr, mode os.FileMode, l *Layout) (*shar
 
 // attachSysVLocks uses the set whose id another process stored, after
 // checking, as C does, that this process may read it and change it.
+// errLocksRemoved if the id names no set (EINVAL; some systems say EIDRM
+// for a removed one): the last user removed it after this opener's exclusive
+// probe failed, or the lock file holds garbage.
 func attachSysVLocks(m *lockMap, l *Layout) (*sharedLocks, error) {
 	if !sysvLayout(l) {
 		return nil, syscall.EINVAL
 	}
 	semid := m.loadInt32(l.RLock)
 	if e := sysvCheck(semid); e != 0 {
+		if e == syscall.EINVAL || e == syscall.EIDRM {
+			return nil, errLocksRemoved
+		}
 		return nil, e
 	}
 	return sysvLocks(m, semid, l), nil

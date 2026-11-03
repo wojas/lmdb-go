@@ -20,11 +20,22 @@ import (
 // two meta pages, then pages (page 2 on), with the main DB record main
 // in meta page 1 (txnid 1).
 func handbuiltFile(l *format.Layout, ps int, pages [][]byte, main format.DB) []byte {
+	free := format.DB{Root: format.PInvalid}
+	return handbuiltFileDBs(l, ps, pages, free, main, 1)
+}
+
+// handbuiltFileDBs is handbuiltFile with the free DB record free too (its
+// flags and its md_pad, which holds the page size, are those of a new
+// environment), and meta page 1 holding snapshot txnid (odd: a snapshot's
+// meta page is txnid & 1).
+func handbuiltFileDBs(l *format.Layout, ps int, pages [][]byte, free, main format.DB, txnid uint64) []byte {
 	m0 := format.NewEnvMeta(l, uint32(ps), 1<<20, 0)
 	m0.DBs[0].Root = format.PInvalid
 	m1 := m0
-	m1.TxnID = 1
+	m1.TxnID = txnid
 	m1.LastPgno = 1 + uint64(len(pages))
+	free.Flags, free.Pad = m0.DBs[0].Flags, m0.DBs[0].Pad
+	m1.DBs[0] = free
 	m1.DBs[1] = main
 	file := make([]byte, 2*ps)
 	m0.WriteInitialPages(file, ps, l)
@@ -44,15 +55,19 @@ func handbuiltFile(l *format.Layout, ps int, pages [][]byte, main format.DB) []b
 // its cursor stacks. The put must fail with MDB_CURSOR_FULL, which fails
 // the transaction, and leave the file as it was.
 //
-// Pages of 256 bytes, in both formats: pages 2..32 are branch pages of the
-// implicit first child and three 58-byte separators, every child being the
-// next page; page 33 is a leaf of three 58-byte keys with 1-byte values.
-// The put goes through Txn.Put and through a cursor, with another cursor
-// on the leaf.
+// The smallest pages of each format with keys that fill them: 256 bytes and
+// 58-byte keys in 1.0, 2 KiB and 500-byte keys in 0.9 (Layout.MinPageSize):
+// pages 2..32 are branch pages of the implicit first child and three
+// separators, every child being the next page; page 33 is a leaf of three
+// keys with 1-byte values. The put goes through Txn.Put and through a
+// cursor, with another cursor on the leaf.
 func TestRootSplitBeyondCursorStack(t *testing.T) {
-	const ps = 256
-	key := func(c byte) []byte { return bytes.Repeat([]byte{c}, 58) }
-	for _, l := range []*format.Layout{format.LayoutV09, format.LayoutV10} {
+	for _, c := range []struct {
+		l        *format.Layout
+		ps, klen int
+	}{{format.LayoutV09, 2048, 500}, {format.LayoutV10, 256, 58}} {
+		l, ps := c.l, c.ps
+		key := func(b byte) []byte { return bytes.Repeat([]byte{b}, c.klen) }
 		var pages [][]byte
 		for pgno := uint64(2); pgno <= 32; pgno++ {
 			p := make([]byte, ps)

@@ -46,7 +46,7 @@ messages) until that is established.
   `version.go`): `Format`, `V09`, `V10`, `Env.SetFormat`, `Env.Format`,
   `SniffFormat`, `ErrFormatConflict`, the `LMDB_DEFAULT_FORMAT`-style
   default (use rlmdb's `RLMDB_DEFAULT_FORMAT` semantics, experimental).
-* **C is the oracle.** C LMDB 0.9.36 and the pinned LMDB 1.0, whose
+* **C is the oracle.** C LMDB 0.9.37 and 1.0.3, whose
   sources rlmdb vendors (`tests/lmdb-c/0.9`, `tests/lmdb-c/1.0`), are built
   by rlmdb's interop crate; the binaries are in
   `$RLMDB_DIR/target/release/build/rlmdb-interop-*/out/bin/` (`cpeer`,

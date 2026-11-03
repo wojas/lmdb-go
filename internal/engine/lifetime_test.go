@@ -136,7 +136,7 @@ func (g *guardRegion) Close() error {
 func openGuarded(t *testing.T) (*Env, string, *guardRegion) {
 	t.Helper()
 	g := new(guardRegion)
-	open := func(_ string, _ os.FileMode, n uint32, _ bool, _ format.Format) (LockRegion, error) {
+	open := func(_ string, _ os.FileMode, n uint32, _ bool, _ format.Format, _ LockClaim) (LockRegion, error) {
 		g.LockRegion = NewMemLock(n)
 		return g, nil
 	}

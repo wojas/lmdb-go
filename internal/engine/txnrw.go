@@ -206,6 +206,7 @@ func (e *Env) beginWrite() (*Txn, error) {
 	t.env, t.pageSize, t.l, t.dmap = e, e.pageSize, e.layout, m
 	t.slot, t.state = -1, txnActive
 	t.owner++
+	t.allocations = 0
 	if err := t.setSnapshot(last+1, &meta); err != nil {
 		t.releaseMap()
 		unlock()

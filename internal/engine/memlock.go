@@ -60,7 +60,7 @@ func NewMemLock(maxReaders uint32) *MemLock {
 
 // OpenMemLock is an OpenLockFunc that returns a fresh bounded MemLock: an
 // in-process stand-in for the lock file in tests.
-func OpenMemLock(_ string, _ os.FileMode, maxReaders uint32, _ bool, _ format.Format) (LockRegion, error) {
+func OpenMemLock(_ string, _ os.FileMode, maxReaders uint32, _ bool, _ format.Format, _ LockClaim) (LockRegion, error) {
 	return NewMemLock(maxReaders), nil
 }
 

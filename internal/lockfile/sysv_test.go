@@ -134,8 +134,80 @@ func TestSysVProtocol(t *testing.T) {
 	if e := sysvCheck(r.semid); e == 0 {
 		t.Fatal("the set is still there")
 	}
-	if _, err := attachSysVLocks(m, l); err == nil {
-		t.Fatal("attached to a removed set")
+	if _, err := attachSysVLocks(m, l); err != errLocksRemoved {
+		t.Fatalf("attached to a removed set: %v", err)
+	}
+}
+
+// fileWithSet is a lock file (mapped, of layout l) whose ftok key had no
+// set, and a set of nsems semaphores made at that key, as another program
+// whose key collides with the lock file's would.
+func fileWithSet(t *testing.T, l *Layout, nsems int) (*os.File, *lockMap, int32) {
+	t.Helper()
+	// Files whose key is taken stay open, so that the next one gets another
+	// inode.
+	for i := 0; i < 64; i++ {
+		f, m := mapTestFile(t, int(l.FileSize(1)))
+		var st syscall.Stat_t
+		if err := syscall.Fstat(int(f.Fd()), &st); err != nil {
+			t.Fatal(err)
+		}
+		id, e := sysvNewSet(SysVKey(uint64(st.Dev), st.Ino), nsems)
+		if e == 0 {
+			t.Cleanup(func() { sysvRemove(id) })
+			return f, m, id
+		}
+		if e != syscall.EEXIST {
+			t.Fatal(e)
+		}
+	}
+	t.Fatal("no free SysV key")
+	return nil, nil, 0
+}
+
+// TestSysVCreateRefusesALargerSet: another program's set at the lock file's
+// key with more semaphores than ours: the open refuses it and changes nothing
+// (C 1.0's SETALL would read three values from its two-element array, rlmdb
+// KNOWN_C_BUGS.md #46).
+func TestSysVCreateRefusesALargerSet(t *testing.T) {
+	l := sysvTestLayout(t)
+	f, m, id := fileWithSet(t, l, 3)
+	if e := sysvSetValues(id, []uint16{11, 12, 13}); e != 0 {
+		t.Fatal(e)
+	}
+	if _, err := createSysVLocks(m, f.Fd(), 0o600, l); err != syscall.EEXIST {
+		t.Fatalf("create: %v, want EEXIST", err)
+	}
+	for i, want := range []int{11, 12, 13} {
+		if got, e := sysvValue(id, i); e != 0 || got != want {
+			t.Fatalf("semaphore %d: %d, %v; want %d", i, got, e, want)
+		}
+	}
+	if got := m.loadInt32(l.RLock); got != 0 {
+		t.Fatalf("set id %d stored", got)
+	}
+}
+
+// TestSysVCreateReusesASetOfTwo: a set of two at the key (as a process that
+// died with the environment open leaves it) is ours: the open takes it over
+// and resets both semaphores.
+func TestSysVCreateReusesASetOfTwo(t *testing.T) {
+	l := sysvTestLayout(t)
+	f, m, id := fileWithSet(t, l, 2)
+	if e := sysvSetValues(id, []uint16{0, 0}); e != 0 {
+		t.Fatal(e)
+	}
+	locks, err := createSysVLocks(m, f.Fd(), 0o600, l)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if locks.r.sysv.semid != id || locks.w.sysv.semid != id || m.loadInt32(l.RLock) != id {
+		t.Fatalf("set %d: took %d and %d, stored %d", id, locks.r.sysv.semid, locks.w.sysv.semid, m.loadInt32(l.RLock))
+	}
+	for i := 0; i < 2; i++ {
+		if got, e := sysvValue(id, i); e != 0 || got != 1 {
+			t.Fatalf("semaphore %d: %d, %v; want 1", i, got, e)
+		}
 	}
 }
 

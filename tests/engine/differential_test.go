@@ -2,7 +2,7 @@
 // tests/common/differential.rs and write_differential*.rs): the same
 // script of puts, deletes, cursor moves, nested transactions and drops on
 // several cursors of one write transaction runs in C (rlmdb's
-// tests/c/writeops.c, built against C 0.9.36 as writeops and C 1.0 as
+// tests/c/writeops.c, built against C 0.9.37 as writeops and C 1.0 as
 // writeops10) and in Go, each in a fresh environment. After every step the
 // position of every cursor must agree; the committed environments must
 // have the same contents (mdb_dump), pass C's page audit (cpeer
@@ -45,7 +45,7 @@ type oracle struct {
 	dataFile []byte
 }
 
-// oracle09 is C 0.9.36. It skips t where C's pages are not this process's
+// oracle09 is C 0.9.37. It skips t where C's pages are not this process's
 // (requireSamePageSize): 0.9 takes the OS page size.
 func oracle09(t testing.TB) *oracle {
 	o := &oracle{writeops: tool(t, "writeops"), dump: "mdb_dump", peer: "cpeer", f: format.V09}
@@ -859,7 +859,18 @@ func runRound(t testing.TB, o *oracle, p *profile, ncur int, g *gen, nops int, l
 	_, cd, _ := run(t, o.dumpTool(), "-s", "t", cdir)
 	_, gd, _ := run(t, o.dumpTool(), "-s", "t", gdir)
 	if normDump(cd) != normDump(gd) {
-		t.Fatalf("%s: dumps differ", tag)
+		// Dumped once more: a dump that changes although nothing wrote the
+		// environment in between was misread, not miswritten (rlmdb f679226).
+		redump := func(side, dir, first string) string {
+			_, second, _ := run(t, o.dumpTool(), "-s", "t", dir)
+			if normDump(second) == normDump(first) {
+				return side + " dumped again: the same\n"
+			}
+			return side + " dumped again: different\n" + dumpDiff("first", normDump(first), "second", normDump(second))
+		}
+		again := redump("C", cdir, cd) + redump("Go", gdir, gd)
+		t.Fatalf("%s: dumps differ (environments kept: C %s, Go %s)\n%s%s", tag,
+			keepEnv(t, cdir), keepEnv(t, gdir), dumpDiff("C", normDump(cd), "Go", normDump(gd)), again)
 	}
 	if rc, out, errs := run(t, o.peer, "check-freelist", gdir); rc != 0 {
 		t.Fatalf("%s: check-freelist of Go:\n%s\n%s", tag, out, errs)
@@ -892,6 +903,88 @@ func normDump(s string) string {
 		}
 	}
 	return strings.Join(out, "\n")
+}
+
+// keepEnv copies the environment in dir out of the test's temporary
+// directory, which is removed when the test ends, for inspection, and returns
+// where it went.
+func keepEnv(t testing.TB, dir string) string {
+	t.Helper()
+	kept, err := os.MkdirTemp("", "lmdb-differential-")
+	if err != nil {
+		return dir + " (not kept: " + err.Error() + ")"
+	}
+	files, err := os.ReadDir(dir)
+	for _, f := range files {
+		var b []byte
+		if b, err = os.ReadFile(filepath.Join(dir, f.Name())); err == nil {
+			err = os.WriteFile(filepath.Join(kept, f.Name()), b, 0o644)
+		}
+		if err != nil {
+			break
+		}
+	}
+	if err != nil {
+		return dir + " (not kept: " + err.Error() + ")"
+	}
+	return kept
+}
+
+// dumpDiff is where two dumps (the data lines of mdb_dump: odd lines keys,
+// even lines values) differ, for a failure message: the line counts, then the
+// lines between the common head and tail, at most 16 per side. Where both
+// sides have a line there, it is shown from a little before the first
+// character that differs (with its byte offset in the key or value),
+// otherwise from its start; 160 characters at most.
+func dumpDiff(aName, a, bName, b string) string {
+	la, lb := strings.Split(a, "\n"), strings.Split(b, "\n")
+	head := 0
+	for head < len(la) && head < len(lb) && la[head] == lb[head] {
+		head++
+	}
+	tail := 0
+	for tail < len(la)-head && tail < len(lb)-head && la[len(la)-1-tail] == lb[len(lb)-1-tail] {
+		tail++
+	}
+	da, db := la[head:len(la)-tail], lb[head:len(lb)-tail]
+	var out strings.Builder
+	fmt.Fprintf(&out, "%s %d lines, %s %d; the same in the first %d and the last %d\n", aName, len(la), bName, len(lb), head, tail)
+	side := func(name string, lines, other []string) {
+		fmt.Fprintf(&out, "%s, %d lines:\n", name, len(lines))
+		for i, line := range lines {
+			if i == 16 {
+				break
+			}
+			from := 0
+			if i < len(other) {
+				k := 0
+				for k < len(line) && k < len(other[i]) && line[k] == other[i][k] {
+					k++
+				}
+				// The dump's lines are a space and hex digits.
+				at := max(k-1, 0) / 2
+				fmt.Fprintf(&out, "%7d differs at byte %d:", head+i+1, at)
+				// From 20 bytes before it: character 1 + 2*byte.
+				if start := at - 20; start > 0 {
+					from = 1 + 2*start
+				}
+			} else {
+				fmt.Fprintf(&out, "%7d:", head+i+1)
+			}
+			end := min(from+160, len(line))
+			pre, post := "", ""
+			if from > 0 {
+				pre = "..."
+			}
+			if end < len(line) {
+				post = "..."
+			}
+			fmt.Fprintf(&out, " %s%s%s (%d chars)\n", pre, line[min(from, len(line)):end], post, len(line))
+		}
+	}
+	side(aName, da, db)
+	side(bName, db, da)
+	return out.String()
 }
 
 // runProfile runs rounds rounds of n random ops (half a prefill of puts);
@@ -991,6 +1084,9 @@ func TestDifferential10(t *testing.T) {
 func TestMain(m *testing.M) {
 	if src := os.Getenv(copyHelperSrc); src != "" {
 		os.Exit(copyHelper(src))
+	}
+	if src := os.Getenv(readHelperSrc); src != "" {
+		os.Exit(readHelper(src))
 	}
 	os.Exit(m.Run())
 }

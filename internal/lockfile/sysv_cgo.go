@@ -45,6 +45,16 @@ static int lmdbgo_semcheck(int semid) {
 	if (semctl(semid, 0, IPC_SET, arg) < 0) return errno;
 	return 0;
 }
+// Whether semaphore 2 of the set exists: GETVAL takes no further argument
+// and fails with EINVAL for a number the set does not have.
+static int lmdbgo_semhasthird(int semid, int *third) {
+	if (semctl(semid, 2, GETVAL) >= 0) {
+		*third = 1;
+		return 0;
+	}
+	*third = 0;
+	return errno == EINVAL ? 0 : errno;
+}
 static int lmdbgo_semop(int semid, unsigned short num, short op) {
 	struct sembuf sb;
 	sb.sem_num = num;
@@ -54,6 +64,24 @@ static int lmdbgo_semop(int semid, unsigned short num, short op) {
 }
 static int lmdbgo_semrmid(int semid) {
 	return semctl(semid, 0, IPC_RMID) < 0 ? errno : 0;
+}
+// For the tests: a new set of nsems semaphores at key, its values.
+static int lmdbgo_semnew(long long key, int nsems, int *semid) {
+	int id = semget((key_t)key, nsems, IPC_CREAT | IPC_EXCL | 0600);
+	if (id < 0) return errno;
+	*semid = id;
+	return 0;
+}
+static int lmdbgo_semsetvals(int semid, unsigned short *vals) {
+	union lmdbgo_semun arg;
+	arg.array = vals;
+	return semctl(semid, 0, SETALL, arg) < 0 ? errno : 0;
+}
+static int lmdbgo_semgetval(int semid, int num, int *val) {
+	int v = semctl(semid, num, GETVAL);
+	if (v < 0) return errno;
+	*val = v;
+	return 0;
 }
 */
 import "C"
@@ -74,8 +102,42 @@ func sysvSetAll(semid int32) syscall.Errno {
 
 func sysvCheck(semid int32) syscall.Errno { return syscall.Errno(C.lmdbgo_semcheck(C.int(semid))) }
 
+func sysvHasThird(semid int32) (bool, syscall.Errno) {
+	var third C.int
+	if rc := C.lmdbgo_semhasthird(C.int(semid), &third); rc != 0 {
+		return false, syscall.Errno(rc)
+	}
+	return third != 0, 0
+}
+
 func sysvOp(semid int32, num uint16, op int16) syscall.Errno {
 	return syscall.Errno(C.lmdbgo_semop(C.int(semid), C.ushort(num), C.short(op)))
 }
 
 func sysvRemove(semid int32) syscall.Errno { return syscall.Errno(C.lmdbgo_semrmid(C.int(semid))) }
+
+// sysvNewSet, sysvSetValues and sysvValue are for the tests (cgo cannot be
+// used in test files): another program's set at a key, and what it holds.
+func sysvNewSet(key int64, nsems int) (int32, syscall.Errno) {
+	var id C.int
+	if rc := C.lmdbgo_semnew(C.longlong(key), C.int(nsems), &id); rc != 0 {
+		return 0, syscall.Errno(rc)
+	}
+	return int32(id), 0
+}
+
+func sysvSetValues(semid int32, vals []uint16) syscall.Errno {
+	cv := make([]C.ushort, len(vals))
+	for i, v := range vals {
+		cv[i] = C.ushort(v)
+	}
+	return syscall.Errno(C.lmdbgo_semsetvals(C.int(semid), &cv[0]))
+}
+
+func sysvValue(semid int32, num int) (int, syscall.Errno) {
+	var v C.int
+	if rc := C.lmdbgo_semgetval(C.int(semid), C.int(num), &v); rc != 0 {
+		return 0, syscall.Errno(rc)
+	}
+	return int(v), 0
+}

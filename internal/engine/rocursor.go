@@ -142,7 +142,31 @@ func (c *Cursor) Get(key, data []byte, op format.CursorOp) (k, v []byte, err err
 			return k, v, nil
 		}
 	}
+	switch op {
+	case format.Set, format.SetKey, format.SetRange, format.GetBoth, format.GetBothRange:
+		c.refreshOrders()
+	}
 	return cursorGet(t, &c.mc, c.xc(), c.dcmp, c.hasDcmp, key, data, op)
+}
+
+// refreshOrders takes the key order and the order of a key's single data
+// item from the transaction before a search: C's cursor reaches them through
+// mc_dbx, the handle's entry in the environment's me_dbxs, so an
+// mdb_set_compare / mdb_set_dupsort after the cursor was opened applies to
+// its next search (rlmdb refresh_orders). The order of the sub-cursor (a
+// key's duplicates) is copied when the cursor is opened (mdb_xcursor_init0)
+// and stays, as in C. Only searches compare, so moves skip this.
+func (c *Cursor) refreshOrders() {
+	t := c.txn
+	if int(c.dbi) >= t.ndbs {
+		return
+	}
+	// An entry the transaction forgot (a closed handle) is not this
+	// database's; the cursor keeps what it has.
+	if e := t.dbe(int(c.dbi)); e.state&dbValid != 0 {
+		c.mc.cmp = e.keyCmp
+		c.dcmp, c.hasDcmp = e.dupCmp, e.hasDup
+	}
 }
 
 func (c *Cursor) xc() *rcursor {
@@ -317,7 +341,7 @@ func cursorGetInner(t *Txn, mc, mx *rcursor, dcmp format.Comparator, hasDcmp boo
 		if !ok {
 			return nil, nil, format.Corrupted
 		}
-		if err := mx.sibling(t, false); err != nil {
+		if err := mx.step(t, false); err != nil {
 			return nil, nil, err
 		}
 		d, err := mx.fetchMultiple()

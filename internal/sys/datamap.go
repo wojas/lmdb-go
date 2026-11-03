@@ -67,7 +67,7 @@ type DataMap struct {
 // MapNeedsInvalidate reports whether data written to the data file through
 // a descriptor shows in a shared map of it only after the map's copy is
 // invalidated (DataMap.Invalidate, C's MDB_Invalidate): on OpenBSD, which
-// has no unified buffer cache (mdb.c 0.9.36 lines 86-93). It is a
+// has no unified buffer cache (mdb.c 0.9.37 lines 86-93). It is a
 // constant, so the engine's calls compile away elsewhere.
 const MapNeedsInvalidate = runtime.GOOS == "openbsd"
 

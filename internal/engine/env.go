@@ -5,14 +5,18 @@
 // Open follows mdb_env_open (mdb.c line 5102):
 //
 //  1. Resolve file names (mdb_fname_init): path/data.mdb and path/lock.mdb,
-//     or with MDB_NOSUBDIR path and path-lock.
+//     or with MDB_NOSUBDIR path and path-lock. Claim the environment in the
+//     process-wide registry (registry.go; not in C), before the lock file is
+//     touched, also under another name (a hard link, a bind mount): a second
+//     open could set up the open handle's lock file again.
 //  2. Decide the data-file format (SniffFormat: magic and version of the
 //     first meta page; not in C, which handles one format). An existing
 //     file keeps its format, a new one gets the requested format or the
 //     default. This happens before the lock file is touched, so opening a
 //     file of the other format never re-initialises a peer's lock file.
-//  3. Unless read-only or MDB_NOLOCK, set up the lock file first. Read-only
-//     environments open the data file first (it must exist).
+//  3. Unless read-only or MDB_NOLOCK, set up the lock file first; it is
+//     claimed in the registry before it is locked. Read-only environments
+//     open the data file first (it must exist).
 //  4. Open the data file (O_RDWR|O_CREAT, or O_RDONLY; on Windows shared
 //     for reading and writing only, as C opens it).
 //  5. mdb_env_open2: read both meta pages with pread; an empty file is a
@@ -22,7 +26,8 @@
 //     size is the configured one, else the one recorded in the meta,
 //     raised to cover all pages in use. Map the file read-only (on
 //     Windows as the C release of the format does there: sys.MapData).
-//  6. Open the O_DSYNC descriptor for meta-page writes (me_mfd).
+//  6. Open the O_DSYNC descriptor for meta-page writes (me_mfd), by name as
+//     in C, so it is claimed like the data file.
 //  7. If we initialised the lock table, publish the current txnid and
 //     downgrade to a shared lock (mdb_env_share_locks).
 
@@ -101,6 +106,9 @@ type Env struct {
 	// metaSyncFault is the errno the sync after the next meta page write
 	// is to fail with (0: none), for tests (FailNextMetaSync).
 	metaSyncFault atomic.Int32
+	// metaWriteHook runs once the next meta page write of this handle
+	// reached the file, for tests (AfterNextMetaWrite).
+	metaWriteHook atomic.Pointer[func()]
 
 	// writerMu serialises the write transactions of this handle and guards
 	// writer; the lock region's writer lock (taken after it) serialises
@@ -253,7 +261,7 @@ func Open(path string, opts Options) (env *Env, err error) {
 	}
 
 	if !readOnly && !noLock {
-		if e.lock, err = opts.OpenLock(lockPath, mode, maxReaders, false, f); err != nil {
+		if e.lock, err = opts.OpenLock(lockPath, mode, maxReaders, false, f, &e.regKey); err != nil {
 			return nil, err
 		}
 	}
@@ -265,10 +273,11 @@ func Open(path string, opts Options) (env *Env, err error) {
 	// in the process under another name either.
 	shared, err := registerFile(&e.regKey, e.dataFile)
 	if err != nil {
+		e.dataFile = nil // the registry's now
 		return nil, err
 	}
 	if readOnly && !noLock {
-		if e.lock, err = opts.OpenLock(lockPath, mode, maxReaders, true, f); err != nil {
+		if e.lock, err = opts.OpenLock(lockPath, mode, maxReaders, true, f, &e.regKey); err != nil {
 			return nil, err
 		}
 	}
@@ -323,7 +332,10 @@ func Open(path string, opts Options) (env *Env, err error) {
 		pageSize = min(pageSize, layout.MaxPageSize)
 		meta = format.NewEnvMeta(layout, uint32(pageSize), format.DefaultMapSize, flags)
 	}
-	if pageSize&(pageSize-1) != 0 || pageSize < format.MinPageSize || pageSize > layout.MaxPageSize {
+	// C does not check the page size of an existing file. The range is the
+	// format's: smaller 0.9 pages cannot hold its largest keys (rlmdb
+	// KNOWN_C_BUGS.md #48).
+	if pageSize&(pageSize-1) != 0 || pageSize < layout.MinPageSize || pageSize > layout.MaxPageSize {
 		return nil, format.Invalid
 	}
 	if layout.Format == format.V10 && !newEnv {
@@ -368,6 +380,11 @@ func Open(path string, opts Options) (env *Env, err error) {
 		// Synchronous fd for meta writes. Needed even with
 		// MDB_NOSYNC/MDB_NOMETASYNC, in case these get reset.
 		if e.metaFile, err = sys.OpenDSync(dataPath); err != nil {
+			return nil, err
+		}
+		// It is the data file unless the name now leads elsewhere.
+		if _, err = registerFile(&e.regKey, e.metaFile); err != nil {
+			e.metaFile = nil // the registry's now
 			return nil, err
 		}
 	}
@@ -760,8 +777,20 @@ func (e *Env) SetDirtyLimit(pages int) { e.dirtyLimit.Store(int64(max(pages, 16)
 // Environment::fail_next_meta_sync).
 func (e *Env) FailNextMetaSync(errno syscall.Errno) { e.metaSyncFault.Store(int32(errno)) }
 
-// injectedMetaSyncError is the failure FailNextMetaSync asked for, once.
+// AfterNextMetaWrite makes hook run on the committing goroutine once the
+// next meta page write of this handle has reached the file (and, on macOS,
+// its sync is done), before the commit is published or fails as
+// FailNextMetaSync asks: a commit stopped in flight, holding the writer
+// lock, for tests of what other processes see meanwhile (not C API; rlmdb's
+// Environment::after_next_meta_write).
+func (e *Env) AfterNextMetaWrite(hook func()) { e.metaWriteHook.Store(&hook) }
+
+// injectedMetaSyncError runs the hook of AfterNextMetaWrite, then returns
+// the failure FailNextMetaSync asked for; each once.
 func (e *Env) injectedMetaSyncError() error {
+	if hook := e.metaWriteHook.Swap(nil); hook != nil {
+		(*hook)()
+	}
 	if e.metaSyncFault.Load() == 0 {
 		return nil
 	}
@@ -861,7 +890,8 @@ func (e *Env) SetDupsort(dbi DBI, cmp format.CmpFunc) error {
 }
 
 // FreePages is the number of pages on the free list of the newest
-// snapshot (the "Free pages" line of mdb_stat -f).
+// snapshot (the "Free pages" line of mdb_stat -f). MDB_CORRUPTED if the
+// free DB's keys do not ascend (rlmdb KNOWN_C_BUGS.md #50).
 func (e *Env) FreePages() (uint64, error) {
 	txn, err := e.BeginTxn(nil, format.ReadOnly)
 	if err != nil {
@@ -873,15 +903,20 @@ func (e *Env) FreePages() (uint64, error) {
 		return 0, err
 	}
 	defer c.Close()
-	var pages uint64
+	var pages, prev uint64
+	hasPrev := false
 	for {
-		_, v, err := c.Get(nil, nil, format.Next)
+		k, v, err := c.Get(nil, nil, format.Next)
 		if errors.Is(err, format.NotFound) {
 			return pages, nil
 		}
 		if err != nil {
 			return 0, err
 		}
+		if prev, err = nextTxnidKey(prev, hasPrev, k); err != nil {
+			return 0, err
+		}
+		hasPrev = true
 		n, ok := format.EncodedLen(v)
 		if !ok || pages+n < pages {
 			return 0, format.Corrupted
@@ -910,7 +945,9 @@ func sniffDataFile(dataPath string) (format.Format, bool, error) {
 	if err != nil {
 		return 0, false, sys.Errno(err)
 	}
-	defer f.Close()
+	// The name may lead to the lock file of an environment open in this
+	// process, whose record locks closing it would drop.
+	defer Dispose(f)
 	var head [format.SniffLen]byte
 	n, err := sys.ReadAt(f, head[:], 0)
 	if err != nil {
@@ -982,7 +1019,7 @@ func DefaultFormat() format.Format {
 
 // validSetPageSize is the check of 1.0's mdb_env_set_pagesize.
 func validSetPageSize(size int, l *format.Layout) bool {
-	return size&(size-1) == 0 && size >= format.MinPageSize && size <= l.MaxPageSize
+	return size&(size-1) == 0 && size >= l.MinPageSize && size <= l.MaxPageSize
 }
 
 // checkV10Features refuses an existing 1.0 environment that uses what is
