@@ -203,6 +203,17 @@ differently from C is in `internal/engine/PORTING.md` and in rlmdb's
   length, so appending to it never overwrites the value, but holding the
   key keeps the value's memory alive. Read transactions and cursors reuse
   the memory of ended ones (one small allocation each, for the handle).
+* **`Current` on a duplicate at the edge of a page** (a C bug, not
+  ported). Replacing a duplicate of a `DupSort` key with `Cursor.Put(...,
+  Current)`, C keeps the new item in the old one's place without checking
+  the keys of the tree above it. When the old item is the first one of a
+  page (and the new one has another size) or the last one of a page, the
+  new item can land where searches do not look: `GetBoth` no longer finds
+  it, and a later put can store duplicates out of order. C 0.9 and 1.0
+  have this, as did rlmdb. In exactly these cases the item is deleted and
+  the new one put, as `Cursor.Del` followed by `Cursor.Put` would; the file
+  is then what C writes for those two calls. Every other replacement is
+  C's, byte for byte.
 * **Windows** (64-bit: x86-64, and arm64 by the same rules) follows
   rlmdb's Windows port and C LMDB's `_WIN32` paths, without cgo
   (`golang.org/x/sys/windows`): `SharedLockingAvailable` is true with and
