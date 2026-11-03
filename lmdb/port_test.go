@@ -837,6 +837,18 @@ func TestEnv_Close_liveSnapshot(t *testing.T) {
 	}
 }
 
+// removeEnvDirAtEnd removes the directory of an environment the test
+// closes in a deferred call, once the test has ended: a deferred RemoveAll
+// registered after that Close runs before it, and Windows does not remove
+// files that are still open, so the environment stayed behind there.
+func removeEnvDirAtEnd(t *testing.T, path string) {
+	t.Cleanup(func() {
+		if err := removeEnvDir(path); err != nil {
+			t.Error(err)
+		}
+	})
+}
+
 // removeEnvDir removes the directory of a closed environment. On Windows,
 // where open files cannot be removed, it retries for a while: a closed
 // environment keeps its files until its last transaction has ended (see

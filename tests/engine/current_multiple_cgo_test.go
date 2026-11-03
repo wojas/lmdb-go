@@ -31,6 +31,7 @@ import (
 	eng "github.com/PowerDNS/lmdb-go/internal/engine"
 	"github.com/PowerDNS/lmdb-go/internal/format"
 	cgolmdb "github.com/PowerDNS/lmdb-go/tests/cgolmdb"
+	"github.com/PowerDNS/lmdb-go/tests/internal/coracle"
 )
 
 // multiOp is one step of the script of TestCgoCurrentMultipleOutsideLeaf.
@@ -48,7 +49,10 @@ type multiOp struct {
 	slack bool
 }
 
-// cgoCode is the C error code of an error of tests/cgolmdb.
+// cgoCode is the C error code of an error of tests/cgolmdb. On Windows
+// lmdb-go v1 turns the C runtime's errno values into Go's own numbers of
+// the syscall constants (cgolmdb/error_windows.go); coracle.CErrno turns
+// them back, as code does for the Go engine's.
 func cgoCode(err error) int {
 	if err == nil {
 		return 0
@@ -59,7 +63,7 @@ func cgoCode(err error) int {
 		case cgolmdb.Errno:
 			return int(e)
 		case syscall.Errno:
-			return int(e)
+			return coracle.CErrno(int(e))
 		}
 	}
 	return -1

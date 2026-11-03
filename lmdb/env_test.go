@@ -87,7 +87,7 @@ func TestEnv_Open(t *testing.T) {
 	if err != nil {
 		t.Fatalf("tempdir: %v", err)
 	}
-	defer os.RemoveAll(path)
+	removeEnvDirAtEnd(t, path)
 	err = env.Open(path, testFlags(0), 0664)
 	if err != nil {
 		t.Errorf("open: %s", err)
@@ -117,7 +117,7 @@ func TestEnv_FD(t *testing.T) {
 	if err != nil {
 		t.Fatalf("tempdir: %v", err)
 	}
-	defer os.RemoveAll(path)
+	removeEnvDirAtEnd(t, path)
 	err = env.Open(path, testFlags(0), 0664)
 	if err != nil {
 		t.Errorf("open: %s", err)
