@@ -39,6 +39,22 @@ func TestTuneGCOnlyWhenFuzzing(t *testing.T) {
 	}
 }
 
+// The testing package still has -test.fuzzminimizetime, and LimitMinimize
+// leaves it alone in a normal test.
+func TestLimitMinimizeOnlyWhenFuzzing(t *testing.T) {
+	f := flag.Lookup(minimizeFlag)
+	if f == nil {
+		t.Fatal("no -test.fuzzminimizetime flag: LimitMinimize cannot set it")
+	}
+	before := f.Value.String()
+	if err := LimitMinimize(30); err != nil {
+		t.Fatal(err)
+	}
+	if after := f.Value.String(); after != before {
+		t.Fatalf("LimitMinimize changed -test.fuzzminimizetime from %s to %s in a normal test", before, after)
+	}
+}
+
 // keep holds memory live across a watched input.
 var keep [][]byte
 

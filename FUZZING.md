@@ -20,7 +20,7 @@ itself is started by hand.
 | `internal/lockfile` | `FuzzLockFile` | the content of a lock file | header and reader-slot decoding of both lock-file versions for every platform's layout, and the reader-table walks of a `Region` over that table (in memory: no file, locks or semaphores) |
 | `lmdb` | `FuzzEnvFile` | a whole data file | the public API end to end with `NoLock`: open, bounded reads of every named database (walks both ways, gets, duplicate and multiple-value operations), plain and compacting copy, one write transaction with a nested one, reading again; panics, hangs (an input running for 10 s while fuzzing) and heap growth past 256 MiB fail |
 | `lmdb` | `FuzzAPI` | a script of API calls with arbitrary arguments | every write flag combination, cursor operation codes 0-255, nil, empty and oversized keys and values, `PutMulti` strides, unpositioned cursors, nested transactions, databases opened with any flags: no panic, and the committed file passes `Env.Audit` and reads back |
-| `tests/engine` (nested module) | `FuzzWriteDifferential` | an oracle, a profile and a script | the lock-step write differential against C 0.9.36 (`writeops`) and C 1.0 (`writeops10`, 1 and 4 KiB pages): cursors after every step, then `mdb_dump`, C's page audit and the pages themselves; skips without the C oracles |
+| `tests/engine` (nested module) | `FuzzWriteDifferential` | an oracle, a profile and a script | the lock-step write differential against C 0.9.36 (`writeops`) and C 1.0 (`writeops10`, 1 and 4 KiB pages): cursors after every step, then C's page audit and the pages themselves (`mdb_dump` and C's audit of its own file where those differ); skips without the C oracles |
 
 `FuzzEnvFile` starts from small environments of both formats that the
 test builds (LMDB 0.9 with 512-byte and 1 KiB pages, LMDB 1.0 with 256-byte
@@ -66,7 +66,13 @@ about 250 MB per worker.
 `-fuzzminimizetime` keeps the fuzzer from spending up to a minute
 minimizing each new interesting input, which with the larger inputs of
 `FuzzEnvFile` and `FuzzWriteModel` otherwise stalls progress for minutes
-at a time. Interesting inputs accumulate in the Go build cache
+at a time. `FuzzWriteDifferential` sets its own limit, 30 runs, unless
+the flag is given (`fuzzwatch.LimitMinimize`): an input takes about a
+tenth of a second there, and beyond cutting its tail minimizing hardly
+ever shortens one (dropping a byte shifts every later operation). With
+Go's default the four workers spent nearly all their time minimizing, so
+that a 10-minute run made fewer than 5,000 runs, almost none in its last
+minutes. Interesting inputs accumulate in the Go build cache
 (`$(go env GOCACHE)/fuzz/...`), so a later run continues where the last
 one stopped.
 
@@ -157,3 +163,21 @@ machine shared with other work):
   `mdb_cursor_del` + `mdb_cursor_put` leave, page for page, also with
   `MDB_DUPFIXED` and a dirty limit of 16 pages;
   `TestCgoCurrentMultipleOutsideLeaf` for `MDB_MULTIPLE`) cover it.
+* **The duplicate count and the duplicates of a cursor that a failed search
+  left on a key** (found by `FuzzWriteModel`; C LMDB 0.9 and 1.0, rlmdb and
+  this port alike, so not changed here; rlmdb `KNOWN_C_BUGS.md` rows 6 and
+  14 describe the cause). A failed `MDB_SET` or `MDB_GET_BOTH` resets the
+  sub-cursor but leaves the main cursor on a node and keeps the sub-cursor's
+  cached duplicates record (`mx_db`), which other cursors' writes then no
+  longer update (C's `mdb_xcursor_init2` and this port's record sharing skip
+  a reset sub-cursor). `MDB_NEXT` onto that key's duplicates starts from the
+  record: `mdb_cursor_count` stays at the old count, and after the sub-DB's
+  root split the walk covers only the old root's items and then moves to
+  the next key. Where the key's duplicates are in a sub-page that moved,
+  C instead treats the main leaf page as the sub-tree root (its sub-page
+  has the leaf's page number) and crashes in `mdb_xcursor_init1` with a
+  null `mc_xcursor` (0.9 lines 6030, 6401 and 7747; 1.0 lines 7908, 8287
+  and 9621); rlmdb and this port find the sub-page through the main
+  cursor's node. `FuzzWriteModel` does not check where such a cursor
+  lands until a successful search or a write through it positions it
+  again (`fzPos.lost`).
