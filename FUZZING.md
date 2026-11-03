@@ -134,7 +134,8 @@ machine shared with other work):
   after the fix).
 * **`MDB_CURRENT` on a duplicate in a sub-DB that leaves the new item in a
   leaf searches do not look in** (found by `FuzzWriteModel` with 1.0,
-  256-byte pages; C LMDB 0.9 and 1.0, rlmdb and this port alike). C keeps
+  256-byte pages; C LMDB 0.9 and 1.0, rlmdb and this port alike; now
+  rlmdb `KNOWN_C_BUGS.md` row 56, fixed there the same way). C keeps
   the new item in the old one's leaf at its index and does not look at the
   branch keys around the leaf, which need not be its items (deleting a
   leaf's first item leaves the key above it). Two cases: the first item of
@@ -149,8 +150,10 @@ machine shared with other work):
   an item of another size over the old one's key and keeps that key's
   size.) Fixed: in exactly these cases the replacement deletes the item
   and puts the new one, as `lmdb.h` describes `MDB_CURRENT` with another
-  size (as for rows 15 and 38); every other replacement stays C's.
+  size (as for rows 15 and 38), also for `MDB_MULTIPLE` with one item (as
+  rlmdb); every other replacement stays C's.
   `TestDupsortCurrentOutsideLeaf` and `tests/engine`
   (`TestDifferential*CurrentDupOutsideLeaf`: the files C's
   `mdb_cursor_del` + `mdb_cursor_put` leave, page for page, also with
-  `MDB_DUPFIXED` and a dirty limit of 16 pages) cover it.
+  `MDB_DUPFIXED` and a dirty limit of 16 pages;
+  `TestCgoCurrentMultipleOutsideLeaf` for `MDB_MULTIPLE`) cover it.

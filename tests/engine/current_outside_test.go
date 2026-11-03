@@ -9,12 +9,17 @@ package engine
 // the rightmost, replaced by one (of any size) at or after the next leaf's
 // branch key, which deleting that leaf's first item leaves behind (C 0.9
 // and 1.0). C's MDB_GET_BOTH then says MDB_NOTFOUND, and later puts land
-// out of order. The Go writer deletes the item and puts the new one there,
+// out of order (rlmdb KNOWN_C_BUGS.md row 56; rlmdb
+// tests/common/differential.rs current_dup_outside_leaf_script,
+// write_differential.rs diff_current_dup_outside_leaf,
+// interop/tests/write_differential10.rs diff10_current_dup_outside_leaf).
+// The Go writer, as rlmdb, deletes the item and puts the new one there,
 // which must leave the file C's mdb_cursor_del + mdb_cursor_put leave (the
 // script's "cr" op); elsewhere both sides put with MDB_CURRENT. C 1.0 lacks
 // ITS#8447 and writes an item of another size over the old one's key
 // (rlmdb KNOWN_C_BUGS.md, ITS#8447), so its in-place cases of another size
-// are not compared; its "cr" ops and in-place cases of the same size are.
+// are left out; its "cr" ops and in-place cases of the same size are
+// compared.
 
 import (
 	"fmt"
@@ -158,8 +163,9 @@ func subDBLeafFirsts(t *testing.T, o *oracle, dbflags uint32, key []byte, items 
 // currentOutsideScript is a script (two cursors, a MDB_DUPSORT DB with
 // dbflags) that puts n items of itemLen bytes under one key, then, from
 // the right, one boundary between two leaves of the sub-DB at a time, the
-// other cursor on the item after the one replaced (the two rightmost in a
-// committed and an aborted nested transaction), replaces with MDB_CURRENT:
+// other cursor on the item after the next one, or on the item itself where
+// it is replaced in place (the two rightmost boundaries in a committed and
+// an aborted nested transaction), replaces with MDB_CURRENT:
 // the leaf's first item by a shorter and a longer item that sort before
 // it ("cr"), by one of the same size before it and a shorter one after it,
 // or the leaf's second item ("cp"); or, after deleting the leaf's first
@@ -168,8 +174,13 @@ func subDBLeafFirsts(t *testing.T, o *oracle, dbflags uint32, key []byte, items 
 // before it ("cp"). Without MDB_DUPFIXED only items of the same size. Then
 // the leftmost leaf's first item, shorter ("cp"). Then every new item is
 // looked up, items between new ones and the old ones are put, and the
-// database is walked.
-func currentOutsideScript(t *testing.T, o *oracle, dbflags uint32, itemLen, n int) []string {
+// database is walked. inPlaceOtherSize keeps the "cp" replacements by
+// items of another size (C 1.0 writes those over the old key).
+//
+// The other cursor on the replaced item makes a replacement that should
+// stay in place but is deleted and inserted visible: the delete moves the
+// cursor off the item, the in-place put does not.
+func currentOutsideScript(t *testing.T, o *oracle, dbflags uint32, itemLen, n int, inPlaceOtherSize bool) []string {
 	fixed := dbflags&format.DupFixed != 0
 	key := []byte("k")
 	item := func(j int) []byte {
@@ -198,9 +209,18 @@ func currentOutsideScript(t *testing.T, o *oracle, dbflags uint32, itemLen, n in
 	}
 	var added, between [][]byte
 	replace := func(j int, d []byte, routed bool) {
+		if !routed && !inPlaceOtherSize && len(d) != itemLen {
+			return
+		}
 		add("g:0:%d:%s:%s", format.GetBoth, k, hexs(items[j]))
-		if j+2 < n {
-			add("g:1:%d:%s:%s", format.GetBoth, k, hexs(items[j+2]))
+		// The other cursor: on the item itself for a replacement in place,
+		// which a delete and insert would move it off.
+		other := j + 2
+		if !routed {
+			other = j
+		}
+		if other < n {
+			add("g:1:%d:%s:%s", format.GetBoth, k, hexs(items[other]))
 		}
 		if routed {
 			add("cr:0:%s:%s", k, hexs(d))
@@ -300,7 +320,7 @@ func TestDifferential09CurrentDupOutsideLeaf(t *testing.T) {
 	itemLen := min(os.Getpagesize()/24, maxKey09-1)
 	for _, dbflags := range []uint32{format.DupSort, format.DupSort | format.DupFixed} {
 		p := &profile{dbflags: dbflags}
-		ops := currentOutsideScript(t, o, dbflags, itemLen, 320)
+		ops := currentOutsideScript(t, o, dbflags, itemLen, 320, true)
 		if countCR(ops) < 3 {
 			t.Fatalf("flags %#x: %d cr ops", dbflags, countCR(ops))
 		}
@@ -325,13 +345,7 @@ func TestDifferential10CurrentDupOutsideLeaf(t *testing.T) {
 		itemLen := max(8, min(ps/24, maxkey-1))
 		for _, dbflags := range []uint32{format.DupSort, format.DupSort | format.DupFixed} {
 			p := &profile{dbflags: dbflags}
-			var ops []string
-			for _, op := range currentOutsideScript(t, o, dbflags, itemLen, 320) {
-				if f := strings.Split(op, ":"); f[0] == "cp" && len(f[3])/2 != itemLen {
-					continue
-				}
-				ops = append(ops, op)
-			}
+			ops := currentOutsideScript(t, o, dbflags, itemLen, 320, false)
 			if countCR(ops) < 3 {
 				t.Fatalf("page size %d, flags %#x: %d cr ops", ps, dbflags, countCR(ops))
 			}

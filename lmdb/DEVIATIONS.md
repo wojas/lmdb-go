@@ -210,10 +210,13 @@ differently from C is in `internal/engine/PORTING.md` and in rlmdb's
   page (and the new one has another size) or the last one of a page, the
   new item can land where searches do not look: `GetBoth` no longer finds
   it, and a later put can store duplicates out of order. C 0.9 and 1.0
-  have this, as did rlmdb. In exactly these cases the item is deleted and
-  the new one put, as `Cursor.Del` followed by `Cursor.Put` would; the file
-  is then what C writes for those two calls. Every other replacement is
-  C's, byte for byte.
+  have this; rlmdb fixes it the same way. In exactly these cases the item
+  is deleted and the new one put, as `Cursor.Del` followed by `Cursor.Put`
+  would; the file is then what C writes for those two calls. The same
+  holds for `Cursor.PutMulti(..., Current)` with a single value (C has the
+  same bug there); with two or more values it replaces the item in place
+  with each in turn, as C does. Every other replacement is C's, byte for
+  byte.
 * **Windows** (64-bit: x86-64, and arm64 by the same rules) follows
   rlmdb's Windows port and C LMDB's `_WIN32` paths, without cgo
   (`golang.org/x/sys/windows`): `SharedLockingAvailable` is true with and

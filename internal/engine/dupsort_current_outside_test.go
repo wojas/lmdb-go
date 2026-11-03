@@ -15,8 +15,10 @@ package engine
 //
 // MDB_GET_BOTH then cannot find the new item, and a later put of an item
 // between it and that key lands in the other leaf, out of order. The Go
-// writer deletes the item and puts the new one there; tests/engine
-// (TestDifferential*CurrentDupOutsideLeaf) compares the files with C's
+// writer deletes the item and puts the new one there, as rlmdb does
+// (KNOWN_C_BUGS.md row 56), also for MDB_MULTIPLE with one item;
+// tests/engine (TestDifferential*CurrentDupOutsideLeaf,
+// TestCgoCurrentMultipleOutsideLeaf) compares the files with C's
 // mdb_cursor_del + mdb_cursor_put.
 
 import (
@@ -34,7 +36,9 @@ import (
 // neighbours, also after deleting the item after it (which leaves a stale
 // branch key where that was the first of its leaf), then puts an item
 // between the new one and the old ones: every item must be found and the
-// duplicates stay in order.
+// duplicates stay in order. With MDB_DUPFIXED also through MDB_MULTIPLE of
+// one item (its data[1].mv_size count 1), with a buffer of exactly one
+// item and with half an item more, which is not one.
 func TestDupsortCurrentOutsideLeaf(t *testing.T) {
 	shapes := []struct {
 		f         format.Format
@@ -81,12 +85,15 @@ func currentOutsideLeaf(t *testing.T, f format.Format, ps, n, sz int, flags uint
 	}
 	must(t, txn.Commit())
 	count := n // items committed
+	// multi: replace through MDB_MULTIPLE with one item (1), with half an
+	// item more in the buffer (2), or by a plain MDB_CURRENT put (0).
+	multi := 0
 	// try replaces item j by nw (after deleting item del if del >= 0),
 	// puts between (if any), and checks the duplicates; committed if
 	// commit.
 	try := func(j, del int, nw, between string, commit bool) {
 		t.Helper()
-		what := fmt.Sprintf("item %d -> %q (deleted %d)", j, nw, del)
+		what := fmt.Sprintf("item %d -> %q (deleted %d, multi %d)", j, nw, del, multi)
 		txn, err := env.BeginTxn(nil, 0)
 		must(t, err)
 		defer txn.Abort()
@@ -102,7 +109,18 @@ func currentOutsideLeaf(t *testing.T, f format.Format, ps, n, sz int, flags uint
 		}
 		_, _, err = c.Get(key, enc(item(j)), format.GetBoth)
 		must(t, err)
-		must(t, c.Put(key, enc(nw), format.Current))
+		if multi == 0 {
+			must(t, c.Put(key, enc(nw), format.Current))
+		} else {
+			buf := enc(nw)
+			if multi == 2 {
+				buf = append(bytes.Clone(buf), buf[:len(buf)/2]...)
+			}
+			cnt, err := c.PutMulti(key, buf, len(nw), format.Current)
+			if err != nil || cnt != 1 {
+				t.Fatalf("%s: MDB_MULTIPLE stored %d, %v", what, cnt, err)
+			}
+		}
 		if _, d, err := c.Get(nil, nil, format.GetCurrent); err != nil || !bytes.Equal(d, enc(nw)) {
 			t.Fatalf("%s: cursor on %q, %v", what, d, err)
 		}
@@ -145,6 +163,18 @@ func currentOutsideLeaf(t *testing.T, f format.Format, ps, n, sz int, flags uint
 			try(j-1, j, item(j)[:5]+"q", item(j), false)
 			try(j-1, j, item(j)+"q", item(j), false)
 		}
+	}
+	if fixed {
+		for multi = 1; multi <= 2; multi++ {
+			for j := 1; j < n-1; j++ {
+				try(j, -1, last(item(j), 'o'), "", false)
+				try(j-1, j, item(j), "", false)
+				try(j-1, j, last(item(j), 'q'), item(j), false)
+			}
+		}
+		multi = 1
+		try(n/2-2, n/2-1, item(n/2-1), "", true)
+		multi = 0
 	}
 	// One of each, committed and audited.
 	try(n/2, n/2+1, item(n/2+1), "", true)
