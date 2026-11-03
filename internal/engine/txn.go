@@ -65,12 +65,14 @@ type Txn struct {
 	// children) allocated so far, each run counted once: part of walkLimit.
 	allocations uint64
 	// dbs is mt_dbs + mt_dbflags (+ seqs and comparators), one per slot.
+	// It is as long as the slots the environment had when the transaction
+	// began (at least minDBTable), and grows when it touches a later one
+	// (Txn.dbe); C makes it me_maxdbs long.
 	dbs []txnDB
 	// gen is the generation of dbs (see Txn.dbe).
 	gen uint32
 	// ndbs is mt_numdbs: dbs[ndbs:] has not been looked at in this
-	// generation, so loops over the table stop there (dbs is me_maxdbs
-	// long).
+	// generation, so loops over the table stop there.
 	ndbs int
 
 	// Read transactions: the reader slot (-1: none) and the state.

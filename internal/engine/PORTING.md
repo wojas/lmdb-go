@@ -120,11 +120,26 @@ BSD commits up to `3df6995` are the BSD port's (branch `stage7-bsd`).
   `RLMDB_DEFAULT_FORMAT` (experimental; read at every open of a new
   environment).
 
-* The transaction's DB table is `me_maxdbs` long; `Txn.ndbs` (C's
-  `mt_numdbs`) bounds every loop over it, and the top-level write
-  transaction reuses its predecessor's table (C reuses `me_txn0`), so a
-  write transaction costs O(DBs in use), not O(`MaxDBs`) (stage 2:
-  lmdb-go's tests set `MaxDBs` to 65536).
+* The transaction's DB table is as long as the environment's DBI table
+  when the transaction begins (`me_numdbs`, at least `minDBTable`, 16
+  slots), not `me_maxdbs` as in C and rlmdb, and grows when the
+  transaction touches a later slot (`Txn.reach`: a handle opened after it
+  began, by it or by a child; doubling, up to `me_maxdbs`). A reused `Txn`
+  keeps what its table grew to (`Env.BeginRead`, the top-level write
+  transaction, a parent's spare child). `Txn.ndbs` (C's `mt_numdbs`)
+  bounds every loop over it, and the top-level write transaction reuses
+  its predecessor's table (C reuses `me_txn0`), so a transaction costs
+  O(DBs in use), not O(`MaxDBs`) (stage 2: lmdb-go's tests set `MaxDBs`
+  to 65536; stage 20: at that setting a table of `MaxDBs` slots was 6.8
+  MiB, made anew for every read transaction a `Txn` pool did not supply).
+  `Txn.dbe` does not grow the table, so that it stays inlinable: the slot
+  indices that do not come from a checked handle (`dbiEntry`), a core DB
+  or `ndbs` are reached first (`openDB`, `adoptRegistration`, `createDB`,
+  `recreateDB`, and the parent at the end of a child). Handles behave as
+  with tables of `me_maxdbs` slots: `MDB_DBS_FULL` at `MaxDBs`, `EINVAL`
+  beyond it, a handle opened elsewhere usable at once. The environment's
+  sequence numbers (`dbiRegistry.seqs`, 4 bytes a slot) stay `me_maxdbs`
+  long: they are read without a lock on every use of a handle.
 * `Env.Close` with transactions still alive (stage 2, for lmdb-go's
   finalizers; C requires them all to end first): `BeginRead`, `Renew` and
   write `BeginTxn` fail with `EINVAL`, and the live ones keep working

@@ -67,12 +67,13 @@ func (t *Txn) beginNested() (*Txn, error) {
 	c.slot, c.state = -1, txnActive
 	c.owner++
 	// Copy parent's mt_dbflags, but clear DB_NEW. Entries the previous
-	// child looked at (below its ndbs) are cleared; the rest are zero.
+	// child looked at (below its ndbs) are cleared; the rest are zero. The
+	// table is the whole capacity, as in initDBs.
 	if cap(c.dbs) < len(t.dbs) {
 		c.dbs = make([]txnDB, len(t.dbs))
 	} else {
 		clear(c.dbs[:min(c.ndbs, len(c.dbs))])
-		c.dbs = c.dbs[:len(t.dbs)]
+		c.dbs = c.dbs[:cap(c.dbs)]
 	}
 	for i := 0; i < t.ndbs; i++ {
 		c.dbs[i] = *t.dbe(i)
@@ -145,7 +146,9 @@ func (t *Txn) endNested(how int) {
 		p.nextPgno = t.nextPgno
 		p.allocations = t.allocations
 		pw.flags = w.flags
-		// Update parent's DB table, preserving parent's DB_NEW status.
+		// Update parent's DB table, preserving parent's DB_NEW status. The
+		// child's table may have grown past the parent's.
+		p.reach(t.ndbs - 1)
 		for i, n := 0, max(p.ndbs, t.ndbs); i < n; i++ {
 			pe, ce := p.dbe(i), t.dbe(i)
 			var keepNew uint8
@@ -191,7 +194,9 @@ func (t *Txn) endNested(how int) {
 		}
 		// Reopen the handles the child closed with Drop (KNOWN_C_BUGS.md
 		// row 20).
+		p.reach(t.ndbs - 1)
 		for _, d := range w.dropped {
+			p.reach(d.i)
 			pe := p.dbe(d.i)
 			// Only a handle of the database the parent has a view of.
 			same := d.slot.name != nil && nameID(d.slot.name) == pe.nameID
