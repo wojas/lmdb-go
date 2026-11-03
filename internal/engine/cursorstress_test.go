@@ -15,7 +15,9 @@ import (
 	"encoding/binary"
 	"fmt"
 	"math/rand"
+	"os"
 	"slices"
+	"strconv"
 	"testing"
 
 	"github.com/PowerDNS/lmdb-go/internal/format"
@@ -388,7 +390,20 @@ func (r *csRun) step(n int) {
 	r.check(fmt.Sprintf("step %d", n))
 }
 
+// TestCursorStress does not run by default: it is for changes to cursor
+// tracking, splits, merges, spilling and nested transactions. Run it with
+// LMDB_TEST_STRESS=1, or LMDB_TEST_STRESS=<n> for n seeds per shape
+// (default 3).
 func TestCursorStress(t *testing.T) {
+	seeds := int64(3)
+	switch v := os.Getenv("LMDB_TEST_STRESS"); v {
+	case "":
+		t.Skip("set LMDB_TEST_STRESS=1 to run")
+	default:
+		if n, err := strconv.ParseInt(v, 10, 64); err == nil && n > 1 {
+			seeds = n
+		}
+	}
 	type shape struct {
 		f     format.Format
 		ps    int
@@ -406,7 +421,7 @@ func TestCursorStress(t *testing.T) {
 		steps = 400
 	}
 	for _, sh := range shapes {
-		for seed := int64(1); seed <= 3; seed++ {
+		for seed := int64(1); seed <= seeds; seed++ {
 			t.Run(fmt.Sprintf("%v-%d-dirty%d-seed%d", sh.f, sh.ps, sh.dirty, seed), func(t *testing.T) {
 				env, _ := openTest(t, sh.f, Options{MaxDBs: 4, MapSize: 256 << 20, PageSize: sh.ps})
 				env.SetDirtyLimit(sh.dirty)

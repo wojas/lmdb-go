@@ -232,6 +232,11 @@ messages) until that is established.
   `$TMPDIR` / `t.TempDir()` on macOS, `/tmp` (tmpfs) in the container.
   Never on bind mounts.
 * Test scratch directories are per test process.
+* Not run by default: `internal/engine`'s `TestCursorStress` (many cursors
+  on one tree through splits, merges, nested transactions and spills). Run
+  it with `LMDB_TEST_STRESS=1` (or a number of seeds per shape) after
+  changes to cursor tracking, splits, merges, spilling or nested
+  transactions.
 * **2 GB of RAM (owner).** Every test suite, fuzz target (as `FUZZING.md`
   runs it) and benchmark of this repository runs on a machine with 2 GB
   of RAM in total, which also holds the Go toolchain building the tests,
