@@ -375,6 +375,18 @@ func Open(path string, opts Options) (env *Env, err error) {
 	e.pageSize = pageSize
 	e.flags.Store(flags)
 	e.layout = layout
+	err = e.extendForMap(mapSize, func() error {
+		return e.lock.LockWriter(func() (uint64, error) {
+			newest, _, ok, err := readHeader(e.dataFile, layout)
+			if err == nil && !ok {
+				err = format.Invalid
+			}
+			return newest.TxnID, err
+		})
+	})
+	if err != nil {
+		return nil, err
+	}
 	m, err := e.newMap(mapSize)
 	if err != nil {
 		return nil, err
@@ -427,10 +439,58 @@ func (e *Env) release() {
 	}
 }
 
+// extendForMap makes the data file as long as a writable map of size bytes
+// needs before it is mapped (sys.MapNeedsFileLength: LMDB 0.9 on Windows,
+// where mdb_env_map sets the length with SetEndOfFile). The file is only
+// extended, never shortened, and with a lock file the size is read again
+// and the file extended holding the writer mutex (lockWriter takes it):
+// pages are committed under it, so none can land past the end just read
+// before the extension. C sets the length outright, from a meta page read
+// earlier, which also shortens a longer file and cuts such pages (rlmdb
+// KNOWN_C_BUGS.md row 57). An opener that holds the lock file exclusively
+// has the environment to itself; without a lock file other processes are
+// the caller's job, as in C. rlmdb extend_for_map.
+func (e *Env) extendForMap(size int64, lockWriter func() error) error {
+	if e.isReadOnly() || !sys.MapNeedsFileLength(e.layout.Format == format.V10) {
+		return nil
+	}
+	return extendUnder(e.dataFile, size, func() (func() error, error) {
+		if !e.lockFile || e.lock.IsExclusive() {
+			return func() error { return nil }, nil
+		}
+		if err := lockWriter(); err != nil {
+			return nil, err
+		}
+		return e.lock.UnlockWriter, nil
+	})
+}
+
+// extendUnder extends f to size (sys.ExtendFile), holding what lock takes
+// until it calls the unlock lock returned: it must keep others from
+// committing pages past the end of the file until then. The size read
+// before taking it only spares taking it; the extension reads the size
+// again. rlmdb extend_under.
+func extendUnder(f *os.File, size int64, lock func() (unlock func() error, err error)) error {
+	n, err := sys.FileSize(f)
+	if err != nil || n >= size {
+		return err
+	}
+	unlock, err := lock()
+	if err != nil {
+		return err
+	}
+	err = sys.ExtendFile(f, size)
+	if uerr := unlock(); err == nil {
+		err = uerr
+	}
+	return err
+}
+
 // newMap maps size bytes of the data file; the environment counts the map
 // until it is unmapped (mapFreed). On Windows an LMDB 1.0 file is mapped
-// with a reserved view it grows into, a 0.9 file is extended to the map
-// size (sys.MapData; on Unix both are the same mmap).
+// with a reserved view it grows into, a 0.9 file as far as it reaches,
+// which a writable environment has extended to the map size first
+// (extendForMap; sys.MapData, on Unix both are the same mmap).
 func (e *Env) newMap(size int64) (*sys.DataMap, error) {
 	random := e.flags.Load()&format.NoReadahead != 0
 	reserve := e.layout.Format == format.V10
@@ -832,6 +892,10 @@ func (e *Env) SetMapSize(size int64) error {
 	}
 	// Silently round up to minimum if the size is too small.
 	size = max(size, int64(meta.LastPgno+1)*int64(e.pageSize))
+	err = e.extendForMap(size, func() error { return e.lockWriter(cur) })
+	if err != nil {
+		return err
+	}
 	e.mapMu.Lock()
 	defer e.mapMu.Unlock()
 	m, err := e.newMap(size)

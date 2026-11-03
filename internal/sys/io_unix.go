@@ -63,6 +63,24 @@ func FileSize(f *os.File) (int64, error) {
 	return st.Size, nil
 }
 
+// MapNeedsFileLength reports whether a writable map MapData makes with
+// reserve needs the data file to be as long as the map before it is mapped:
+// never here (C 0.9 does not extend the data file on Unix, and a map may
+// reach past the end of the file). rlmdb os::map_needs_file_length.
+func MapNeedsFileLength(reserve bool) bool { return false }
+
+// ExtendFile extends f to size bytes if it is shorter, never shortening it.
+// Only Windows needs it before mapping (MapNeedsFileLength); it is the same
+// everywhere so that the caller's ordering can be tested on any system.
+// rlmdb os::extend_file.
+func ExtendFile(f *os.File, size int64) error {
+	n, err := FileSize(f)
+	if err != nil || n >= size {
+		return err
+	}
+	return f.Truncate(size)
+}
+
 // StatFileID is the FileID of the file path names (stat, following
 // symlinks).
 func StatFileID(path string) (FileID, error) {

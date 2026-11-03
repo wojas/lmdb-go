@@ -124,6 +124,32 @@ func FileSize(f *os.File) (int64, error) {
 	return handleSize(windows.Handle(f.Fd()))
 }
 
+// MapNeedsFileLength reports whether a writable map MapData makes with
+// reserve needs the data file to be as long as the map before it is
+// mapped: LMDB 0.9's (reserve false; C's mdb_env_map sets the length with
+// SetEndOfFile, as Windows maps at most the length of the file). 1.0's
+// reserved views follow the file as it grows. rlmdb
+// os::map_needs_file_length.
+func MapNeedsFileLength(reserve bool) bool { return !reserve }
+
+// ExtendFile extends f to size bytes if it is shorter, never shortening it
+// (C 0.9 sets the length with SetEndOfFile either way, which also cuts a
+// longer file: rlmdb KNOWN_C_BUGS.md row 57). Through a read-only handle
+// nothing changes: the map then covers the file as it is, as C's does for
+// MDB_RDONLY. The size is read here, so the caller must keep other
+// processes from committing past it until this returns (the engine holds
+// the writer mutex). rlmdb os::extend_file.
+func ExtendFile(f *os.File, size int64) error {
+	n, err := FileSize(f)
+	if err != nil || n >= size {
+		return err
+	}
+	if err := windows.Ftruncate(windows.Handle(f.Fd()), size); err != windows.ERROR_ACCESS_DENIED {
+		return err
+	}
+	return nil
+}
+
 // StatFileID is the FileID of the file path names (following symlinks).
 func StatFileID(path string) (FileID, error) {
 	p, err := windows.UTF16PtrFromString(path)

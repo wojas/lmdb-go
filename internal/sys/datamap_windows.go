@@ -12,12 +12,15 @@
 //     before mapping it: on Windows a 0.9 data file is as long as its map,
 //     not as its used pages, and a C 0.9 process with a read-only
 //     environment, which maps the file as it is and reads pages past its
-//     view unchecked, relies on that. MapData does the same when the handle
-//     is writable. The file is only ever grown: C 0.9 also shrinks it when
-//     the map size shrinks, which fails (ERROR_USER_MAPPED_FILE) while
-//     another process, or a read transaction of this one holding an older
-//     map, still maps more; the pages past the new map size are unused
-//     either way (rlmdb does the same).
+//     view unchecked, relies on that. The engine extends a shorter file the
+//     same way before MapData maps it (ExtendFile), but never shortens a
+//     longer one, and it reads the size and extends the file holding the
+//     writer mutex: C's SetEndOfFile also shortens a longer file, by a size
+//     decided from a meta page read before, and so cuts pages another
+//     process committed since (rlmdb KNOWN_C_BUGS.md row 57). C 0.9 also
+//     shrinks the file when the map size shrinks, which fails
+//     (ERROR_USER_MAPPED_FILE) while another process, or a read
+//     transaction of this one holding an older map, still maps more.
 //   - LMDB 1.0: a section created with SEC_RESERVE over the file as it is
 //     (NtCreateSection) and a view that reserves the map size
 //     (NtMapViewOfSection with MEM_RESERVE). The file grows with the
@@ -87,9 +90,9 @@ const (
 // MapData maps size bytes of the data file f read-only, as the C release
 // of its format does on Windows (see the file comment): with reserve
 // (LMDB 1.0) a reserved view of a SEC_RESERVE section that the file grows
-// into, otherwise (LMDB 0.9) a view of the whole map size, after extending
-// the file to it if f is writable. Through a read-only handle the map
-// covers the file as it is. random (MDB_NORDAHEAD) has no effect. metaEnd
+// into, otherwise (LMDB 0.9) a view of the map size, or of the whole file
+// if it is shorter: the data file of a writable environment is extended
+// first (ExtendFile), a read-only one is mapped as it is. random (MDB_NORDAHEAD) has no effect. metaEnd
 // is the end of the meta pages, which Slice refuses. The map keeps a
 // duplicate of f's handle to refresh the file size, closed with the
 // mapping. It starts with one reference, the caller's.
@@ -117,23 +120,13 @@ func MapData(f *os.File, size int, random bool, metaEnd int, reserve bool) (*Dat
 	return m, nil
 }
 
-// mapWhole is mdb_env_map of LMDB 0.9: the file is extended to size if the
-// handle allows it, and as much of size as the file holds is mapped.
-// Returns the view and the file's size.
+// mapWhole is mdb_env_map of LMDB 0.9: as much of size as the file holds
+// is mapped (extending the file is the caller's, ExtendFile). Returns the
+// view and the file's size.
 func mapWhole(h windows.Handle, size int) ([]byte, int64, error) {
 	fileSize, err := handleSize(h)
 	if err != nil {
 		return nil, 0, err
-	}
-	if fileSize < int64(size) {
-		switch err := windows.Ftruncate(h, int64(size)); err {
-		case nil:
-			fileSize = int64(size)
-		case windows.ERROR_ACCESS_DENIED:
-			// A read-only handle: map what exists.
-		default:
-			return nil, 0, err
-		}
 	}
 	n := min(fileSize, int64(size))
 	if n == 0 {

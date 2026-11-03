@@ -1,6 +1,7 @@
 // Tests of the file helpers every platform shares: what counts as a
 // missing file (rlmdb os::is_missing), the copy target's exclusive
-// creation, and FileID.
+// creation, FileID, and ExtendFile (rlmdb os::extend_file), which only
+// ever grows a file.
 
 package sys
 
@@ -91,5 +92,38 @@ func TestFileID(t *testing.T) {
 	}
 	if n, err := FileSize(f); n != 0 || err != nil {
 		t.Fatalf("size %d %v", n, err)
+	}
+}
+
+// TestExtendFile: ExtendFile grows a shorter file and leaves a longer one
+// as it is, on every system (the engine needs it on Windows only; rlmdb
+// tests its os::extend_file the same way everywhere).
+func TestExtendFile(t *testing.T) {
+	f, err := os.Create(filepath.Join(t.TempDir(), "data.mdb"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	if err := WriteAt(f, []byte{1, 2, 3}, 4093); err != nil {
+		t.Fatal(err)
+	}
+	if err := ExtendFile(f, 64<<10); err != nil {
+		t.Fatal(err)
+	}
+	if n, err := FileSize(f); n != 64<<10 || err != nil {
+		t.Fatalf("size %d, %v", n, err)
+	}
+	if err := WriteAt(f, []byte{9}, 128<<10-1); err != nil {
+		t.Fatal(err)
+	}
+	if err := ExtendFile(f, 64<<10); err != nil {
+		t.Fatal(err)
+	}
+	if n, err := FileSize(f); n != 128<<10 || err != nil {
+		t.Fatalf("a longer file: size %d, %v", n, err)
+	}
+	buf := make([]byte, 3)
+	if _, err := ReadAt(f, buf, 4093); err != nil || buf[0] != 1 || buf[2] != 3 {
+		t.Fatalf("content %v, %v", buf, err)
 	}
 }
