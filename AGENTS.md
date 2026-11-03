@@ -162,7 +162,9 @@ messages) until that is established.
 7. Committed text (docs, results, commit messages) must not contain local
    paths (`/Users/...`), usernames, hostnames, exact macOS versions or
    kernel build strings. Hardware specs, "macOS 15", toolchain versions
-   and container image names are fine.
+   and container image names are fine. No bare "#nn" in commit messages,
+   docs or comments either (GitHub links it to issue or PR nn): write
+   "KNOWN_C_BUGS.md row nn", or "row nn" where the ledger is clear.
 
 8. **History and attribution.** This repository carries lmdb-go's full
    git history (back to 2013: Ferenc Szalai, Bryan Matsuo and all later

@@ -496,7 +496,7 @@ func (r *dbiRegistry) register(unused int, slot dbiSlot) int {
 // closed under it (Drop in a nested transaction, or CloseDBI). Opening it
 // again keeps that view: within a write transaction the record in the main
 // DB is only written back at commit, so reading it would lose the
-// transaction's changes (C does, KNOWN_C_BUGS.md #19). The caller holds
+// transaction's changes (C does, KNOWN_C_BUGS.md row 19). The caller holds
 // the registry lock.
 func (t *Txn) reopenLiveView(name []byte) (DBI, bool) {
 	r := &t.env.dbis

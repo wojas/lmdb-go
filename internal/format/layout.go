@@ -208,7 +208,7 @@ func (l *Layout) LoosensRebalancedRoot() bool { return l.Format == V10 }
 // DropsNamedDBsWithMain reports whether mdb_drop of the main DB first
 // deletes the named databases recorded in it and refuses with
 // MDB_DBIS_BUSY while one is open (1.0), instead of leaking their pages
-// (0.9, rlmdb KNOWN_C_BUGS.md #21).
+// (0.9, rlmdb KNOWN_C_BUGS.md row 21).
 func (l *Layout) DropsNamedDBsWithMain() bool { return l.Format == V10 }
 
 // NodeKeyLen is the bytes a key of ksize bytes takes in a node.

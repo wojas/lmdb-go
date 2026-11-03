@@ -145,7 +145,7 @@ func TestDifferential10Dupfixed1ByteScript(t *testing.T) {
 // values and deletes them again (merges, PAGEFILL of the wrapped page).
 //
 // C with the upstream flags asserts MP_UPPER(mp) >= MP_LOWER(mp) at the
-// top of mdb_node_add once mp_upper wrapped (rlmdb KNOWN_C_BUGS.md #37),
+// top of mdb_node_add once mp_upper wrapped (rlmdb KNOWN_C_BUGS.md row 37),
 // so the C side is writeops10_ndebug.
 func TestDifferential10Dupfixed1ByteUpperWraps(t *testing.T) {
 	const ps = 65536

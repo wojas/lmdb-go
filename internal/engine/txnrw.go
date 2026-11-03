@@ -370,7 +370,7 @@ func (t *Txn) wroteMeta(meta format.Meta) {
 // closeVanishedHandles: after an abort, with this transaction's own pages
 // dropped so reads see the state it reverts to (whose main DB record is
 // main), close the handles that name a database which does not exist
-// there. C closes only DB_NEW handles (KNOWN_C_BUGS.md #19).
+// there. C closes only DB_NEW handles (KNOWN_C_BUGS.md row 19).
 func (t *Txn) closeVanishedHandles(main format.DB) {
 	r := &t.env.dbis
 	var candidates []int
@@ -713,7 +713,7 @@ func (t *Txn) updateMainFlags(flags uint32) {
 // and close its handle (for the main DB: empty it); otherwise empty it,
 // keeping the handle. All its pages go on the free list. Emptying the
 // main DB of an environment with named databases differs between the
-// formats as between C 0.9 (their pages leak, KNOWN_C_BUGS.md #21) and
+// formats as between C 0.9 (their pages leak, KNOWN_C_BUGS.md row 21) and
 // C 1.0 (they are deleted first; MDB_DBIS_BUSY while one is open).
 func (t *Txn) Drop(dbi DBI, del bool) error {
 	if t.w == nil {
@@ -749,7 +749,7 @@ func (t *Txn) Put(dbi DBI, key, data []byte, flags uint32) error {
 
 // PutReserve is mdb_put with MDB_RESERVE: make room for n bytes under key
 // and return them for the caller to fill in before the next change. Not
-// for DUPSORT databases (EINVAL, KNOWN_C_BUGS.md #16).
+// for DUPSORT databases (EINVAL, KNOWN_C_BUGS.md row 16).
 func (t *Txn) PutReserve(dbi DBI, key []byte, n int, flags uint32) ([]byte, error) {
 	if t.w == nil {
 		return nil, syscall.EACCES

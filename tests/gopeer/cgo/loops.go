@@ -484,7 +484,7 @@ func checkSnapshot(txn *lmdb.Txn, mdbi, ddbi lmdb.DBI, reverse bool, buf []byte)
 
 // rlMetaRace: a snapshot (txnid t, in *txn) showed fewer #commits (low)
 // than maxCommits, seen at txnid n. Tolerate this only as C LMDB's reader meta
-// race (rlmdb KNOWN_C_BUGS.md #31), with cpeer's rules: mdb_txn_renew0
+// race (rlmdb KNOWN_C_BUGS.md row 31), with cpeer's rules: mdb_txn_renew0
 // pins n in the reader slot, then copies the roots from meta page n & 1
 // without checking that it still holds n. A reader delayed there over two
 // commits copies the roots of a commit m = n + 2 (or n + 4, ...) whose
@@ -577,7 +577,7 @@ func cmdReaderLoop(o *opts) int {
 		if commits, rc = checkSnapshot(txn, mdbi, ddbi, reads%3 == 2, buf); rc != 0 {
 			break
 		}
-		// #commits never goes down, except in C's meta race (#31).
+		// #commits never goes down, except in C's meta race (row 31).
 		if commits < last {
 			if commits, rc = rlMetaRace(env, &txn, mdbi, ddbi, lastID, last, commits, buf); rc != 0 {
 				break

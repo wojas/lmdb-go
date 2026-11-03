@@ -1,7 +1,7 @@
 package engine
 
 // MDB_CURRENT replacing the only item of a DUPSORT key by one too big for
-// a node (rlmdb KNOWN_C_BUGS.md #38; found by FuzzWriteModel, FUZZING.md
+// a node (rlmdb KNOWN_C_BUGS.md row 38; found by FuzzWriteModel, FUZZING.md
 // "Findings"). C goes through mdb_node_add, which puts the item on
 // overflow pages: an F_BIGDATA node in a DUPSORT database (a new key's
 // first item of that size goes to a sub-DB instead). The next put of a
@@ -19,7 +19,7 @@ package engine
 // item and puts the new one, before anything else, as mdb_cursor_del +
 // mdb_cursor_put would (a sub-DB; one over the maximum size is
 // MDB_BAD_VALSIZE before anything changes), as for a sub-page item that
-// does not fit (#15); so does a put of an item the duplicate order calls
+// does not fit (row 15); so does a put of an item the duplicate order calls
 // equal, also in a MDB_MULTIPLE batch. A lone F_BIGDATA item that C wrote
 // is read through its overflow pages when the key gets a duplicate, and
 // the pages are freed. tests/engine compares the files with C's
@@ -112,7 +112,7 @@ func TestDupsortTooBigReplacements(t *testing.T) {
 	})
 }
 
-// TestDupsortCurrentReplacesThroughASubDB: rlmdb's reproducer of #38
+// TestDupsortCurrentReplacesThroughASubDB: rlmdb's reproducer of row 38
 // (format_v10.rs current_with_an_item_too_big_for_a_node), with 4 KiB
 // pages: MDB_CURRENT replaces the only item of a 103-byte key between two
 // other keys with one of 1978 bytes (the maximum), which does not fit a

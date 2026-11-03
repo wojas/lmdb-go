@@ -2,7 +2,7 @@ package engine
 
 // A meta page write that fails after its bytes reached the file, and
 // plain copies of a file holding such a meta page (rlmdb bf3a0c0,
-// KNOWN_C_BUGS.md #41).
+// KNOWN_C_BUGS.md row 41).
 
 import (
 	"bytes"

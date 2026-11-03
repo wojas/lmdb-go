@@ -187,7 +187,7 @@ func (t *Txn) endNested(how int) {
 			}
 		}
 		// Reopen the handles the child closed with Drop (KNOWN_C_BUGS.md
-		// #20).
+		// row 20).
 		for _, d := range w.dropped {
 			pe := p.dbe(d.i)
 			// Only a handle of the database the parent has a view of.

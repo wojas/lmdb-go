@@ -75,7 +75,7 @@ func (m *DataMap) unmap() {
 // which msync refuses unless it starts on an OS page (pages of LMDB 1.0
 // environments may be smaller, and so may those of a 0.9 environment made
 // on a system with smaller pages); here it is widened to whole OS pages
-// (rlmdb's DataMap::invalidate, KNOWN_C_BUGS.md #39) and clamped to the
+// (rlmdb's DataMap::invalidate, KNOWN_C_BUGS.md row 39) and clamped to the
 // map. Errors are ignored, as in C. The bytes of every page a snapshot can
 // reach do not change (they are read again as they were), so slices
 // handed out stay valid.

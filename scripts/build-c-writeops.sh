@@ -5,7 +5,7 @@
 # mdb_stat, each against C LMDB 0.9 and C LMDB 1.0 (names *10), as rlmdb's
 # interop/build.rs builds them, plus writeops10_ndebug (writeops against a
 # 1.0 library built with -DNDEBUG, for the one test on which C 1.0's
-# assertions abort: rlmdb KNOWN_C_BUGS.md #37). The C sources are the ones
+# assertions abort: rlmdb KNOWN_C_BUGS.md row 37). The C sources are the ones
 # rlmdb vendors: tests/lmdb-c/0.9 (LMDB 0.9.36) and tests/lmdb-c/1.0 (the
 # pinned mdb.RE/1.0 commit; see tests/lmdb-c/README.md there).
 #

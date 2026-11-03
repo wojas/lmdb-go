@@ -2,7 +2,7 @@ package engine
 
 // Plain copies of a data file with a meta page newer than the snapshot,
 // and of one after a failed meta page sync (rlmdb bf3a0c0,
-// KNOWN_C_BUGS.md #41; env_copy.rs
+// KNOWN_C_BUGS.md row 41; env_copy.rs
 // plain_copy_never_emits_a_meta_newer_than_its_snapshot and the lock-file
 // half of robust_io_errors.rs robust_failed_meta_sync_is_fatal), with a
 // real lock file, so that C processes see the txnid the Go process

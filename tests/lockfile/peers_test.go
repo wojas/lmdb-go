@@ -321,7 +321,7 @@ func readersInC(t *testing.T, peer, env string) map[int]string {
 // readersInMdbStat returns the pids of mdb_stat -r's reader table.
 func readersInMdbStat(t *testing.T, stat, env string) map[int]bool {
 	t.Helper()
-	out, _ := run(t, stat, "-r", env) // exits 1 on success (KNOWN_C_BUGS.md #2)
+	out, _ := run(t, stat, "-r", env) // exits 1 on success (KNOWN_C_BUGS.md row 2)
 	m := map[int]bool{}
 	for _, line := range strings.Split(out, "\n") {
 		f := strings.Fields(line)

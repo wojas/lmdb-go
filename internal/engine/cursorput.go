@@ -156,7 +156,7 @@ func (t *Txn) currentSingleOverflows(mc cref, ksize, dsize int) (bool, error) {
 // replaceCurrent is MDB_CURRENT as lmdb.h describes it for an item of
 // another size: delete the item under mc, then put data under key through
 // mc (which ends on it), as mdb_cursor_del + mdb_cursor_put would. For the
-// replacements C gets wrong in place (KNOWN_C_BUGS.md #15, #38, and
+// replacements C gets wrong in place (KNOWN_C_BUGS.md rows 15, 38, and
 // currentDupOutsideLeaf). Once the delete is done a failed insert
 // leaves the transaction half changed, so it fails. rlmdb's
 // RwTxn::replace_current.
@@ -336,7 +336,7 @@ func (t *Txn) putAt0(mc cref, key []byte, data putData, flags uint32) (int, erro
 	dupsort := uint32(db.Flags)&format.DupSort != 0
 	if !t.cur(mc).isSub() && uint32(db.Flags)&format.DupFixed != 0 && !dupsort {
 		// DUPFIXED needs DUPSORT (lmdb.h); C builds P_LEAF2 pages with a
-		// key size of 0 and corrupts them (KNOWN_C_BUGS.md #17).
+		// key size of 0 and corrupts them (KNOWN_C_BUGS.md row 17).
 		return 0, format.Incompatible
 	}
 	if dupsort && (data.size == 0 || data.size > maxKey) {
@@ -369,7 +369,7 @@ func (t *Txn) putAt0(mc cref, key []byte, data putData, flags uint32) (int, erro
 			// duplicate put reads as inline data. Delete and insert
 			// instead, before anything else, as mdb_cursor_del and
 			// mdb_cursor_put would: the item goes to a sub-DB, as a new
-			// key's first item of that size does (KNOWN_C_BUGS.md #38).
+			// key's first item of that size does (KNOWN_C_BUGS.md row 38).
 			return 0, t.replaceCurrent(mc, key, data)
 		}
 	}
@@ -460,7 +460,7 @@ func (t *Txn) putPosition(mc cref, key []byte, db *format.DB, flags uint32) (int
 			return 0, syscall.EINVAL
 		}
 		// C does not check that the cursor is on an item
-		// (KNOWN_C_BUGS.md #13).
+		// (KNOWN_C_BUGS.md row 13).
 		p, err := t.topPage(mc)
 		if err != nil {
 			return 0, err
@@ -541,7 +541,7 @@ func (t *Txn) putPosition(mc cref, key []byte, db *format.DB, flags uint32) (int
 
 // checkDupFixedSize: MDB_DUPFIXED items must all have one size. C copies
 // md_pad bytes regardless; a mismatch fails with MDB_BAD_VALSIZE before
-// anything changes (KNOWN_C_BUGS.md #12).
+// anything changes (KNOWN_C_BUGS.md row 12).
 func (t *Txn) checkDupFixedSize(mc cref, size int) error {
 	if t.cur(mc).isSub() {
 		return nil
@@ -660,7 +660,7 @@ func (t *Txn) putItem(mc cref, db *format.DB, key []byte, item nodeVal, flags *u
 					// comparator calls equal (a C-made F_BIGDATA item, or
 					// one of another size) that does not fit a node: C
 					// would leave it on overflow pages (KNOWN_C_BUGS.md
-					// #38). Delete and insert (putAt counts the item); an
+					// row 38). Delete and insert (putAt counts the item); an
 					// MDB_MULTIPLE batch goes on with its next item.
 					if err := t.replaceCurrent(mc, key, putBytes(item.bytes)); err != nil {
 						return false, nil, false, err
@@ -689,7 +689,7 @@ func (t *Txn) putItem(mc cref, db *format.DB, key []byte, item nodeVal, flags *u
 			}
 			if !reinsert {
 				// An item equal to the key's only one: C returns here even
-				// for MDB_MULTIPLE (KNOWN_C_BUGS.md #30: here the batch
+				// for MDB_MULTIPLE (KNOWN_C_BUGS.md row 30: here the batch
 				// goes on).
 				if *flags&format.Multiple != 0 {
 					return false, nil, false, nil
@@ -936,7 +936,7 @@ func (t *Txn) dupPrepare(mc cref, item nodeVal, flags *uint32, insertKey, bigNew
 		hasBig := false
 		if nflags&(format.FBigData|format.FDupData) == format.FBigData {
 			// A single item on overflow pages, which only C's MDB_CURRENT
-			// stores in a DUPSORT DB (KNOWN_C_BUGS.md #38). C reads the
+			// stores in a DUPSORT DB (KNOWN_C_BUGS.md row 38). C reads the
 			// overflow reference and what follows it in the page as the
 			// item; read the item.
 			if bigPgno, ok = n.OverflowPgno(); !ok {
@@ -1021,7 +1021,7 @@ func (t *Txn) dupPrepare(mc cref, item nodeVal, flags *uint32, insertKey, bigNew
 			if fits && !t.currentDupFits(mc, olddata, item.size) {
 				// C writes in place and, if the item does not fit, splits
 				// the sub-page as if it were a page; delete and insert
-				// instead (KNOWN_C_BUGS.md #15).
+				// instead (KNOWN_C_BUGS.md row 15).
 				return dupStep{kind: dupReplace}, nil
 			}
 			if !fits {
@@ -1208,7 +1208,7 @@ func (t *Txn) putSub0(mc cref, item nodeVal, flags uint32, dkey []byte, hasDkey 
 	var xflags uint32
 	if flags&(format.Current|format.AppendDup) == format.Current {
 		// The sub-cursor keeps its position; make sure its record is this
-		// key's (KNOWN_C_BUGS.md #14).
+		// key's (KNOWN_C_BUGS.md row 14).
 		if err := t.refreshXDB(mc); err != nil {
 			return nil, false, err
 		}

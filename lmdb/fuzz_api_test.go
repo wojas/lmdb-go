@@ -186,7 +186,8 @@ func (r *apiRun) step() {
 		}
 	case 12: // empty a database (deleting one would invalidate handles)
 		// Not the main DB of a 0.9 environment: that leaks the named
-		// databases' pages, as in C 0.9 (rlmdb KNOWN_C_BUGS.md #21, ported).
+		// databases' pages, as in C 0.9 (rlmdb KNOWN_C_BUGS.md row 21,
+		// ported).
 		if r.b()%4 == 0 && !(dbi == r.dbis[0] && txn.env.Format() == V09) {
 			r.closeCursors()
 			_ = txn.Drop(dbi, false)

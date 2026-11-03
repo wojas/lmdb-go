@@ -21,7 +21,7 @@
 // a damaged tree whose branches share pages or point back up fails it with
 // MDB_CORRUPTED as soon as it would hold more pages than the source (C
 // writes such pages once per path to them, without bound; rlmdb
-// KNOWN_C_BUGS.md #44).
+// KNOWN_C_BUGS.md row 44).
 // C fills two 1 MiB buffers alternately and a second thread writes them;
 // pages are copied without their unused middle part (mdb_page_copy), which
 // keeps whatever an earlier page left there. The writer here is a plain
@@ -193,7 +193,7 @@ func (e *Env) copyPlain(w io.Writer) error {
 // page is never newer in a sound environment: it takes a commit whose
 // meta page reached the file while its write or sync failed (C on macOS
 // leaves such a page after a failed F_FULLFSYNC, rlmdb KNOWN_C_BUGS.md
-// #41; C, rlmdb and this port when writing the old txnid back failed
+// row 41; C, rlmdb and this port when writing the old txnid back failed
 // too), or, without a lock file, a writer of another process that races
 // the copy.
 func (e *Env) snapshotMetas(metas []byte, txnid uint64) {
@@ -250,7 +250,7 @@ type copyWriter struct {
 	// shares or reaches again (a child pointing back up) would be written
 	// again and again; C's mdb_env_cwalk writes them all (exponentially
 	// many with sharing at every level), so passing this ends the copy
-	// with MDB_CORRUPTED (rlmdb KNOWN_C_BUGS.md #44, CopyWriter::limit).
+	// with MDB_CORRUPTED (rlmdb KNOWN_C_BUGS.md row 44, CopyWriter::limit).
 	limit uint64
 }
 

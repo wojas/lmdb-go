@@ -20,7 +20,7 @@ const supportsFormat10 = false
 
 // readerMetaRace tells whether a read transaction can copy the roots of a
 // newer commit than the txnid it pins, so that the next snapshot looks
-// older (rlmdb KNOWN_C_BUGS.md #31): C LMDB's can.
+// older (rlmdb KNOWN_C_BUGS.md row 31): C LMDB's can.
 const readerMetaRace = true
 
 // setFormat asks for the LMDB 0.9 (v10 false) or 1.0 format before Open.

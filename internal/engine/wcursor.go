@@ -1133,7 +1133,7 @@ func (t *Txn) xcursorInit1(mc cref) error {
 // refreshXDB re-reads the duplicates' record of the node at main cursor mc
 // into its sub-cursor (mx_db), keeping the sub-cursor's position. C trusts
 // the cached copy, which goes stale when another cursor changes the same
-// key's duplicates (KNOWN_C_BUGS.md #14).
+// key's duplicates (KNOWN_C_BUGS.md row 14).
 func (t *Txn) refreshXDB(mc cref) error {
 	parentFlags := uint32(t.dbOf(mc).Flags)
 	leaf, err := t.topPage(mc)
@@ -1156,7 +1156,7 @@ func (t *Txn) refreshXDB(mc cref) error {
 
 // shareXDB: after the duplicates of mc's current key changed, give every
 // other tracked cursor on the same key whose sub-cursor is set up the new
-// record (C leaves their mx_db stale, KNOWN_C_BUGS.md #14).
+// record (C leaves their mx_db stale, KNOWN_C_BUGS.md row 14).
 func (t *Txn) shareXDB(mc cref) {
 	w := t.cur(mc)
 	dbi, top, pg, ki := w.dbi, w.top, w.pg[w.top], w.ki[w.top]
@@ -1203,7 +1203,7 @@ func (t *Txn) xcursorInit2(m2, src int, newDupData bool) {
 		x.c.top = 0
 		// On the key's first item now. C ORs in C_INITIALIZED, so a C_DEL
 		// or C_EOF left from earlier makes the next MDB_NEXT return the
-		// item again (KNOWN_C_BUGS.md #29); only a main cursor that sits
+		// item again (KNOWN_C_BUGS.md row 29); only a main cursor that sits
 		// before the item (after a delete, C_DEL) must not skip it.
 		x.c.flags = cSub | cInitialized | (mainFlags & cDel)
 		x.c.ki[0] = 0

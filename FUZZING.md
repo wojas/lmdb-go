@@ -106,7 +106,7 @@ machine shared with other work):
 | `FuzzPageOps` | 8 min | no failure |
 | `FuzzLockFile` | 5 min | no failure |
 | `FuzzEnvFile` | 40 min | no failure |
-| `FuzzAPI` | 40 min | only the 0.9 main-DB drop of rlmdb `KNOWN_C_BUGS.md` #21 (ported; no longer generated) |
+| `FuzzAPI` | 40 min | only the 0.9 main-DB drop of rlmdb `KNOWN_C_BUGS.md` row 21 (ported; no longer generated) |
 | `FuzzWriteModel` | 61 min | the `MDB_CURRENT` bug below (in its first seconds), then none in 60 min |
 | `FuzzWriteDifferential` | 30 min | no failure (67 thousand rounds against C 0.9 and 1.0) |
 
@@ -123,7 +123,7 @@ machine shared with other work):
   and `Env.Audit` report both). Reachable in LMDB 1.0 files with any page
   size (a 103-byte key and a 1978-byte item with 4 KiB pages); not in 0.9
   files with 4 KiB or larger pages. Fixed as rlmdb decided
-  (`KNOWN_C_BUGS.md` #38): the writer never creates an `F_BIGDATA` node in
+  (`KNOWN_C_BUGS.md` row 38): the writer never creates an `F_BIGDATA` node in
   a DUPSORT database (such a replacement deletes the item and puts the new
   one as a fresh put would, into a sub-DB), and a lone `F_BIGDATA` item in
   a file C 1.0 wrote is read through its overflow pages, which are freed,
@@ -149,7 +149,7 @@ machine shared with other work):
   an item of another size over the old one's key and keeps that key's
   size.) Fixed: in exactly these cases the replacement deletes the item
   and puts the new one, as `lmdb.h` describes `MDB_CURRENT` with another
-  size (as for #15 and #38); every other replacement stays C's.
+  size (as for rows 15 and 38); every other replacement stays C's.
   `TestDupsortCurrentOutsideLeaf` and `tests/engine`
   (`TestDifferential*CurrentDupOutsideLeaf`: the files C's
   `mdb_cursor_del` + `mdb_cursor_put` leave, page for page, also with

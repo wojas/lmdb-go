@@ -87,7 +87,7 @@ func (c Comparator) Compare(a, b []byte) int {
 // bytes of b as they need (len(a) for cint, 4 or 8 for int/long), so when
 // a is longer than the stored key C reads what follows the key in the page
 // (usually the node's data); using the tail reproduces that (rlmdb
-// KNOWN_C_BUGS.md #7).
+// KNOWN_C_BUGS.md row 7).
 func (c Comparator) CompareInPage(a, b, tail []byte) int {
 	switch c.Kind {
 	case CmpLong, CmpInt, CmpClong, CmpCint:

@@ -452,7 +452,7 @@ func searchPage(mp format.Page, cmp format.Comparator, ksize int, key []byte) (i
 
 // newXCursor sets up x as the sub-cursor for entry (mdb_xcursor_init0);
 // false if the database is not MDB_DUPSORT. Until xcursorInit1 runs the
-// sub-tree is empty (C leaves mx_db uninitialised, KNOWN_C_BUGS.md #6).
+// sub-tree is empty (C leaves mx_db uninitialised, KNOWN_C_BUGS.md row 6).
 func newXCursor(x *rcursor, e *txnDB, l *format.Layout) bool {
 	if uint32(e.db.Flags)&format.DupSort == 0 {
 		return false
@@ -614,7 +614,7 @@ func cursorLast(t *Txn, mc, mx *rcursor) ([]byte, []byte, error) {
 // MDB_APPEND, where the tree may be empty: a new key whose first duplicate
 // does not fit a node goes straight to a new sub-DB whose root leaf has no
 // items yet. C sets mc_ki to NUMKEYS - 1 (0xffff) there and compares with a
-// node read out of bounds (KNOWN_C_BUGS.md #32); here an empty leaf yields
+// node read out of bounds (KNOWN_C_BUGS.md row 32); here an empty leaf yields
 // ok false with the cursor before its first slot.
 func cursorLastForAppend(t *Txn, mc, mx *rcursor) (key, data []byte, ok bool, err error) {
 	resetSub(mx)
@@ -708,7 +708,7 @@ func cursorNextAny(t *Txn, mc, mx *rcursor, op format.CursorOp) ([]byte, []byte,
 		// C returns MDB_NOTFOUND at once for a cursor on the last item of
 		// its page. In a write transaction the key may have got more
 		// duplicates since, or the tree a page to the right, so look
-		// (KNOWN_C_BUGS.md #28). Only a cursor past its page's end stops.
+		// (KNOWN_C_BUGS.md row 28). Only a cursor past its page's end stops.
 		if mc.kiTop() >= mp.NumKeys() {
 			return nil, nil, format.NotFound
 		}
@@ -717,7 +717,7 @@ func cursorNextAny(t *Txn, mc, mx *rcursor, op format.CursorOp) ([]byte, []byte,
 	if uint32(mc.db.Flags)&format.DupSort != 0 {
 		// C reads NODEPTR(mp, ki) here without checking ki < NUMKEYS; a
 		// position past the end counts as an item without duplicates
-		// (KNOWN_C_BUGS.md #4).
+		// (KNOWN_C_BUGS.md row 4).
 		leaf, ok := mp.Node(mc.kiTop())
 		if ok && leaf.IsDupData() {
 			if op == format.Next || op == format.NextDup {

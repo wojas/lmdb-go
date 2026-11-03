@@ -1,9 +1,9 @@
 package engine
 
 // Hand-built damaged trees (rlmdb tests/handbuilt.rs): a root split on a
-// tree as deep as the cursor stack (KNOWN_C_BUGS.md #36,
+// tree as deep as the cursor stack (KNOWN_C_BUGS.md row 36,
 // root_split_beyond_the_cursor_stack_fails_the_txn), and compacting
-// copies of trees whose pages are shared or cyclic (#44).
+// copies of trees whose pages are shared or cyclic (row 44).
 
 import (
 	"bytes"
@@ -157,7 +157,7 @@ func TestRootSplitBeyondCursorStack(t *testing.T) {
 // TestCompactingCopyOfSharedPagesStops: trees whose branch pages share
 // their children or point back up (rlmdb tests/handbuilt.rs
 // compacting_copy_of_shared_pages_stops_at_the_source_size,
-// KNOWN_C_BUGS.md #44). A compacting copy writes a page once per path to
+// KNOWN_C_BUGS.md row 44). A compacting copy writes a page once per path to
 // it, which C's mdb_env_cwalk does without bound (4^12 pages for a file of
 // 15 here). The copy stops with MDB_CORRUPTED as soon as it would hold
 // more pages than the file; a plain copy is unaffected.

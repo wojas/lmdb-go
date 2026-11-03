@@ -71,7 +71,7 @@ C's, gopeer does this:
   map). With `RawRead` true, lmdb-go v1's `Cursor.Get` panics (nil
   pointer) after `MDB_FIRST_DUP` and `MDB_LAST_DUP`, for which C leaves
   the key unset.
-* **Reader meta race** (rlmdb `KNOWN_C_BUGS.md` #31): on `cgo`,
+* **Reader meta race** (rlmdb `KNOWN_C_BUGS.md` row 31): on `cgo`,
   `reader-loop` tolerates a step back of `#commits` with the signature of
   C's race and counts it in `meta_races`, as `cpeer` does; on `port`, as
   on rlmdb, any step back fails.

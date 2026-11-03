@@ -538,7 +538,7 @@ func TestWriterOwnerDied(t *testing.T) {
 // recoverable, rather than letting writers work on unrepaired state. A
 // Windows mutex or a SysV semaphore is released normally, as C releases
 // it, so the next writer is not told about the dead owner (rlmdb
-// KNOWN_C_BUGS.md #40).
+// KNOWN_C_BUGS.md row 40).
 func TestWriterRepairFailure(t *testing.T) {
 	needLocks(t)
 	for _, l := range ownerDeathLayouts(t) {
