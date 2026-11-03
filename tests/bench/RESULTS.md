@@ -9,12 +9,33 @@ the medians: below 1 means the port is faster.** Times are ns per
 operation (median of all samples; `lmdb-bench` prints the minimum in
 parentheses), allocations are Go heap allocations per operation.
 
-The current numbers come first: the first measurements on Linux x86-64
-hardware and what changed for them (2026-11-03), then the new reference
+The current numbers come first: an experiment that was not kept (page
+references in the write cursors, 2026-11-03), the first measurements on
+Linux x86-64 hardware and what changed for them (2026-11-03), then the new reference
 on macOS, Linux arm64 and OpenBSD (2026-11-02, preceded by why read
 transactions on Linux got slower with Go 1.27), then the final validation
 (2026-11-01) and what stage 3 (benchmarks and performance, `PLAN.md`) and
 stage 4 measured and changed, all against C 0.9.35.
+
+## Not kept: page references in the write cursors (2026-11-03)
+
+The idea: write cursors hold page numbers and look them up again, where
+C's hold page pointers, so let each level of the stack also hold the
+page's bytes, valid while a generation shared by the transaction's
+cursors is unchanged, and dropped when the transaction ends. It was built
+(+333 / -94 lines of engine code) and passed the differential tests
+against C, the interop matrix and `-race`. On Linux x86-64 (Intel Xeon
+W-2150B, interleaved A/B against the same build without it, port only)
+it gained 1-2% on random puts, overwrites and deletes, nothing on small
+transactions, and cost 2% on sequential appends; garbage collection was
+unchanged. The cursors' lookups were already cheap: the slot hints reach
+a dirty page about as fast as a generation check, every put starts from
+a fresh cursor (as in C), and all page lookups together are about 11% of
+a random put's CPU and 5% of a small transaction's. What remains of the
+gap to C on x86-64 is spread over every step (no function outside the
+system calls takes more than 2%), not in one structure. The stress test
+written for it (`TestCursorStress`, run with `LMDB_TEST_STRESS=1`) was
+kept.
 
 ## Linux x86-64 on real hardware (2026-11-03)
 
