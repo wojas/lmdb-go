@@ -58,9 +58,9 @@ commands in `cmd/` and `exp/cmd/`. Read the API documentation with
   from, as between C processes (by the same design with LMDB 1.0 lock
   files on NetBSD and DragonFly).
 * **Platforms.** Linux (glibc and musl; arm64 and x86-64) and macOS.
-  Windows x86-64 (after rlmdb's Windows port; tested on Windows 10,
-  against C LMDB built with MinGW-w64; arm64 builds by the same rules,
-  untested). FreeBSD,
+  Windows x86-64 (after rlmdb's Windows port; tested on Windows 10, also
+  with `-race`, against C LMDB built with MinGW-w64; arm64 builds by the
+  same rules, untested). FreeBSD,
   OpenBSD, NetBSD and DragonFly (64-bit) are implemented after rlmdb's BSD
   support, with C's lock primitives and lock-file layouts there: they
   build, also with cgo against each BSD's headers
@@ -143,8 +143,8 @@ API run against this implementation. A differential test applies the same
 operations to this engine and to C LMDB 0.9 and 1.0 in lock step and requires
 byte-identical data files. Cross-process tests run C, rlmdb and Go processes
 on one environment through rlmdb's interop harness, with a Go peer
-(`tests/gopeer`), on macOS and on Linux with glibc and musl. The C programs
-come from rlmdb's interop build; the comparisons with lmdb-go v1 live in the
+(`tests/gopeer`), on macOS, on Linux with glibc and musl, and on Windows
+x86-64. The C programs come from rlmdb's interop build; the comparisons with lmdb-go v1 live in the
 nested module `tests/`. See [tests/gopeer/README.md](tests/gopeer/README.md),
 [internal/engine/PORTING.md](internal/engine/PORTING.md) and
 [tests/bench/README.md](tests/bench/README.md).

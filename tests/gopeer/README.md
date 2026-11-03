@@ -145,8 +145,8 @@ environments) and `external_peer` (5, among them `four_writers` and
 at once). That covers
 writers of all implementations excluding each other, readers seeing each
 other in the reader table, MVCC, killed writers (robust mutex recovery on
-Linux), copies, and C's page audit and page-by-page comparison of what Go
-wrote. `delete` needs no workaround.
+Linux, abandoned mutexes on Windows), copies, and C's page audit and
+page-by-page comparison of what Go wrote. `delete` needs no workaround.
 
 | | `external_pairs` | `external_pairs10` | `external_peer` |
 |---|---:|---:|---:|
@@ -154,6 +154,7 @@ wrote. `delete` needs no workaround.
 | Linux arm64, glibc (Debian bookworm) | 165 / 165 | 231 / 231 | 5 / 5 |
 | Linux arm64, musl (Alpine) | 165 / 165 | 231 / 231 | 5 / 5 |
 | Linux x86-64, glibc (Debian bookworm, under Rosetta) | 165 / 165 | 231 / 231 | 5 / 5 |
+| Windows 10 (x86-64, MinGW-w64) | 165 / 165 | 231 / 231 | 5 / 5 |
 
 The macOS and Linux arm64 rows are from 2026-11-02, with rlmdb's main at
 `0f902b4`; the x86-64 row is from the final validation (2026-11-01), with
@@ -168,11 +169,14 @@ stopped twice after 93 and 166 tests, in different scenarios, with every
 thread of the test binary waiting in the kernel on a priority-inheritance
 futex (which neither C LMDB, rlmdb nor the harness uses) and no peer
 process running, which points at the emulator rather than at a peer.
+The Windows row is from 2026-11-03, with rlmdb's main at `7c60f17` (its
+GNU toolchain; gopeer built with Go 1.27 and MinGW-w64 gcc); a gopeer
+built with `-race` passes the same, without a race report.
 
 ### Results with `--impl cgo` (the reference)
 
-Every test passes: gopeer knows the same commands as `cpeer`, `gen` is
-byte-identical, and `verify`, `dump --all`, `stat` and `check-freelist`
+Every test passes (on Windows all but three, below): gopeer knows the
+same commands as `cpeer`, `gen` is byte-identical, and `verify`, `dump --all`, `stat` and `check-freelist`
 print exactly what `cpeer` prints on an environment C wrote; writer loops
 of C, Rust, C on Rust and Go at once keep `#commits` exact. That covers
 locking, the reader table, MVCC, killed writers (robust mutex recovery on
@@ -185,6 +189,15 @@ above, so the harness reports it as `SKIPPED partly`.
 | macOS 15 (arm64) | 165 / 165 | 5 / 5 |
 | Linux arm64, glibc (Debian bookworm) | 165 / 165 | 5 / 5 |
 | Linux arm64, musl (Alpine) | 165 / 165 | 5 / 5 |
+| Windows 10 (x86-64, MinGW-w64) | 162 / 165 | 5 / 5 |
+
+On Windows (2026-11-03, rlmdb's main at `7c60f17`)
+`stale_reader_cleared_by_reader` fails in the three pairs in which the
+cgo peer is the reader: lmdb-go v1's C counts a dead reader as alive
+while a handle to its process is open, and the harness holds one until
+the check (rlmdb `KNOWN_C_BUGS.md` row 42). The harness expects that only
+of its own C peers and C's `mdb_stat`. This is C's behaviour, expected,
+not a port bug: with `--impl port` the slot is cleared.
 
 The 1.0 pairs (`external_pairs10`) and `four_writers10` are skipped: the
 cgo peer does not open LMDB 1.0 environments. They become meaningful with
