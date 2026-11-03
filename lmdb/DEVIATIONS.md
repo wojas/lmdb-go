@@ -288,6 +288,20 @@ differently from C is in `internal/engine/PORTING.md` and in rlmdb's
   and the other key still decides `BadValSize`, as in C. For a caller that
   passes the cursor's key nothing changes; for another one the file is
   the one C writes for the cursor's key.
+* **Moves after a failed search** (a C bug, not ported). A `Cursor.Get`
+  with `Set`, `SetKey` or `GetBoth` that does not find its key leaves the
+  cursor on the next key. If that key has duplicates, the next `Next`,
+  `Prev`, `NextDup`, `PrevDup` or `NextMultiple` enters them here with the
+  key's own duplicates: every one once, in order, and `Count` right. C
+  enters them with whatever the cursor's sub-cursor held before the
+  search: a record from before other cursors added duplicates to the key
+  (the count is the old one; after the duplicates' own tree split the walk
+  sees only part of them; where they had moved, C crashes), another key's
+  duplicates, which C returns under this key, or none (a new cursor: C
+  asserts); after a delete under the cursor C returns the first duplicate
+  twice (rlmdb `KNOWN_C_BUGS.md` row 59). Where C's state is right the
+  results are C's, and so are `Count`, `GetCurrent`, `FirstDup` and
+  `LastDup` right after the failed search (`EINVAL`, as in C).
 * **Windows** (64-bit: x86-64, and arm64 by the same rules) follows
   rlmdb's Windows port and C LMDB's `_WIN32` paths, without cgo
   (`golang.org/x/sys/windows`): `SharedLockingAvailable` is true with and
