@@ -33,6 +33,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -104,20 +105,23 @@ func cloneSet(s map[string]struct{}) map[string]struct{} {
 	return c
 }
 
-// fzPos is where the model has a cursor: on item (k, d), or unknown.
+// fzPos is where the model has a cursor: on item (k, d), right before a
+// key after a failed search (missed), or unknown.
 type fzPos struct {
 	k, d []byte
 	ok   bool
-	// lost: unknown since a search failed (MDB_SET, MDB_GET_BOTH, ...) in
-	// a DUPSORT database. The search reset the sub-cursor but not its
-	// cached duplicates record (mx_db), which is not kept up to date while
-	// the sub-cursor is reset; a later relative move onto a key with
-	// duplicates starts from that record, which may be another key's or
-	// outdated by other cursors' writes: wrong counts, skipped duplicates.
-	// C 0.9 and 1.0 and rlmdb do the same (rlmdb KNOWN_C_BUGS.md rows 6
-	// and 14). Where such a move lands is not checked or tracked; a
-	// successful search or a write through the cursor ends it.
-	lost bool
+	// missed: left by an exact search for a missing key (MDB_SET,
+	// MDB_GET_BOTH of a missing key) or a MDB_SET_RANGE past the last key,
+	// right before next, the first key after the one searched (nil: there
+	// is none): on the node of next (onNode; dups: a node with duplicates,
+	// whose sub-cursor the search reset) or past the end of the leaf before
+	// it. Kept while items are only added to keys outside the gap before
+	// next, which leaves the cursor there (KNOWN_C_BUGS.md row 59: also
+	// when they are duplicates of next); every move from there is checked.
+	// rlmdb tests/model.rs Pos::Missed.
+	missed       bool
+	next         []byte
+	onNode, dups bool
 }
 
 // fzLevel is a transaction of the nesting stack: its model at begin (for
@@ -420,8 +424,10 @@ func (r *fzRun) key(i int, b byte) []byte {
 }
 
 // keyFor is an existing key now and then, else a generated one.
-func (r *fzRun) keyFor(i int) []byte {
-	b := r.b()
+func (r *fzRun) keyFor(i int) []byte { return r.keyFrom(i, r.b()) }
+
+// keyFrom is keyFor of the byte b.
+func (r *fzRun) keyFrom(i int, b byte) []byte {
 	if b >= 176 {
 		if ks := r.keys(i); len(ks) > 0 {
 			return ks[int(b)%len(ks)]
@@ -653,7 +659,14 @@ func (r *fzRun) db() int { return int(r.b()) % len(fzCfgs) }
 
 func (r *fzRun) opPut(viaCursor bool) {
 	i := r.db()
-	k := r.keyFor(i)
+	// Now and then, in a DUPSORT database, the key the tracked cursor was
+	// left before by a failed search: duplicates added there must not lose
+	// it (KNOWN_C_BUGS.md row 59).
+	b := r.b()
+	k := r.keyFrom(i, b)
+	if p := r.top().pos[i]; b >= 160 && b < 176 && p.missed && p.next != nil && fzCfgs[i].dupsort() {
+		k = p.next
+	}
 	d := r.val(i, r.b(), r.b())
 	sel := r.b()
 	flags, k, d, ok := r.putFlags(i, k, d, sel)
@@ -683,7 +696,7 @@ func (r *fzRun) opPut(viaCursor bool) {
 			}
 			copy(buf, d)
 		}
-		r.put(i, k, d)
+		r.putTracked(i, k, d)
 		if c != nil {
 			r.top().pos[i] = fzPos{k: k, d: d, ok: true}
 			kk, dd, err := c.Get(nil, nil, format.GetCurrent)
@@ -718,6 +731,10 @@ func (r *fzRun) opDel() {
 	switch {
 	case found && err == nil:
 		r.del(i, k, d)
+		if r.top().pos[i].missed {
+			// Rebalancing may move it anywhere around the gap.
+			r.top().pos[i] = fzPos{}
+		}
 	case !found && isCode(err, format.NotFound):
 	default:
 		r.fail("del: %v, model found %v", err, found)
@@ -747,7 +764,10 @@ func (r *fzRun) position(i int, k, d []byte) bool {
 	}
 	r.expect(fmt.Sprintf("position db %d on %x:%x", i, k, d), gk, gd, err, want)
 	if want == nil {
-		lv.pos[i] = fzPos{lost: fzCfgs[i].dupsort()}
+		lv.pos[i] = fzPos{}
+		if i != 0 && !r.has(i, k) && len(r.model[i].kv) > 0 {
+			lv.pos[i] = r.missedPos(i, c, k)
+		}
 		return false
 	}
 	lv.pos[i] = fzPos{k: want.k, d: want.d, ok: true}
@@ -965,7 +985,7 @@ func (r *fzRun) opBulk() {
 		r.fullCheck(err)
 		switch {
 		case err == nil && ok:
-			r.put(i, k, d)
+			r.putTracked(i, k, d)
 		case !ok && isCode(err, format.KeyExist):
 		default:
 			r.fail("bulk put %d %s %s flags %#x: %v (model ok %v)", j, k, d, flags, err, ok)
@@ -1029,6 +1049,12 @@ func (r *fzRun) opMove() {
 	p := lv.pos[i]
 	items := r.flat(i)
 	dupsort := fzCfgs[i].dupsort()
+	if p.missed {
+		if op, ok := missedOp(sel, dupsort); ok {
+			r.moveFromMissed(i, op, sel&128 != 0)
+			return
+		}
+	}
 	var op format.CursorOp
 	var k, d []byte
 	var want *pair
@@ -1136,16 +1162,243 @@ func (r *fzRun) opMove() {
 	if check {
 		r.expect(fmt.Sprintf("cursor db %d op %d from %v", i, op, p), gk, gd, err, want)
 	}
-	search := op == format.Set || op == format.SetRange || op == format.GetBoth || op == format.GetBothRange
 	switch {
-	case p.lost && !search && op != format.First && op != format.Last:
-		lv.pos[i] = fzPos{lost: true}
 	case err == nil && (!check || want != nil) && r.contains(i, gk, gd):
 		lv.pos[i] = fzPos{k: bytes.Clone(gk), d: bytes.Clone(gd), ok: true}
 	case err == nil && !dupsort && r.has(i, gk):
 		lv.pos[i] = fzPos{k: bytes.Clone(gk), d: bytes.Clone(gd), ok: true}
 	default:
-		lv.pos[i] = fzPos{lost: search && err != nil && dupsort}
+		lv.pos[i] = fzPos{}
+		// An exact search for a missing key, or MDB_SET_RANGE past the
+		// last one, leaves the cursor before the next key (rlmdb model.rs).
+		exact := (op == format.Set || op == format.GetBoth) && !r.has(i, k)
+		if isCode(err, format.NotFound) && (exact || op == format.SetRange) && len(r.model[i].kv) > 0 {
+			lv.pos[i] = r.missedPos(i, c, k)
+			r.afterMiss(i, sel)
+		}
+	}
+}
+
+// missedPos is where the tracked cursor c of database i is after an exact
+// search for the missing key probe (or a MDB_SET_RANGE past the last key)
+// in the non-empty database, told apart with MDB_GET_CURRENT: on the node
+// of the next key it returns its item, or EINVAL for a node with
+// duplicates (the search reset its sub-cursor); past the end of a leaf
+// MDB_NOTFOUND. rlmdb tests/model.rs missed_pos.
+func (r *fzRun) missedPos(i int, c *Cursor, probe []byte) fzPos {
+	items := r.flat(i)
+	var next []byte
+	if w := at(items, r.find(items, i, probe, nil)); w != nil {
+		next = w.k
+	}
+	gk, gd, err := c.Get(nil, nil, format.GetCurrent)
+	r.note("  cursor %d after the failed search: GetCurrent -> %s %s %v", i, gk, gd, err)
+	p := fzPos{missed: true, next: next}
+	switch ds := r.dups(i, next); {
+	case isCode(err, format.NotFound):
+	case err == nil && len(ds) == 1 && bytes.Equal(gk, next) && bytes.Equal(gd, ds[0]):
+		p.onNode = true
+	case err == syscall.EINVAL && fzCfgs[i].dupsort() && next != nil:
+		p.onNode, p.dups = true, true
+	default:
+		r.fail("cursor %d after a failed search for %s: GetCurrent gives %s %s (%v), the next key is %s", i, probe, gk, gd, err, next)
+	}
+	return p
+}
+
+// afterMiss: half of the failed searches (sel bit 5) are followed at once
+// by a move, half of those (sel bit 6) after a put of a new duplicate of
+// the next key through mdb_put (KNOWN_C_BUGS.md row 59). The move and the
+// item come from the operation's number, as the bits that pick an
+// operation are taken.
+func (r *fzRun) afterMiss(i int, sel byte) {
+	if sel&32 == 0 {
+		return
+	}
+	dupsort := fzCfgs[i].dupsort()
+	if p := r.top().pos[i]; dupsort && sel&64 != 0 && p.next != nil {
+		d := r.val(i, sel, byte(r.nops))
+		r.note("put db %d %s %s (a duplicate of the next key)", i, p.next, d)
+		err := r.txn().Put(r.dbi(i), p.next, d, 0)
+		r.fullCheck(err)
+		if err != nil {
+			r.fail("put of a duplicate of the next key: %v", err)
+		}
+		r.putTracked(i, p.next, d)
+		r.afterWrite(i, nil)
+	}
+	if !r.top().pos[i].missed {
+		return
+	}
+	ops := []format.CursorOp{format.Next, format.Next, format.Prev, format.Prev,
+		format.NextNoDup, format.PrevNoDup, format.GetCurrent}
+	if dupsort {
+		ops = append(ops, format.FirstDup, format.LastDup, format.NextDup, format.NextDup,
+			format.PrevDup, format.PrevDup)
+	}
+	r.moveFromMissed(i, ops[(r.nops+int(sel>>7))%len(ops)], r.nops&1 != 0)
+}
+
+// missedOp is the move of opMove's sel from a missed position, false for
+// the operations that position the cursor afresh (searches, MDB_FIRST,
+// MDB_LAST) and the ones that need a position on an item.
+func missedOp(sel byte, dupsort bool) (format.CursorOp, bool) {
+	switch sel % 16 {
+	case 2, 3:
+		return format.Next, true
+	case 4, 5:
+		return format.Prev, true
+	case 8:
+		return format.NextNoDup, true
+	case 9:
+		return format.PrevNoDup, true
+	case 10:
+		return format.NextDup, dupsort
+	case 11:
+		return format.PrevDup, dupsort
+	case 12:
+		switch {
+		case !dupsort || sel&32 != 0:
+			return format.GetCurrent, true
+		case sel&16 != 0:
+			return format.LastDup, true
+		}
+		return format.FirstDup, true
+	case 14:
+		return 0, true // mdb_cursor_count
+	}
+	return 0, false
+}
+
+// moveFromMissed moves the tracked cursor of database i from a missed
+// position with op (0: mdb_cursor_count) and checks the result as C moves
+// with a right record: entering the duplicates of the next key from its
+// node, or moving on from the end of the leaf before it (KNOWN_C_BUGS.md
+// rows 4, 5 and 59). With countAfter, the count of the duplicates a move
+// entered is checked too. rlmdb tests/model.rs op_cursor_move from
+// Pos::Missed.
+func (r *fzRun) moveFromMissed(i int, op format.CursorOp, countAfter bool) {
+	lv := r.top()
+	p := lv.pos[i]
+	c := lv.curs[i]
+	dupsort := fzCfgs[i].dupsort()
+	if op == 0 {
+		if !dupsort {
+			return
+		}
+		n, err := c.Count()
+		r.note("cursor %d count from %v -> %d %v", i, p, n, err)
+		switch {
+		case !p.onNode:
+			// Past the end of a leaf: MDB_NOTFOUND (KNOWN_C_BUGS.md row 5).
+			if !isCode(err, format.NotFound) {
+				r.fail("count past the end of a leaf: %d, %v", n, err)
+			}
+		case p.dups:
+			// C's EINVAL for the reset sub-cursor.
+			if err != syscall.EINVAL {
+				r.fail("count after a failed search on a node with duplicates: %d, %v", n, err)
+			}
+		case err != nil || n != 1:
+			r.fail("count after a failed search on a single item: %d, %v", n, err)
+		}
+		return
+	}
+	var first, last, before, after *pair
+	items := r.flat(i)
+	if p.next != nil {
+		j := r.find(items, i, p.next, nil)
+		ds := r.dups(i, p.next)
+		first, last = at(items, j), at(items, j+len(ds)-1)
+		before, after = at(items, j-1), at(items, j+len(ds))
+	} else {
+		before = at(items, len(items)-1)
+	}
+	var want *pair
+	einval := false
+	switch {
+	case op == format.GetCurrent || op == format.FirstDup || op == format.LastDup:
+		switch {
+		case !p.onNode:
+		case p.dups:
+			einval = true
+		default:
+			want = first
+		}
+	case (op == format.Next || op == format.NextDup) && p.onNode && p.dups:
+		want = first
+	case (op == format.Prev || op == format.PrevDup) && p.onNode && p.dups:
+		want = last
+	case (op == format.Next || op == format.NextNoDup) && !p.onNode:
+		want = first
+	case op == format.Next || op == format.NextNoDup:
+		want = after
+	case op == format.Prev || op == format.PrevNoDup:
+		want = before
+	case op == format.PrevDup && !p.onNode:
+		want = before
+	}
+	gk, gd, err := c.Get(nil, nil, op)
+	r.note("cursor %d op %d from the failed search (next %s, on node %v, dups %v) -> %s %s %v", i, op, p.next, p.onNode, p.dups, gk, gd, err)
+	what := fmt.Sprintf("cursor db %d op %d after a failed search (next %x, on node %v, dups %v)", i, op, p.next, p.onNode, p.dups)
+	if einval {
+		if err != syscall.EINVAL {
+			r.fail("%s: got %s:%s (%v), want EINVAL", what, gk, gd, err)
+		}
+		return // the cursor stays where it is
+	}
+	r.expect(what, gk, gd, err, want)
+	if err != nil {
+		lv.pos[i] = fzPos{}
+		return
+	}
+	// Where a move from a failed search entered duplicates, their count
+	// (KNOWN_C_BUGS.md row 59).
+	if dupsort && countAfter {
+		n, err := c.Count()
+		if want := uint64(len(r.dups(i, gk))); err != nil || n != want {
+			r.fail("%s: count %d (%v), model %d", what, n, err, want)
+		}
+	}
+	lv.pos[i] = fzPos{k: bytes.Clone(gk), d: bytes.Clone(gd), ok: true}
+}
+
+// putTracked records a put of (k, d) to database i that did not go
+// through its tracked cursor (rlmdb model.rs model_put): a cursor left
+// before the next key by a failed search stays there, also when the put
+// adds a duplicate to that key (KNOWN_C_BUGS.md row 59), unless a new key
+// lands in the gap before it; on the node of the next key's single item,
+// which becomes a duplicate, the fixup (mdb_xcursor_init2 with
+// new_dupdata) puts the sub-cursor on that item, as on a cursor on the
+// item.
+func (r *fzRun) putTracked(i int, k, d []byte) {
+	old := r.dups(i, k)
+	r.put(i, k, d)
+	lv := r.top()
+	p := &lv.pos[i]
+	if !p.missed {
+		return
+	}
+	isNext := p.next != nil && r.kcmp(i).Compare(p.next, k) == 0
+	grew := len(old) > 0 && len(r.dups(i, k)) > len(old)
+	switch {
+	case len(old) == 0:
+		// A new key in the gap before next: it may land where the cursor
+		// is.
+		items := r.flat(i)
+		var after []byte
+		j := r.find(items, i, k, nil)
+		for j < len(items) && bytes.Equal(items[j].k, k) {
+			j++
+		}
+		if w := at(items, j); w != nil {
+			after = w.k
+		}
+		if bytes.Equal(after, p.next) {
+			*p = fzPos{}
+		}
+	case isNext && grew && p.onNode && !p.dups:
+		*p = fzPos{k: k, d: old[0], ok: true}
 	}
 }
 
