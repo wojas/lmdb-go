@@ -105,17 +105,17 @@ differently from C is in `internal/engine/PORTING.md` and in rlmdb's
   0, as read transactions of writable handles do. C's and v1's read-only
   handles read the newest meta page while it is 0, which can be a first
   commit in flight, one that failed, or one whose writer died before it
-  was published (rlmdb `KNOWN_C_BUGS.md` #45). Such a reader sees an empty
+  was published (rlmdb `KNOWN_C_BUGS.md` row 45). Such a reader sees an empty
   environment there, txnid 0.
 * **0.9 pages below 2 KiB.** A 0.9 data file of pages below 2 KiB is
-  refused with `MDB_INVALID`, read-write and read-only (rlmdb #48). C and
+  refused with `MDB_INVALID`, read-write and read-only (rlmdb row 48). C and
   v1 open it (no 0.9 writer makes one; 511-byte keys and `DupFixed` items
   do not fit its pages, and C writes past them). LMDB 1.0 files keep their
   range from 256 bytes.
 * **Damaged files, more of them refused.** A transaction on a snapshot
   whose last page is below the meta pages, or the largest page number,
-  fails to begin with `MDB_CORRUPTED` (rlmdb #49; a C writer overwrites a
-  meta page there). Over branch pages that share children (rlmdb #50): a
+  fails to begin with `MDB_CORRUPTED` (rlmdb row 49; a C writer overwrites a
+  meta page there). Over branch pages that share children (rlmdb row 50): a
   cursor walk fails with `MDB_CORRUPTED` once it has stepped onto more
   leaves in one direction than the snapshot has pages plus the pages its
   write transaction allocated; walks of the free DB (page allocation,
@@ -128,7 +128,7 @@ differently from C is in `internal/engine/PORTING.md` and in rlmdb's
   environment removes its semaphores (macOS; OpenBSD, NetBSD and DragonFly),
   an `Open` that finds them gone starts again with the exclusive probe, up
   to 100 times, then fails with `ENOENT`. C and v1 fail with `ENOENT` at
-  once (rlmdb #47).
+  once (rlmdb row 47).
 * **Ignored flags.** `FixedMap`, `WriteMap`, `MapAsync` and `NoMemInit` are
   accepted and ignored (`Flags` reports them), as in rlmdb: the map is
   read-only and never at a fixed address.
@@ -285,7 +285,7 @@ differently from C is in `internal/engine/PORTING.md` and in rlmdb's
   at its key that is not a set of two it may change (another program's
   set whose `ftok` key collides: `EEXIST` for a larger one, the
   `semctl` error for another user's), where C 1.0 and rlmdb before
-  `2fb635e` reset it (rlmdb `KNOWN_C_BUGS.md` #46). `MDB_FDATASYNC` is
+  `2fb635e` reset it (rlmdb `KNOWN_C_BUGS.md` row 46). `MDB_FDATASYNC` is
   `fsync`. On OpenBSD, which has
   no unified buffer cache, every write to the data file is followed by
   `msync(MS_INVALIDATE)` of the map, widened to whole OS pages where C's

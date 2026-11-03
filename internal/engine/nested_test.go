@@ -403,7 +403,7 @@ func TestFailedDescendantFailsTheCommit(t *testing.T) {
 
 // TestComparatorsFollowAReopenedHandle (rlmdb 54a8645): the abort of a nested
 // transaction that dropped a database reopens its handle (KNOWN_C_BUGS.md
-// #20) with its comparators, which belong to the handle: Comparators (what
+// row 20) with its comparators, which belong to the handle: Comparators (what
 // mdb_cmp and mdb_dcmp call) and the tree's order stay the custom ones.
 func TestComparatorsFollowAReopenedHandle(t *testing.T) {
 	reverse := func(a, b []byte) int { return bytes.Compare(b, a) }

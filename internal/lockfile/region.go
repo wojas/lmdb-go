@@ -91,7 +91,7 @@ type Region struct {
 // (semaphores, Objects.removedByLastUser), it does so holding byte 0
 // exclusively, and an opener that failed its exclusive probe while that
 // process still held the environment open gets its shared lock only after
-// they are gone. C fails the open then (rlmdb KNOWN_C_BUGS.md #47); here the
+// they are gone. C fails the open then (rlmdb KNOWN_C_BUGS.md row 47); here the
 // lock file is closed, which releases the shared lock, and the open starts
 // again with the exclusive probe, which then either succeeds (this process
 // creates the locks) or waits for the process that does create them to

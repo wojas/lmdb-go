@@ -87,7 +87,7 @@ func createLocks(m *lockMap, fd uintptr, mode os.FileMode, l *Layout) (*sharedLo
 // set do not exist (any more): that is what an opener finds when the last
 // user of the environment removed them (sharedLocks.close) between its
 // failed exclusive probe and its shared lock; Open then probes again (rlmdb
-// KNOWN_C_BUGS.md #47).
+// KNOWN_C_BUGS.md row 47).
 func attachLocks(m *lockMap, l *Layout) (*sharedLocks, error) {
 	switch l.Objects {
 	case PthreadMutexes:

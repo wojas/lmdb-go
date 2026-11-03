@@ -1234,7 +1234,7 @@ func (t *Txn) drop0Walk(mc cref, subs bool) error {
 	// named once: a walk that visits more, or a free list that would hold
 	// more pages than there are, is over branch pages that share children,
 	// which would put the shared pages on the free list once per path to
-	// them (rlmdb KNOWN_C_BUGS.md #50).
+	// them (rlmdb KNOWN_C_BUGS.md row 50).
 	limit := t.nextPgno
 	var visits uint64
 	for t.cur(mc).snum > 0 {

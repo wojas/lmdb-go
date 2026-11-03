@@ -168,7 +168,7 @@ func fileWithSet(t *testing.T, l *Layout, nsems int) (*os.File, *lockMap, int32)
 // TestSysVCreateRefusesALargerSet: another program's set at the lock file's
 // key with more semaphores than ours: the open refuses it and changes nothing
 // (C 1.0's SETALL would read three values from its two-element array, rlmdb
-// KNOWN_C_BUGS.md #46).
+// KNOWN_C_BUGS.md row 46).
 func TestSysVCreateRefusesALargerSet(t *testing.T) {
 	l := sysvTestLayout(t)
 	f, m, id := fileWithSet(t, l, 3)

@@ -11,7 +11,7 @@ package lmdb
 // objects (mdb_env_close0). An opener whose exclusive probe failed because
 // that process still held its lock waits for a shared lock, gets it once the
 // closer has gone, and finds the lock file naming objects that no longer
-// exist. C fails the open there (rlmdb KNOWN_C_BUGS.md #47); here the open
+// exist. C fails the open there (rlmdb KNOWN_C_BUGS.md row 47); here the open
 // goes back to the exclusive probe (lockfile.OpenClaimed).
 //
 // Several processes (this test binary run again) open the environment, begin

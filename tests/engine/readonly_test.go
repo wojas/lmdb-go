@@ -1,7 +1,7 @@
 package engine
 
 // Read-only handles and the published snapshot (rlmdb a91d9f5,
-// KNOWN_C_BUGS.md #45; robust_io_errors.rs
+// KNOWN_C_BUGS.md row 45; robust_io_errors.rs
 // robust_read_only_reader_skips_unpublished_first_commit).
 
 import (
@@ -85,10 +85,10 @@ func cDumpShows(t *testing.T, tool, src, value string) bool {
 // environment, stopped after its meta page reached the file: mti_txnid is
 // still 0. A read-only handle of another process reads the published snapshot
 // (txnid 0, no data), not the newest meta page, which is the in-flight
-// commit's; C's reads that one (rlmdb KNOWN_C_BUGS.md #45). The commit then
+// commit's; C's reads that one (rlmdb KNOWN_C_BUGS.md row 45). The commit then
 // fails (its sync), and the old txnid goes back into the page. With the
 // commit's meta page put back, as C leaves it after a failed F_FULLFSYNC
-// (#41), the writer lock is free and still no reader of ours takes the page.
+// (row 41), the writer lock is free and still no reader of ours takes the page.
 func TestReadOnlyReaderSkipsUnpublishedFirstCommit(t *testing.T) {
 	for _, c := range []struct {
 		f    format.Format

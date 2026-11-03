@@ -36,7 +36,7 @@
 // (sysv_nocgo_darwin.go: ENOTSUP).
 //
 // Unlike C, the exclusive opener refuses an existing set of the key that is
-// not its to reset (checkReusable, rlmdb KNOWN_C_BUGS.md #46).
+// not its to reset (checkReusable, rlmdb KNOWN_C_BUGS.md row 46).
 
 package lockfile
 
@@ -124,7 +124,7 @@ func sysvLocks(m *lockMap, semid int32, l *Layout) *sharedLocks {
 
 // checkReusable checks that set semid, which semget returned for the lock
 // file's key, is one createSysVLocks may reset. C 1.0 resets whatever set it
-// gets (rlmdb KNOWN_C_BUGS.md #46); the key is ftok's, which keeps 8 bits of
+// gets (rlmdb KNOWN_C_BUGS.md row 46); the key is ftok's, which keeps 8 bits of
 // the device and 16 of the inode, so another program's set can have it.
 //
 //   - sysvCheck passes, which every other opener must pass too

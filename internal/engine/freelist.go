@@ -41,7 +41,7 @@ func txnidKey(key []byte) (uint64, error) {
 // pages: unique, so a walk meets them in ascending order. A key not larger
 // than the one before is a damaged tree, out of order or with branch pages
 // that share a child, whose records a walk would read once per path to it
-// (rlmdb next_txnid_key, KNOWN_C_BUGS.md #50): MDB_CORRUPTED.
+// (rlmdb next_txnid_key, KNOWN_C_BUGS.md row 50): MDB_CORRUPTED.
 func nextTxnidKey(prev uint64, hasPrev bool, key []byte) (uint64, error) {
 	id, err := txnidKey(key)
 	if err != nil {
@@ -248,7 +248,7 @@ func (t *Txn) reclaimRun(num int) (int, bool, error) {
 		// or past pglast where the search started: a smaller key is a damaged
 		// tree, and with branch pages that share a child this loop would read
 		// its records once per path to it, holding the writer lock (rlmdb
-		// KNOWN_C_BUGS.md #50).
+		// KNOWN_C_BUGS.md row 50).
 		if last, err = nextTxnidKey(last-1, !first, k); err != nil {
 			return 0, false, err
 		}
@@ -466,7 +466,7 @@ func (t *Txn) freelistSave0(mc cref) error {
 			}
 			w.freePgs.Sort()
 			// C writes the list as it is. A page in it twice would be handed
-			// out twice (rlmdb KNOWN_C_BUGS.md #50).
+			// out twice (rlmdb KNOWN_C_BUGS.md row 50).
 			if !w.freePgs.IsSortedDesc() {
 				return format.Corrupted
 			}

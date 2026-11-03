@@ -59,7 +59,7 @@ var emptyPage = make([]byte, 24)
 
 // walk is the leaf pages a cursor stepped onto in one direction since it
 // was last positioned from the root (rcursor.step): what bounds a walk over
-// a damaged tree (rlmdb Walk, KNOWN_C_BUGS.md #50).
+// a damaged tree (rlmdb Walk, KNOWN_C_BUGS.md row 50).
 //
 // A walk in one direction over a sound tree reaches each of its leaves
 // once. Changes to the tree (in a write transaction) can put a leaf ahead

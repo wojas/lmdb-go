@@ -15,7 +15,7 @@
 //  3. Read the meta page of that txnid (txnid & 1) and take the free/main
 //     DB records and last_pgno from it. C's read-only handles take the
 //     newest meta page instead while mti_txnid is 0; here they do not (rlmdb
-//     KNOWN_C_BUGS.md #45).
+//     KNOWN_C_BUGS.md row 45).
 //
 // Step 3 races with writers: a writer committing N+2 rewrites the meta
 // page our N uses. C accepts the torn read; here mti_txnid is re-checked
@@ -224,7 +224,7 @@ func (t *Txn) takeSnapshot() error {
 		// The snapshot mti_txnid names, also while it is 0, where C's
 		// read-only handles take the newest meta page instead: that can be
 		// the first commit's, written but not yet published, or failed, and
-		// writers build on mti_txnid (rlmdb KNOWN_C_BUGS.md #45).
+		// writers build on mti_txnid (rlmdb KNOWN_C_BUGS.md row 45).
 		txnid = e.lock.PublishCurrentTxnID(t.slot)
 		if meta, err = e.snapshotMeta(m, int(txnid&1)); err != nil {
 			if torn+1 < maxTornCopies && e.lock.TxnID() != txnid {
@@ -360,7 +360,7 @@ func (t *Txn) setSnapshot(txnid uint64, meta *format.Meta) error {
 	// a smaller last page would make a writer hand out meta page 1 as a new
 	// page and overwrite it at commit, the largest value page 0. The open
 	// checks the meta page it reads, but a transaction may take one written
-	// since (rlmdb KNOWN_C_BUGS.md #49).
+	// since (rlmdb KNOWN_C_BUGS.md row 49).
 	if meta.LastPgno < format.NumMetas-1 || meta.LastPgno == ^uint64(0) {
 		return format.Corrupted
 	}

@@ -1,9 +1,9 @@
 package engine
 
 // Hand-built files for rlmdb's review-round fixes (rlmdb tests/handbuilt.rs):
-// 0.9 pages below 2 KiB (KNOWN_C_BUGS.md #48), a lying md_depth, snapshots
-// without their meta pages (#49), and walks and drops over trees whose
-// branch pages share their children (#50).
+// 0.9 pages below 2 KiB (KNOWN_C_BUGS.md row 48), a lying md_depth, snapshots
+// without their meta pages (row 49), and walks and drops over trees whose
+// branch pages share their children (row 50).
 
 import (
 	"bytes"
@@ -112,7 +112,7 @@ func wantCorrupted(what string, err error) error {
 // (Layout.MinPageSize): C 0.9 creates none (it uses the OS page size) but
 // opens them, and its largest key and MDB_DUPSORT item (511 bytes) no longer
 // fits their nodes, a P_LEAF2 page holding a single such item: C writes past
-// its pages (KNOWN_C_BUGS.md #48). They are refused with MDB_INVALID,
+// its pages (KNOWN_C_BUGS.md row 48). They are refused with MDB_INVALID,
 // read-write and read-only; at 2 KiB pages of items of the largest size
 // split as at any other size.
 func TestSmall09PagesAreRefused(t *testing.T) {
@@ -250,7 +250,7 @@ func writeBehind(t *testing.T, env *Env, data string, b []byte, off int64) {
 // mm_last_pg + 1 as its next new page, so with 0 the first put of a
 // transaction built its root leaf on page 1 and the commit wrote it over meta
 // page 1, after which the environment no longer opened; C does the same
-// (KNOWN_C_BUGS.md #49). Every transaction on such a snapshot fails to begin
+// (KNOWN_C_BUGS.md row 49). Every transaction on such a snapshot fails to begin
 // with MDB_CORRUPTED and the file stays as it was: for 0 recorded when the
 // environment is opened, and for the largest value (which the open refuses)
 // written into the newest meta page after the open, as another process could.
@@ -346,7 +346,7 @@ func sharedSep(i int) []byte { return []byte{byte('a' + i)} }
 // lock (every writer of the environment then waits), in the compacting copy's
 // count of free pages and in mdb_stat -f. Free DB keys are unique and ascend,
 // so each of these fails with MDB_CORRUPTED at the second sight of the record
-// (KNOWN_C_BUGS.md #50); a plain cursor walk is stopped by its step limit
+// (KNOWN_C_BUGS.md row 50); a plain cursor walk is stopped by its step limit
 // (Txn.walkLimit). The file is unchanged.
 func TestWalksOfAFreeDBWithSharedChildrenStop(t *testing.T) {
 	const ps = 4096
@@ -410,7 +410,7 @@ func TestWalksOfAFreeDBWithSharedChildrenStop(t *testing.T) {
 // their children (20 levels of fan-out 4 over a leaf of three keys): a cursor
 // walk returns the three keys over and over, 4^20 times in C. A walk stops
 // with MDB_CORRUPTED once it has stepped onto more leaves than the snapshot
-// has pages (KNOWN_C_BUGS.md #50), forward and backward, in read and in write
+// has pages (KNOWN_C_BUGS.md row 50), forward and backward, in read and in write
 // transactions, having returned each key at most that many times.
 func TestCursorWalksOverSharedChildrenStop(t *testing.T) {
 	const ps = 4096
@@ -508,7 +508,7 @@ func TestQueueWalksInAWriteTxnAreNotBoundedByTheFile(t *testing.T) {
 // file of 3 levels of fan-out 3: 41 entries) and every later write
 // transaction hands a page out twice; with 20 levels of 4 the list outgrows
 // memory first. Drop fails with MDB_CORRUPTED once the walk has visited more
-// pages, or listed more, than the file has (KNOWN_C_BUGS.md #50), also where
+// pages, or listed more, than the file has (KNOWN_C_BUGS.md row 50), also where
 // it scans the leaves (here because md_overflow_pages says there are overflow
 // pages), and the file stays as it was. A root naming one leaf twice gets past
 // that (three entries in a file of four pages); its commit fails, since the

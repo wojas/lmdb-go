@@ -58,7 +58,7 @@ func TestSecondOpenUnderAnotherNameLeavesTheFirstAlone(t *testing.T) {
 			must(t, err)
 			cSeesTheReader := func(what string) {
 				t.Helper()
-				// mdb_stat -r exits 1 on success (rlmdb KNOWN_C_BUGS.md #2).
+				// mdb_stat -r exits 1 on success (rlmdb KNOWN_C_BUGS.md row 2).
 				_, out, errs := run(t, c.tool, "-r", a)
 				for _, l := range strings.Split(out, "\n") {
 					f := strings.Fields(l)

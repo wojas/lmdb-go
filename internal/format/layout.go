@@ -110,7 +110,7 @@ type Layout struct {
 	// largest key is the constant MDB_MAXKEYSIZE (511): below 2 KiB a node
 	// with such a key no longer fits me_nodemax and a P_LEAF2 page holds a
 	// single such item, so C writes past its pages (rlmdb KNOWN_C_BUGS.md
-	// #48). Smaller 0.9 pages are refused.
+	// row 48). Smaller 0.9 pages are refused.
 	MinPageSize int
 	// DBNameNUL: the key of a named database includes the name's
 	// terminating NUL (1.0).

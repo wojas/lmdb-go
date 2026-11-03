@@ -381,7 +381,7 @@ func (e *Env) copyCompact(out io.Writer) error {
 			if err != nil {
 				return err
 			}
-			// Records read twice would be counted twice (rlmdb #50).
+			// Records read twice would be counted twice (rlmdb row 50).
 			if prev, err = nextTxnidKey(prev, hasPrev, k); err != nil {
 				return err
 			}

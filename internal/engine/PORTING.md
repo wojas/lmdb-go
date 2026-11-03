@@ -380,14 +380,14 @@ counts of the API's hot paths are pinned by `lmdb/alloc_test.go`.
   and 44 as above; row 42 (`OpenProcess` with `SYNCHRONIZE`) and row 43 (the
   Windows lock-file size in 64 bits) are the Windows port's, which follows
   both (`internal/lockfile/filelock_windows.go`).
-* rlmdb's ledger rows #45 to #52, here: #45 as in rlmdb (`takeSnapshot`
+* rlmdb's ledger rows 45 to 52, here: row 45 as in rlmdb (`takeSnapshot`
   pins what mti_txnid names, also on read-only handles while it is 0; test
-  hook `Env.AfterNextMetaWrite`); #46 (`checkReusable`); #47
+  hook `Env.AfterNextMetaWrite`); row 46 (`checkReusable`); row 47
   (`lockfile.OpenClaimed`, `errLocksRemoved`; on Windows rlmdb has it on a
-  branch, not at the sync point, so not here); #48 (`Layout.MinPageSize`);
-  #49 (`setSnapshot`); #50 (`walk`, `rcursor.step`, `Txn.walkLimit`,
+  branch, not at the sync point, so not here); row 48 (`Layout.MinPageSize`);
+  row 49 (`setSnapshot`); row 50 (`walk`, `rcursor.step`, `Txn.walkLimit`,
   `nextTxnidKey`, the limits of `drop0Walk`, the check in `freelistSave`);
-  #51 has nothing to port (no chunked map); #52: as C and rlmdb, nothing
+  row 51 has nothing to port (no chunked map); row 52: as C and rlmdb, nothing
   invalidates the map after a failed meta write, so on OpenBSD a plain copy
   taken from a map differs from this port's in that page
   (`sameButFailedMetaPage` in `tests/engine`).
@@ -461,7 +461,7 @@ test named also passes on the code before this sync; the tests of
 | `f679226` | a differential dump mismatch shows where, and if it was a misread | ported: `tests/engine` `dumpDiff`, the second dump, `keepEnv` |
 | `9dc16eb` | the Windows toolchain file for `windows-test.sh` is in the repository | ported: `scripts/windows-env.cmd`, the script's header points at it |
 | `3a97557` | a leaked nested transaction blocks every ancestor | not applicable as such: Go cannot leak a child that took its parent's state (`mem::forget`), and the end of an ancestor ends its descendants, as in C; already there, tested (`TestActiveDescendantsAtAnyDepth`, `TestFailedDescendantFailsTheCommit`, `lmdb` `TestTxn_Commit_descendants`, from `capi_write.c`) |
-| `a91d9f5` | read-only readers pin mti_txnid's snapshot also while it is 0 (#45) | ported (`takeSnapshot`, `Env.AfterNextMetaWrite`, `tests/engine` `TestReadOnlyReaderSkipsUnpublishedFirstCommit` with C's `mdb_dump` and `mdb_dump10`) |
+| `a91d9f5` | read-only readers pin mti_txnid's snapshot also while it is 0 (row 45) | ported (`takeSnapshot`, `Env.AfterNextMetaWrite`, `tests/engine` `TestReadOnlyReaderSkipsUnpublishedFirstCommit` with C's `mdb_dump` and `mdb_dump10`) |
 | `4762f54` | refuse an environment under another name before its lock file | the data file under another name was refused before the lock file already (`register`); ported: the lock file's claim, parked descriptors, the meta descriptor's claim (ledger; `TestEnvUnderAnotherNameIsRefusedBeforeItsLockFile`, `tests/engine` `TestSecondOpenUnderAnotherNameLeavesTheFirstAlone` with C's `mdb_stat -r`) |
 | `fe9fd67` | `mdb_del` does not read the data of a non-DUPSORT database | already there, tested (`lmdb` `TestTxn_Del_ignoresVal`) |
 | `769f352` | a read cursor searches with the comparators set after it opened | ported (`Cursor.refreshOrders`; `TestComparatorsSetAfterAReadCursorOpened`); `lmdb` has no comparator API, so only the engine's callers see it |
@@ -469,15 +469,15 @@ test named also passes on the code before this sync; the tests of
 | `0bfd914` | `mdb_load -N` does not count skipped records toward a batch | not applicable (no `mdb_load` here) |
 | `16feee5` | `mdb_cursor_get` checks a failed transaction before its operation | already there, tested (`lmdb` `TestCursor_Get_failedTxn`) |
 | `a59627f` | `mdb_env_copyfd` of descriptor -1 is `EBADF` | already there, tested (`lmdb` `TestEnv_CopyFD_badDescriptor`) |
-| `2fb635e` | refuse a SysV set at the lock file's key that is not ours (#46) | ported (`checkReusable`, `sysvHasThird`; `TestSysVCreateRefusesALargerSet`, `TestSysVCreateReusesASetOfTwo`) |
-| `7d9054f` | an opener that finds the semaphores removed probes again (#47) | ported (`lockfile.OpenClaimed`; `lmdb` `TestOpenCloseRace`, which fails within a few dozen opens without it; `TestOpenWithItsSemaphoresRemoved`) |
+| `2fb635e` | refuse a SysV set at the lock file's key that is not ours (row 46) | ported (`checkReusable`, `sysvHasThird`; `TestSysVCreateRefusesALargerSet`, `TestSysVCreateReusesASetOfTwo`) |
+| `7d9054f` | an opener that finds the semaphores removed probes again (row 47) | ported (`lockfile.OpenClaimed`; `lmdb` `TestOpenCloseRace`, which fails within a few dozen opens without it; `TestOpenWithItsSemaphoresRemoved`) |
 | `607fc5a` | take the data file's size before mapping it | ported (`sys.MapData` on Unix; on Windows the size was read first already) |
-| `7b11099` | refuse 0.9 files of pages below 2 KiB (#48) | ported (`Layout.MinPageSize`; `TestSmall09PagesAreRefused`; the root-split test and the fuzz seeds at 2 KiB) |
+| `7b11099` | refuse 0.9 files of pages below 2 KiB (row 48) | ported (`Layout.MinPageSize`; `TestSmall09PagesAreRefused`; the root-split test and the fuzz seeds at 2 KiB) |
 | `cafb356` | `leaf_size` computes the overflow node size without wrapping | already the right value (Go's signed `int`); the order follows rlmdb's; tested (`TestLeafSizeOfAnOverflowNode`) |
 | `b405e6a` | `page_merge` adds a depth change of a lying `md_depth` as C does | already the right value (Go's `int16` wraps instead of panicking); tested (`TestMergeWithALyingDepthCommits`) |
-| `f4003a3` | no transaction begins on a snapshot without its meta pages (#49) | ported (`setSnapshot`; `TestSnapshotsWithoutTheirMetaPagesAreRefused`) |
-| `0d455ff`, `0c9c238` | walks over branch pages that share children stop; the limit is the snapshot's pages plus the allocations (#50) | ported (`walk`, `rcursor.step`, `Txn.walkLimit`, `Txn.allocations`, `nextTxnidKey`, `FreePages`; `TestWalksOfAFreeDBWithSharedChildrenStop`, `TestCursorWalksOverSharedChildrenStop`, `TestQueueWalksInAWriteTxnAreNotBoundedByTheFile`); the leaf-step fast path is untouched |
-| `270fe7a` | dropping a tree of shared children fails instead of listing pages twice (#50) | ported (`drop0Walk`, `freelistSave`; `TestDropsOfSharedChildrenStop`) |
+| `f4003a3` | no transaction begins on a snapshot without its meta pages (row 49) | ported (`setSnapshot`; `TestSnapshotsWithoutTheirMetaPagesAreRefused`) |
+| `0d455ff`, `0c9c238` | walks over branch pages that share children stop; the limit is the snapshot's pages plus the allocations (row 50) | ported (`walk`, `rcursor.step`, `Txn.walkLimit`, `Txn.allocations`, `nextTxnidKey`, `FreePages`; `TestWalksOfAFreeDBWithSharedChildrenStop`, `TestCursorWalksOverSharedChildrenStop`, `TestQueueWalksInAWriteTxnAreNotBoundedByTheFile`); the leaf-step fast path is untouched |
+| `270fe7a` | dropping a tree of shared children fails instead of listing pages twice (row 50) | ported (`drop0Walk`, `freelistSave`; `TestDropsOfSharedChildrenStop`) |
 | `bb97159` | link `-ldl` only where `dlopen` is a library of its own | already there (`tests/cmd/build-c-oracles` `hasLibdl`) |
 | `5f8b5c8` | the shared-children dump test reads the tools' output as text | not applicable (no C-tool clones here) |
 | `6329f7f` | the Windows env template says how to put build output and scratch on another drive | ported with `9dc16eb` |
@@ -489,7 +489,7 @@ test named also passes on the code before this sync; the tests of
 | `fc1d99a` | docs: OpenBSD tested by hand in a VM | not applicable (rlmdb's status; this port's is `PLAN.md` "The BSDs") |
 | `7de9dfb` | the Windows `maxreaders=-1` load case runs the C tool only | not applicable (no `mdb_load` here) |
 | `81cc892`, `0f902b4` | `Peer::External`, the scenario matrix with an external peer | rlmdb's harness; `tests/gopeer` is that peer |
-| `a1ec6cc` | ledger #51 and #52 | ledger above; #52 as C (nothing to change) |
+| `a1ec6cc` | ledger rows 51 and 52 | ledger above; row 52 as C (nothing to change) |
 | `3a52745` | the C references are the 0.9.37 and 1.0.3 releases | `Env.EngineVersion` (0.9.37, 1.0.3; `Version` stays 0.9.90), the comments and docs that name the reference; `mdb.c` is unchanged, so the line numbers cited hold |
 
 ## Windows: rlmdb's Windows commits (up to `3df6995`)

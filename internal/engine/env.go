@@ -334,7 +334,7 @@ func Open(path string, opts Options) (env *Env, err error) {
 	}
 	// C does not check the page size of an existing file. The range is the
 	// format's: smaller 0.9 pages cannot hold its largest keys (rlmdb
-	// KNOWN_C_BUGS.md #48).
+	// KNOWN_C_BUGS.md row 48).
 	if pageSize&(pageSize-1) != 0 || pageSize < layout.MinPageSize || pageSize > layout.MaxPageSize {
 		return nil, format.Invalid
 	}
@@ -891,7 +891,7 @@ func (e *Env) SetDupsort(dbi DBI, cmp format.CmpFunc) error {
 
 // FreePages is the number of pages on the free list of the newest
 // snapshot (the "Free pages" line of mdb_stat -f). MDB_CORRUPTED if the
-// free DB's keys do not ascend (rlmdb KNOWN_C_BUGS.md #50).
+// free DB's keys do not ascend (rlmdb KNOWN_C_BUGS.md row 50).
 func (e *Env) FreePages() (uint64, error) {
 	txn, err := e.BeginTxn(nil, format.ReadOnly)
 	if err != nil {

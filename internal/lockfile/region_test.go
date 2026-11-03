@@ -386,7 +386,7 @@ func blocks(f func(), d time.Duration) (done chan struct{}, blocked bool) {
 // TestOpenWithItsSemaphoresRemoved: a lock file that names semaphores which
 // do not exist while another process holds it open (damage): the open tries
 // again a bounded number of times, then fails with ENOENT (rlmdb
-// KNOWN_C_BUGS.md #47; the race it is for: lmdb TestOpenCloseRace).
+// KNOWN_C_BUGS.md row 47; the race it is for: lmdb TestOpenCloseRace).
 func TestOpenWithItsSemaphoresRemoved(t *testing.T) {
 	needLocks(t)
 	for _, l := range layouts() {
