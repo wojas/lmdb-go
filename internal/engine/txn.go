@@ -101,6 +101,9 @@ type Txn struct {
 // ReadOnly reports a read-only transaction.
 func (t *Txn) ReadOnly() bool { return t.w == nil }
 
+// IsReset reports a read-only transaction between Reset and Renew.
+func (t *Txn) IsReset() bool { return t.w == nil && t.state == txnReset }
+
 // ID is mdb_txn_id: the transaction id; for a read transaction the id of
 // the snapshot it reads (0 after Reset).
 func (t *Txn) ID() uint64 { return t.txnid }
