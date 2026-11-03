@@ -2,12 +2,10 @@
 
 package engine
 
-// A main DB that a caller put out of order, then a nested transaction's
-// abort and a new database: the Go writer must write what C writes. A
-// cursor put with MDB_CURRENT and a key other than the item's replaces the
-// item's key (C does no check, nor does the Go writer, as rlmdb), so the
-// main DB is no longer in order and searches can miss keys that are there.
-// Two places depended on such a search where C does not:
+// A main DB out of order, then a nested transaction's abort and a new
+// database: the Go writer must write what C writes. In such a main DB
+// searches can miss keys that are there. Two places depended on such a
+// search where C does not:
 //
 //   - The abort of a child closes the handles that name a database which
 //     does not exist in the state it reverts to (rlmdb KNOWN_C_BUGS.md row
@@ -21,12 +19,21 @@ package engine
 //     last key of the page; the Go writer searched afresh, which put the
 //     record elsewhere in such a main DB.
 //
-// rlmdb's writeops works on one database and cannot express this, so the
-// oracle is C 0.9 in this process: tests/cgolmdb, on its own environment
-// next to the Go engine's, compared step by step and then page for page.
+// The two sides break the order differently into the same pages: C with a
+// cursor put with MDB_CURRENT and a key other than the item's, which C
+// writes over the node (KNOWN_C_BUGS.md row 58; lmdb-go v1 has no
+// comparator API), the Go engine with a comparator changed within the
+// transaction for one put (as rlmdb's capi_unsorted_main.c does on both
+// sides), since its MDB_CURRENT keeps the cursor's key. rlmdb's writeops
+// works on one database and cannot express this, so the oracle is C 0.9
+// in this process: tests/cgolmdb, on its own environment next to the Go
+// engine's, compared step by step and then page for page. (rlmdb's
+// capi_unsorted_main.c checks the same three runs against C 1.0, whose
+// records internal/engine's unsorted_main_test.go expects.)
 
 import (
 	"bytes"
+	"fmt"
 	"path/filepath"
 	"runtime"
 	"testing"
@@ -105,13 +112,15 @@ func TestCgoUnsortedMainChildAbortAndOpen(t *testing.T) {
 			must(t, err)
 			cc, err := ctxn.OpenCursor(cmain)
 			must(t, err)
-			gc, err := gtxn.OpenCursor(eng.MainDBI)
-			must(t, err)
-			step("put main", cgoCode(cc.Put(misuse[0], nil, 0)), code(gc.Put(misuse[0], nil, 0)))
-			step("MDB_CURRENT, another key", cgoCode(cc.Put(misuse[1], value, cgolmdb.Current)),
-				code(gc.Put(misuse[1], value, format.Current)))
+			// The key 89 8a 8b 8c at index 0: C writes it over the node of
+			// 00 01 02 (MDB_CURRENT with data of another size), the Go
+			// engine puts it in an order that sorts it first.
+			step("put main", cgoCode(cc.Put(misuse[0], nil, 0)), 0)
+			step("MDB_CURRENT, another key", cgoCode(cc.Put(misuse[1], value, cgolmdb.Current)), 0)
+			must(t, gtxn.SetCompare(eng.MainDBI, hibitFirst))
+			step("put in another order", 0, code(gtxn.Put(eng.MainDBI, misuse[1], value, format.NoOverwrite)))
+			must(t, gtxn.SetCompare(eng.MainDBI, nil))
 			cc.Close()
-			gc.Close()
 			if tc.child {
 				cchild, err := cenv.BeginTxn(ctxn, 0)
 				must(t, err)
@@ -139,5 +148,141 @@ func TestCgoUnsortedMainChildAbortAndOpen(t *testing.T) {
 				t.Fatalf("after %d steps: %v", len(steps), err)
 			}
 		})
+	}
+}
+
+// hibitFirst is the default key order with the top bit of every byte
+// flipped: bytes from 0x80 sort before the others.
+func hibitFirst(a, b []byte) int {
+	for i := range min(len(a), len(b)) {
+		if d := int(a[i]^0x80) - int(b[i]^0x80); d != 0 {
+			return d
+		}
+	}
+	return len(a) - len(b)
+}
+
+// TestCgoSortedMainManyDatabases: a main DB in order and of several pages,
+// 600 databases created in a scrambled order, half in a second
+// transaction, every 50th with an item (rlmdb's capi_unsorted_main.c,
+// "sorted"): the record of a new database goes where a search would put
+// it, as C puts it, now that it is put from where the lookup left the
+// cursor. Names end in "x" so that every key has an even length and no
+// node a padding byte, which C leaves as a reused page buffer had it.
+func TestCgoSortedMainManyDatabases(t *testing.T) {
+	const mapSize = 8 << 20
+	cdir, gdir := t.TempDir(), t.TempDir()
+	cenv, err := cgolmdb.NewEnv()
+	must(t, err)
+	defer cenv.Close()
+	must(t, cenv.SetMapSize(mapSize))
+	must(t, cenv.SetMaxDBs(600))
+	must(t, cenv.Open(cdir, cgolmdb.NoSync, 0o644))
+	env, err := eng.Open(gdir, eng.Options{
+		Format: format.V09, MapSize: mapSize, MaxDBs: 600,
+		Flags: format.NoSync, OpenLock: eng.OpenMemLock,
+	})
+	must(t, err)
+	defer env.Close()
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+	for pass := range 2 {
+		ctxn, err := cenv.BeginTxn(nil, 0)
+		must(t, err)
+		gtxn, err := env.BeginTxn(nil, 0)
+		must(t, err)
+		for i := range 600 {
+			n := i * 353 % 600
+			if n%2 != pass {
+				continue
+			}
+			name := fmt.Sprintf("database-%04dx", n)
+			cd, cerr := ctxn.OpenDBI(name, cgolmdb.Create)
+			gd, gerr := gtxn.OpenDBI([]byte(name), format.Create)
+			if cgoCode(cerr) != code(gerr) || int(cd) != int(gd) {
+				t.Fatalf("open %s: C %d (%v), Go %d (%v)", name, cd, cerr, gd, gerr)
+			}
+			if n%50 == 1 {
+				must(t, ctxn.Put(cd, []byte("kk"), []byte("vv"), 0))
+				must(t, gtxn.Put(gd, []byte("kk"), []byte("vv"), 0))
+			}
+		}
+		must(t, ctxn.Commit())
+		must(t, gtxn.Commit())
+	}
+	cenv.Close()
+	env.Close()
+	if err := compareDataFiles(filepath.Join(cdir, "data.mdb"), filepath.Join(gdir, "data.mdb")); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestCgoChildAbortAfterEmptiedMain: in an LMDB 0.9 file, emptying the
+// main DB removes the records of the named databases but keeps their
+// handles (KNOWN_C_BUGS.md row 21), and the commit writes back the records
+// of those the transaction changed. A nested transaction's abort keeps
+// such a handle, as C does (rlmdb closed it until 593ddd2, and the commit
+// failed with MDB_BAD_DBI): the commit and its pages are C's.
+func TestCgoChildAbortAfterEmptiedMain(t *testing.T) {
+	const mapSize = 8 << 20
+	cdir, gdir := t.TempDir(), t.TempDir()
+	cenv, err := cgolmdb.NewEnv()
+	must(t, err)
+	defer cenv.Close()
+	must(t, cenv.SetMapSize(mapSize))
+	must(t, cenv.SetMaxDBs(4))
+	must(t, cenv.Open(cdir, cgolmdb.NoSync, 0o644))
+	env, err := eng.Open(gdir, eng.Options{
+		Format: format.V09, MapSize: mapSize, MaxDBs: 4,
+		Flags: format.NoSync, OpenLock: eng.OpenMemLock,
+	})
+	must(t, err)
+	defer env.Close()
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+	step := func(what string, c, g int) {
+		t.Helper()
+		if c != g {
+			t.Fatalf("%s: C %d, Go %d", what, c, g)
+		}
+	}
+
+	ctxn, err := cenv.BeginTxn(nil, 0)
+	must(t, err)
+	gtxn, err := env.BeginTxn(nil, 0)
+	must(t, err)
+	cx, cerr := ctxn.OpenDBI("x", cgolmdb.Create)
+	gx, gerr := gtxn.OpenDBI([]byte("x"), format.Create)
+	step("open x", cgoCode(cerr), code(gerr))
+	step("put a", cgoCode(ctxn.Put(cx, []byte("a"), []byte("1"), 0)), code(gtxn.Put(gx, []byte("a"), []byte("1"), 0)))
+	step("commit", cgoCode(ctxn.Commit()), code(gtxn.Commit()))
+
+	ctxn, err = cenv.BeginTxn(nil, 0)
+	must(t, err)
+	defer ctxn.Abort()
+	gtxn, err = env.BeginTxn(nil, 0)
+	must(t, err)
+	defer gtxn.Abort()
+	step("put b", cgoCode(ctxn.Put(cx, []byte("b"), []byte("2"), 0)), code(gtxn.Put(gx, []byte("b"), []byte("2"), 0)))
+	cmain, err := ctxn.OpenRoot(0)
+	must(t, err)
+	step("empty the main DB", cgoCode(ctxn.Drop(cmain, false)), code(gtxn.Drop(eng.MainDBI, false)))
+	cchild, err := cenv.BeginTxn(ctxn, 0)
+	must(t, err)
+	cchild.Abort()
+	gchild, err := env.BeginTxn(gtxn, 0)
+	must(t, err)
+	gchild.Abort()
+	cv, cerr := ctxn.Get(cx, []byte("b"))
+	gv, gerr := gtxn.Get(gx, []byte("b"))
+	step("get b after the child", cgoCode(cerr), code(gerr))
+	if !bytes.Equal(cv, gv) {
+		t.Fatalf("get b: C %q, Go %q", cv, gv)
+	}
+	step("commit", cgoCode(ctxn.Commit()), code(gtxn.Commit()))
+	cenv.Close()
+	env.Close()
+	if err := compareDataFiles(filepath.Join(cdir, "data.mdb"), filepath.Join(gdir, "data.mdb")); err != nil {
+		t.Fatal(err)
 	}
 }

@@ -275,6 +275,34 @@ differently from C is in `internal/engine/PORTING.md` and in rlmdb's
   same bug there); with two or more values it replaces the item in place
   with each in turn, as C does. Every other replacement is C's, byte for
   byte.
+* **`Current` with another key** (a C bug, not ported). `Cursor.Put(key,
+  val, Current)` and `Cursor.PutReserve(key, n, Current)` with a key other
+  than the one under the cursor (`lmdb.h` requires the same key; C never
+  checks) keep the cursor's key, for values of every size. C stores the
+  value under the old key where it overwrites it in place (a value of the
+  same size, or one that fits the overflow pages it replaces), and
+  otherwise writes the other key over the item at the cursor's position,
+  which leaves the database out of order: searches for the new key and
+  for keys around it can miss them (rlmdb `KNOWN_C_BUGS.md` row 58). A
+  key the database's comparator calls equal to the cursor's is that key,
+  and the other key still decides `BadValSize`, as in C. For a caller that
+  passes the cursor's key nothing changes; for another one the file is
+  the one C writes for the cursor's key.
+* **Moves after a failed search** (a C bug, not ported). A `Cursor.Get`
+  with `Set`, `SetKey` or `GetBoth` that does not find its key leaves the
+  cursor on the next key. If that key has duplicates, the next `Next`,
+  `Prev`, `NextDup`, `PrevDup` or `NextMultiple` enters them here with the
+  key's own duplicates: every one once, in order, and `Count` right. C
+  enters them with whatever the cursor's sub-cursor held before the
+  search: a record from before other cursors added duplicates to the key
+  (the count is the old one; after the duplicates' own tree split the walk
+  sees only part of them; where they had moved, C crashes), another key's
+  duplicates, which C returns under this key, or none (a new cursor: C
+  asserts); after a delete under the cursor C returns the first duplicate
+  twice (rlmdb `KNOWN_C_BUGS.md` row 59). Where C's state is right the
+  results are C's, and so is what `Count`, `GetCurrent`, `FirstDup` and
+  `LastDup` return right after the failed search (`EINVAL` on a key with
+  duplicates, as in C).
 * **Windows** (64-bit: x86-64, and arm64 by the same rules) follows
   rlmdb's Windows port and C LMDB's `_WIN32` paths, without cgo
   (`golang.org/x/sys/windows`): `SharedLockingAvailable` is true with and

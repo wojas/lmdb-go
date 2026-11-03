@@ -23,8 +23,10 @@
 // Reading through a write cursor: readOp rebuilds read cursors (rcursor)
 // from a write cursor's state, runs the read-path operation and stores the
 // positions back. The positioning of every mdb_put and mdb_del on a fresh
-// cursor of a tree without duplicates runs on the write cursor's own stack
-// instead (seekKey, seekLast), with the same result.
+// cursor runs on the write cursor's own stack instead (seekKey, seekLast),
+// with the same result; only on a node with duplicates is the sub-cursor
+// set up as the read path does it, with a read operation on the
+// sub-cursor alone (enterDups).
 
 package engine
 
@@ -561,33 +563,38 @@ func (t *Txn) descend(w *wcursor, db *format.DB, cmp format.Comparator, key []by
 	return mp, nil
 }
 
-// readItem is the key of item ki of leaf mp of a tree without duplicates,
-// read as readPosition and cursorSet read it for a main cursor without a
-// sub-cursor (a node with duplicates is corrupt there; the data is read
-// too, following F_BIGDATA, for its checks).
-func (t *Txn) readItem(mp format.Page, ki, ksize int) ([]byte, error) {
+// readItem is the key of item ki of leaf mp (ksize: its P_LEAF2 key size),
+// read as readPosition and the end of cursorSet read it for a main cursor:
+// the data is read too, following F_BIGDATA, for its checks. dups is true
+// (and key nil) for a node with duplicates, whose key the caller reads
+// after setting up the sub-cursor (enterDups), as those do (rlmdb
+// read_item).
+func (t *Txn) readItem(mp format.Page, ki, ksize int) (key []byte, dups bool, err error) {
 	if !mp.IsLeaf() {
-		return nil, format.Corrupted
+		return nil, false, format.Corrupted
 	}
 	if mp.IsLeaf2() {
 		k, ok := mp.Leaf2Key(ki, ksize)
 		if !ok {
-			return nil, format.Corrupted
+			return nil, false, format.Corrupted
 		}
-		return k, nil
+		return k, false, nil
 	}
 	leaf, ok := mp.Node(ki)
-	if !ok || leaf.IsDupData() {
-		return nil, format.Corrupted
+	if !ok {
+		return nil, false, format.Corrupted
+	}
+	if leaf.IsDupData() {
+		return nil, true, nil
 	}
 	if _, err := nodeRead(t, leaf); err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	k, ok := leaf.Key()
 	if !ok {
-		return nil, format.Corrupted
+		return nil, false, format.Corrupted
 	}
-	return k, nil
+	return k, false, nil
 }
 
 // --- cursor state -------------------------------------------------------------
@@ -749,23 +756,124 @@ func (t *Txn) dirtyMut(pgno uint64) ([]byte, error) {
 
 // --- positioning on a write cursor's own stack -----------------------------------
 
-// seeksInPlace reports whether mc can be positioned on its own stack: an
-// unpositioned main cursor of a tree without duplicates (the cursor
-// mdb_put and mdb_del open for every call).
+// seeksInPlace reports whether mc can be positioned on its own stack
+// (seekKey, seekLast) instead of through readOp: an unpositioned main
+// cursor whose sub-cursor, if it has one, holds no pages (as
+// mdb_cursor_init leaves it). That is the cursor mdb_put and mdb_del open
+// for every call; everything else takes the read path (rlmdb
+// seeks_in_place).
 func (t *Txn) seeksInPlace(mc cref) bool {
 	s := &t.w.cursors.slots[mc.slot]
-	return !mc.sub && !s.hasX && !s.main.isInit() && !s.main.db.sub
+	return !mc.sub && !s.main.isInit() && !s.main.db.sub &&
+		(!s.hasX || s.x.c.snum == 0 && !s.x.c.subp)
+}
+
+// resetSubInPlace is the resetSub that cursorSet and cursorLastForAppend
+// begin with, for a cursor that seeksInPlace: the sub-cursor is no longer
+// on an item. (readOp stores the rest of such a sub-cursor's state back
+// unchanged.)
+func (t *Txn) resetSubInPlace(mc cref) {
+	if s := &t.w.cursors.slots[mc.slot]; s.hasX {
+		s.x.c.flags &^= cInitialized | cEOF
+	}
+}
+
+// enterDups is the duplicates branch of cursorSet and cursorLast for a
+// main cursor mc positioned in place on a node with duplicates: point the
+// sub-cursor at them (xcursorInit1) and put it on the first (last: the
+// last) of them with the read path's cursorFirst / cursorLast on the
+// sub-cursor alone. Returns the node's key. The sub-cursor and its record
+// end up as through readOp on the main cursor; mx_dbflag is also set, as
+// C's mdb_xcursor_init1 sets it (readOp does not keep it; only the
+// sub-cursor's mdb_cursor_touch reads it, after the main cursor's touch
+// has done the same work). rlmdb enter_dups.
+//
+// A sub-DB record without a root is MDB_CORRUPTED: C never writes one (a
+// key's node goes with its last duplicate). Through the read path its
+// cursorFirst fails with MDB_NOTFOUND, which mdb_put takes for a missing
+// key and inserts the key a second time (C does the same, _mdb_cursor_put
+// after mdb_cursor_set); in place the put fails and changes nothing.
+func (t *Txn) enterDups(mc cref, last bool) ([]byte, error) {
+	s := &t.w.cursors.slots[mc.slot]
+	if !s.hasX {
+		// A node with duplicates in a tree without them.
+		return nil, format.Corrupted
+	}
+	if err := t.xcursorInit1(mc); err != nil {
+		return nil, err
+	}
+	x := &s.x
+	if !x.c.subp && x.db.Root == format.PInvalid {
+		return nil, format.Corrupted
+	}
+	if x.c.subp && !last {
+		// cursorFirst on a sub-page: xcursorInit1 left the sub-cursor
+		// initialised on its first item, so it does not move and only
+		// readPosition reads the item, for its checks (a sub-cursor reads
+		// no data).
+		sp, err := t.pageOfLevel(subRef(mc.slot), 0)
+		if err != nil {
+			return nil, err
+		}
+		if !firstDupReadable(sp, int(x.db.Pad)) {
+			return nil, format.Corrupted
+		}
+	} else if err := t.readOp(subRef(mc.slot), func(c, _ *rcursor) error {
+		var err error
+		if last {
+			_, _, err = cursorLast(t, c, nil)
+		} else {
+			_, _, err = cursorFirst(t, c, nil)
+		}
+		return err
+	}); err != nil {
+		return nil, err
+	}
+	leaf, err := t.topPage(mc)
+	if err != nil {
+		return nil, err
+	}
+	node, ok := leaf.Node(t.cur(mc).kiTop())
+	if !ok {
+		return nil, format.Corrupted
+	}
+	k, ok := node.Key()
+	if !ok {
+		return nil, format.Corrupted
+	}
+	return k, nil
+}
+
+// firstDupReadable reports whether readPosition reads the first item of
+// sub-page sp (ksize: its P_LEAF2 key size) for a sub-cursor without an
+// error: sp is a leaf, and the item a key in bounds without duplicates of
+// its own.
+func firstDupReadable(sp format.Page, ksize int) bool {
+	if !sp.IsLeaf() {
+		return false
+	}
+	if sp.IsLeaf2() {
+		_, ok := sp.Leaf2Key(0, ksize)
+		return ok
+	}
+	n, ok := sp.Node(0)
+	if !ok || n.IsDupData() {
+		return false
+	}
+	_, ok = n.Key()
+	return ok
 }
 
 // seekKey is mdb_cursor_set with MDB_SET for a cursor that seeksInPlace,
 // in a tree db with key order cmp: what cursorSet(.., Set, true) through
 // readOp does for such a cursor, step for step, with the same errors and
-// state. Returns false where that returns MDB_NOTFOUND (the cursor then
-// sits where key would go).
+// state of the cursor and its sub-cursor. Returns false where that returns
+// MDB_NOTFOUND (the cursor then sits where key would go).
 func (t *Txn) seekKey(mc cref, db *format.DB, cmp format.Comparator, key []byte) (bool, error) {
 	if len(key) == 0 {
 		return false, format.BadValSize
 	}
+	t.resetSubInPlace(mc)
 	if db.Root == format.PInvalid {
 		return false, nil
 	}
@@ -783,9 +891,16 @@ func (t *Txn) seekKey(mc cref, db *format.DB, cmp format.Comparator, key []byte)
 	if !exact {
 		return false, nil
 	}
-	// set1: read the item as cursorSet does, for its checks.
-	if _, err := t.readItem(mp, w.kiTop(), ksize); err != nil {
+	// set1: the descent left C_INITIALIZED set and C_EOF clear. Read the
+	// item as cursorSet does, for its checks.
+	_, dups, err := t.readItem(mp, w.kiTop(), ksize)
+	if err != nil {
 		return false, err
+	}
+	if dups {
+		if _, err := t.enterDups(mc, false); err != nil {
+			return false, err
+		}
 	}
 	return true, nil
 }
@@ -795,6 +910,7 @@ func (t *Txn) seekKey(mc cref, db *format.DB, cmp format.Comparator, key []byte)
 // does. Returns the last key, or ok false for an empty leaf (the cursor is
 // then before its first slot, mc_ki 0xffff).
 func (t *Txn) seekLast(mc cref, db *format.DB, cmp format.Comparator) ([]byte, bool, error) {
+	t.resetSubInPlace(mc)
 	if db.Root == format.PInvalid {
 		return nil, false, format.NotFound
 	}
@@ -814,9 +930,14 @@ func (t *Txn) seekLast(mc cref, db *format.DB, cmp format.Comparator) ([]byte, b
 	}
 	w.ki[w.top] = uint16(nkeys - 1)
 	w.flags |= cInitialized | cEOF
-	k, err := t.readItem(mp, w.kiTop(), int(db.Pad))
+	k, dups, err := t.readItem(mp, w.kiTop(), int(db.Pad))
 	if err != nil {
 		return nil, false, err
+	}
+	if dups {
+		if k, err = t.enterDups(mc, true); err != nil {
+			return nil, false, err
+		}
 	}
 	return k, true, nil
 }

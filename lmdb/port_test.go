@@ -863,3 +863,71 @@ func removeEnvDir(path string) error {
 	}
 	return err
 }
+
+// Cursor.Put with Current and a key other than the cursor's keeps the
+// cursor's key (rlmdb KNOWN_C_BUGS.md row 58). v1 on C stored the value
+// under the old key for a value of the same size, and wrote the other key
+// over the item for any other size, leaving the database out of order.
+func TestCursor_Put_currentKeepsTheKey(t *testing.T) {
+	env := setup(t)
+	defer clean(env, t)
+	var db DBI
+	err := env.Update(func(txn *Txn) (err error) {
+		db, err = txn.OpenDBI("current", Create)
+		if err != nil {
+			return err
+		}
+		for _, k := range []string{"a", "b", "c"} {
+			if err := txn.Put(db, []byte(k), []byte("old-"+k), 0); err != nil {
+				return err
+			}
+		}
+		cur, err := txn.OpenCursor(db)
+		if err != nil {
+			return err
+		}
+		defer cur.Close()
+		if _, _, err := cur.Get([]byte("b"), nil, SetKey); err != nil {
+			return err
+		}
+		// Another size: C would write "zz" over the item.
+		if err := cur.Put([]byte("zz"), []byte("a longer value"), Current); err != nil {
+			return err
+		}
+		k, v, err := cur.Get(nil, nil, GetCurrent)
+		if err != nil || string(k) != "b" || string(v) != "a longer value" {
+			t.Errorf("cursor after the put: %q %q %v", k, v, err)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = env.View(func(txn *Txn) error {
+		cur, err := txn.OpenCursor(db)
+		if err != nil {
+			return err
+		}
+		defer cur.Close()
+		var got []string
+		for {
+			k, v, err := cur.Get(nil, nil, Next)
+			if IsNotFound(err) {
+				break
+			} else if err != nil {
+				return err
+			}
+			got = append(got, string(k)+"="+string(v))
+		}
+		if want := "a=old-a b=a longer value c=old-c"; strings.Join(got, " ") != want {
+			t.Errorf("database %q, want %q", got, want)
+		}
+		if _, err := txn.Get(db, []byte("zz")); !IsNotFound(err) {
+			t.Errorf("Get of the other key: %v", err)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}

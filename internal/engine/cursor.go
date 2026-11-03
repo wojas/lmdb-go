@@ -507,7 +507,10 @@ func searchPage(mp format.Page, cmp format.Comparator, ksize int, key []byte) (i
 
 // newXCursor sets up x as the sub-cursor for entry (mdb_xcursor_init0);
 // false if the database is not MDB_DUPSORT. Until xcursorInit1 runs the
-// sub-tree is empty (C leaves mx_db uninitialised, KNOWN_C_BUGS.md row 6).
+// sub-tree is empty (C leaves mx_db uninitialised and asserts if it is
+// searched before that: a move after a failed MDB_SET does, where the port
+// sets the sub-cursor up from the node first, KNOWN_C_BUGS.md rows 6 and
+// 59).
 func newXCursor(x *rcursor, e *txnDB, l *format.Layout) bool {
 	if uint32(e.db.Flags)&format.DupSort == 0 {
 		return false
@@ -578,6 +581,34 @@ func xcursorInit1(mc, mx *rcursor, node format.Node) error {
 	if mx.cmp.IsInt() && mx.db.Pad == 8 {
 		mx.cmp = format.Clong
 	}
+	return nil
+}
+
+// reenterDups: before a move enters the sub-cursor mx of a main cursor mc
+// on node, a node with duplicates, while mx is not initialised: sets it up
+// from the node as mdb_xcursor_init1 does, but not positioned, so that the
+// move positions it (cursorFirst / cursorLast from the root) on the key's
+// own duplicates and mdb_cursor_count counts them. Only a failed exact
+// search (MDB_SET, MDB_SET_KEY, MDB_GET_BOTH) leaves a main cursor on such
+// a node with the sub-cursor reset.
+//
+// C enters it with what the sub-cursor last held (mdb_cursor_set clears
+// C_INITIALIZED and fails before mdb_xcursor_init1; mdb_cursor_open never
+// sets a record up): another key's record, one from before other cursors
+// added duplicates (mdb_xcursor_init2 skips a sub-cursor that is not
+// initialised), or garbage. It then walks another key's duplicates or the
+// old root of a sub-DB, counts the old number, or reads the main leaf as a
+// moved sub-page's root and crashes; a C_DEL mark left from an earlier
+// delete (row 29) makes it return the first duplicate twice
+// (KNOWN_C_BUGS.md row 59). Where C's record is right and unmarked, the
+// result is C's. rlmdb's reenter_dups.
+//
+//go:noinline
+func reenterDups(mc, mx *rcursor, node format.Node) error {
+	if err := xcursorInit1(mc, mx, node); err != nil {
+		return err
+	}
+	mx.flags &^= cInitialized
 	return nil
 }
 
@@ -780,6 +811,13 @@ func cursorNextAny(t *Txn, mc, mx *rcursor, op format.CursorOp) ([]byte, []byte,
 				if mx == nil {
 					return nil, nil, format.Corrupted
 				}
+				if !mx.isInit() {
+					// After a failed MDB_SET: C enters the duplicates with a
+					// stale record (KNOWN_C_BUGS.md row 59).
+					if err := reenterDups(mc, mx, leaf); err != nil {
+						return nil, nil, err
+					}
+				}
 				dup, _, err := cursorNext(t, mx, nil, format.Next)
 				if op != format.Next || err != format.NotFound {
 					if err != nil {
@@ -838,6 +876,12 @@ func cursorPrevAny(t *Txn, mc, mx *rcursor, op format.CursorOp) ([]byte, []byte,
 			if op == format.Prev || op == format.PrevDup {
 				if mx == nil {
 					return nil, nil, format.Corrupted
+				}
+				if !mx.isInit() {
+					// As in cursorNextAny (KNOWN_C_BUGS.md row 59).
+					if err := reenterDups(mc, mx, leaf); err != nil {
+						return nil, nil, err
+					}
 				}
 				dup, _, err := cursorPrev(t, mx, nil, format.Prev)
 				if op != format.Prev || err != format.NotFound {

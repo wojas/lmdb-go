@@ -12,9 +12,10 @@ import (
 // goDump lists the items of database db (nil: the main DB) of the
 // environment at dir as mdb_dump's data lines (" <hex key>", " <hex
 // value>"), read with the Go engine, forwards; it also checks that a
-// backward scan agrees, and with lookups that point lookups do (not for
-// the differential scripts' databases: their MDB_CURRENT puts with another
-// key leave keys out of order, in C as in Go).
+// backward scan agrees, and with lookups that point lookups do (the
+// differential scripts' databases too: their MDB_CURRENT puts with another
+// key give C the cursor's key, KNOWN_C_BUGS.md row 58, so neither side
+// leaves a key out of order).
 func goDump(t testing.TB, dir string, db []byte, lookups bool) []string {
 	t.Helper()
 	env, err := eng.Open(dir, eng.Options{Flags: format.NoLock | format.ReadOnly, MaxDBs: 8})
