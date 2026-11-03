@@ -62,6 +62,7 @@ type missTxn interface {
 
 type missCursor interface {
 	get(key []byte, op format.CursorOp) ([]byte, []byte, int)
+	getBoth(key, data []byte) int
 	count() (uint64, int)
 	put(k, v []byte) int
 	putMulti(k, page []byte, stride int) int
@@ -86,6 +87,10 @@ func (x cMissTxn) cursor(dbi int) (missCursor, int) {
 func (x cMissCursor) get(key []byte, op format.CursorOp) ([]byte, []byte, int) {
 	k, v, err := x.c.Get(key, nil, uint(op))
 	return k, v, cgoCode(err)
+}
+func (x cMissCursor) getBoth(key, data []byte) int {
+	_, _, err := x.c.Get(key, data, uint(format.GetBoth))
+	return cgoCode(err)
 }
 func (x cMissCursor) count() (uint64, int) {
 	n, err := x.c.Count()
@@ -113,6 +118,10 @@ func (x gMissTxn) cursor(dbi int) (missCursor, int) {
 func (x gMissCursor) get(key []byte, op format.CursorOp) ([]byte, []byte, int) {
 	k, v, err := x.c.Get(key, nil, op)
 	return k, v, code(err)
+}
+func (x gMissCursor) getBoth(key, data []byte) int {
+	_, _, err := x.c.Get(key, data, format.GetBoth)
+	return code(err)
 }
 func (x gMissCursor) count() (uint64, int) {
 	n, err := x.c.Count()
@@ -439,6 +448,146 @@ func subDBThresholdsAZK(t *testing.T, flags uint32) (s, split uint32) {
 				return s, i
 			}
 			s = i
+		}
+	}
+}
+
+// TestCgoCountAfterAnotherCursorsPut: mdb_cursor_count of a cursor on a
+// key after another cursor (or mdb_put, or MDB_MULTIPLE) put duplicates of
+// that key: converting a single item, into a sub-page, growing it,
+// promoting it to a sub-DB, into a sub-DB, splitting its leaf; before and
+// after the cursor's item (rlmdb's capi_write.c test_count_after_other_put,
+// a508e1b). C 0.9's count is the one before the put (its cursor keeps a
+// stale copy of the duplicates' record, KNOWN_C_BUGS.md row 14), the Go
+// engine's is right; the positions after it (MDB_GET_CURRENT,
+// MDB_NEXT_DUP, MDB_PREV_DUP) are C's.
+func TestCgoCountAfterAnotherCursorsPut(t *testing.T) {
+	const mapSize = 16 << 20
+	cenv, err := cgolmdb.NewEnv()
+	must(t, err)
+	defer cenv.Close()
+	must(t, cenv.SetMapSize(mapSize))
+	must(t, cenv.SetMaxDBs(200))
+	must(t, cenv.Open(t.TempDir(), cgolmdb.NoSync, 0o644))
+	env, err := eng.Open(t.TempDir(), eng.Options{
+		Format: format.V09, MapSize: mapSize, MaxDBs: 200,
+		Flags: format.NoSync, OpenLock: eng.OpenMemLock,
+	})
+	must(t, err)
+	defer env.Close()
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+	ctxn, err := cenv.BeginTxn(nil, 0)
+	must(t, err)
+	defer ctxn.Abort()
+	gtxn, err := env.BeginTxn(nil, 0)
+	must(t, err)
+	defer gtxn.Abort()
+	be := func(v uint32) []byte { return binary.BigEndian.AppendUint32(nil, v) }
+	seq := 0
+
+	// count runs one case on one side: cursor A on item on of "k" (items
+	// 10 ... 10n), then how (0: another cursor puts v, 1: mdb_put puts it,
+	// 2: MDB_MULTIPLE puts v, v+1, v+2). Returns the key's count, A's
+	// count and the trace of A's moves.
+	count := func(x missTxn, name string, flags uint32, how int, n, on, v uint32) (truth, cnt uint64, trace string) {
+		db, rc := x.open(name, format.Create|flags)
+		if rc != 0 {
+			t.Fatalf("open %s: %d", name, rc)
+		}
+		for _, k := range []string{"a", "z"} {
+			if rc := x.put(db, []byte(k), be(1)); rc != 0 {
+				t.Fatalf("put %s: %d", k, rc)
+			}
+		}
+		for i := uint32(1); i <= n; i++ {
+			if rc := x.put(db, []byte("k"), be(10*i)); rc != 0 {
+				t.Fatalf("put k: %d", rc)
+			}
+		}
+		a, _ := x.cursor(db)
+		defer a.close()
+		c, _ := x.cursor(db)
+		defer c.close()
+		if rc := a.getBoth([]byte("k"), be(on)); rc != 0 {
+			t.Fatalf("get both k %d: %d", on, rc)
+		}
+		switch how {
+		case 0:
+			rc = c.put([]byte("k"), be(v))
+		case 1:
+			rc = x.put(db, []byte("k"), be(v))
+		default:
+			rc = c.putMulti([]byte("k"), append(append(be(v), be(v+1)...), be(v+2)...), 4)
+		}
+		if rc != 0 {
+			t.Fatalf("put %d: %d", how, rc)
+		}
+		if _, _, rc := c.get([]byte("k"), format.Set); rc != 0 {
+			t.Fatalf("set k with the other cursor: %d", rc)
+		}
+		truth, _ = c.count()
+		cnt, _ = a.count()
+		_, d, rcCur := a.get(nil, format.GetCurrent)
+		cur := be32of(d)
+		_, d, rcNext := a.get(nil, format.NextDup)
+		next := be32of(d)
+		_, d, rcPrev := a.get(nil, format.PrevDup)
+		prev := be32of(d)
+		return truth, cnt, fmt.Sprintf("A on %d (%d), next dup %d (%d), then previous %d (%d)",
+			cur, rcCur, next, rcNext, prev, rcPrev)
+	}
+
+	for f, flags := range []uint32{format.DupSort | format.DupFixed, format.DupSort} {
+		s, split := subDBThresholdsAZK(t, flags)
+		if s <= 4 || split <= s {
+			t.Fatalf("flags %#x: sub-DB at %d, split at %d", flags, s, split)
+		}
+		cases := []struct {
+			what     string
+			n, on, v uint32
+		}{
+			{"single item, after", 1, 10, 15},
+			{"single item, before", 1, 10, 5},
+			{"sub-page, after", 3, 20, 25},
+			{"sub-page, before", 3, 20, 15},
+			{"sub-page grows", 4, 20, 45},
+			{"to a sub-DB, after", s - 1, 20, 10*s + 5},
+			{"to a sub-DB, before", s - 1, 20, 5},
+			{"sub-DB, after", s + 5, 20, 25},
+			{"sub-DB, before", s + 5, 20, 15},
+			{"sub-DB leaf splits, after", split - 1, 10, 10*split + 5},
+			{"sub-DB leaf splits, before", split - 1, 10 * (split - 1), 5},
+		}
+		hows := 2
+		if f == 0 {
+			hows = 3
+		}
+		for how := range hows {
+			added := uint64(1)
+			if how == 2 {
+				added = 3
+			}
+			for _, tc := range cases {
+				what := fmt.Sprintf("%s (flags %#x, put %d)", tc.what, flags, how)
+				seq++
+				name := fmt.Sprintf("count%d", seq)
+				ctruth, ccnt, ctrace := count(cMissTxn{ctxn}, name, flags, how, tc.n, tc.on, tc.v)
+				gtruth, gcnt, gtrace := count(gMissTxn{gtxn}, name, flags, how, tc.n, tc.on, tc.v)
+				want := uint64(tc.n) + added
+				if ctruth != want || gtruth != want {
+					t.Fatalf("%s: the key's count: C %d, Go %d, want %d", what, ctruth, gtruth, want)
+				}
+				if ccnt >= want {
+					t.Errorf("%s: C's count %d is not stale (row 14)", what, ccnt)
+				}
+				if gcnt != want {
+					t.Errorf("%s: Go's count %d, want %d", what, gcnt, want)
+				}
+				if ctrace != gtrace {
+					t.Errorf("%s:\n  C:  %s\n  Go: %s", what, ctrace, gtrace)
+				}
+			}
 		}
 	}
 }
