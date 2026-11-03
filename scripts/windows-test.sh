@@ -71,14 +71,19 @@
 #   @echo off
 #   set "TMP=%~dp0tmp"
 #   set "TEMP=%~dp0tmp"
+#   set "GOTMPDIR=%~dp0tmp"
 #   %*
 #   exit /b %ERRORLEVEL%
 #
 #   scripts/windows-test.sh 'set "TMP=C:\some\ntfs\dir" & set "TEMP=C:\some\ntfs\dir"
 #     & cd tests && go test -exec T:\lmdbgo-work\testtmp.cmd ./...'
 #
-# (cmd parses the arguments %* passes again: -run patterns with | do not
-# survive it.)
+# The wrapper sets GOTMPDIR too: Go's testing package creates T.TempDir's
+# directories in $GOTMPDIR when that is set (Go 1.27 does), and in TMP
+# only otherwise, so a GOTMPDIR on NTFS for the go command would take the
+# tests' environments there with it. (The go command's GOTMPDIR, its work
+# directory, may stay on exFAT; only the linker's TMP may not.) cmd parses
+# the arguments %* passes again: -run patterns with | do not survive it.
 set -eu
 here=$(cd "$(dirname "$0")/.." && pwd)
 host=${WINDOWS_HOST:?set WINDOWS_HOST to the ssh destination of the Windows machine}
