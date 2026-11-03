@@ -38,6 +38,11 @@ type Cursor struct {
 	// id is the arena slot of a write transaction's cursor.
 	id     cursorID
 	closed bool
+	// owner changes whenever the cursor is opened, closed or released, and
+	// has OwnerDetached set while the cursor is detached (Owner).
+	owner uint64
+	// next and prev link the cursor into a CursorList.
+	next, prev *Cursor
 }
 
 // OpenCursor is mdb_cursor_open: a cursor over dbi. In a write
@@ -60,7 +65,7 @@ func (t *Txn) OpenCursorInto(c *Cursor, dbi DBI) error {
 		if err != nil {
 			return err
 		}
-		*c = Cursor{txn: t, dbi: dbi, id: id}
+		*c = Cursor{txn: t, dbi: dbi, id: id, owner: c.nextOwner(), next: c.next, prev: c.prev}
 		return nil
 	}
 	if _, err := t.dbiEntry(dbi, dbValid); err != nil {
@@ -73,10 +78,15 @@ func (t *Txn) OpenCursorInto(c *Cursor, dbi DBI) error {
 	if err != nil {
 		return err
 	}
+	// The pages of the cursor's last use (renewed, or reopened after its
+	// transaction was renewed) may belong to another map: init only resets
+	// the root of the stack.
+	c.Forget()
 	c.txn, c.dbi, c.closed, c.id = t, dbi, false, cursorID{}
 	c.mc.init(e.db, e.keyCmp, 0, t.l)
 	c.hasX = newXCursor(&c.mx, e, t.l)
 	c.dcmp, c.hasDcmp = e.dupCmp, e.hasDup
+	c.owner = c.nextOwner()
 	return nil
 }
 
@@ -97,10 +107,55 @@ func (c *Cursor) Close() {
 		return
 	}
 	c.closed = true
+	c.owner = c.nextOwner()
 	if c.txn != nil && c.txn.w != nil {
 		c.txn.closeWriteCursor(c.id)
 	}
 	c.Forget()
+}
+
+// Release closes a read cursor that package lmdb keeps for reuse: it
+// forgets its pages (Forget) and changes Owner, so that a handle that still
+// refers to it fails instead of using it. Unlike Close it touches nothing
+// but the cursor: its transaction's state may serve another transaction by
+// now.
+func (c *Cursor) Release() {
+	c.closed = true
+	c.owner = c.nextOwner()
+	c.Forget()
+}
+
+// OwnerDetached is the bit of Owner that is set while a cursor is detached
+// (CursorList.DetachAll) and cleared when it is opened again.
+const OwnerDetached = 1 << 63
+
+// Owner identifies the use the cursor serves, the counterpart of
+// Txn.Owner: it changes when the cursor is opened (OpenCursorInto, Renew),
+// closed or released. Package lmdb reuses the memory of closed read
+// cursors; a handle that remembers Owner from its open can tell that the
+// cursor serves another handle by now. While the cursor is detached (its
+// transaction ended or was reset) Owner has OwnerDetached set as well, so
+// that one comparison tells the handle that its cursor is open and its
+// transaction has neither ended nor been reset since.
+func (c *Cursor) Owner() uint64 { return c.owner }
+
+// nextOwner is the Owner of the cursor's next open (or close): not
+// detached.
+func (c *Cursor) nextOwner() uint64 { return c.owner&^OwnerDetached + 1 }
+
+// detach is CursorList.DetachAll for one cursor: it forgets its pages and
+// marks it detached.
+func (c *Cursor) detach() {
+	c.Forget()
+	c.owner |= OwnerDetached
+}
+
+// HoldsPages reports whether the cursor's scratch space holds a page (a
+// slice into a map or a dirty page) other than the empty page of an
+// unpositioned cursor: package lmdb's tests check with it that cursors
+// forget their pages when their transaction ends or is reset.
+func (c *Cursor) HoldsPages() bool {
+	return c.mc.holdsPages() || c.mx.holdsPages()
 }
 
 // Forget drops the cursor's pages (rcursor.forget), which point into its
@@ -162,6 +217,11 @@ func (c *Cursor) Count() (uint64, error) {
 	t := c.txn
 	if t.w != nil {
 		return t.writeCursorCount(c)
+	}
+	if !c.hasX {
+		// Before the transaction, as C (a reset one is MDB_BAD_TXN only
+		// for a DUPSORT cursor).
+		return 0, format.Incompatible
 	}
 	if t.state != txnActive {
 		return 0, format.BadTxn

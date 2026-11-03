@@ -112,6 +112,17 @@ func (c *rcursor) forget() {
 	c.subpage = nil
 }
 
+// holdsPages reports whether the stack or the sub-page holds a page other
+// than emptyPage (tests: see Cursor.HoldsPages).
+func (c *rcursor) holdsPages() bool {
+	for _, p := range c.pg {
+		if p != nil && (len(p) == 0 || &p[0] != &emptyPage[0]) {
+			return true
+		}
+	}
+	return c.subpage != nil
+}
+
 func (c *rcursor) page(i int) format.Page { return format.Page{B: c.pg[i], L: c.l} }
 
 func (c *rcursor) topPage() format.Page { return format.Page{B: c.pg[c.top], L: c.l} }
