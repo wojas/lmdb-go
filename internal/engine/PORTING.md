@@ -61,13 +61,13 @@ commit since; rlmdb's BSD commits are the BSD port's (branch
   differential against `writeops` (C 0.9.36) and `writeops10` (C 1.0 at 1,
   4, 16, 64 KiB pages; 256 B to 64 KiB for small `MDB_DUPFIXED` items, and
   `writeops10_ndebug` for the one script on which C 1.0's assertions
-  abort, rlmdb `KNOWN_C_BUGS.md` #37) with every
+  abort, rlmdb `KNOWN_C_BUGS.md` row 37) with every
   cursor compared after every step, then `mdb_dump`, `cpeer check-freelist`
   and a page-by-page structural comparison (port of interop `pagecmp`), and
   the Go engine reading C's result; Go-side spilling; plain and compacting
   copies byte-identical to `mdb_copy`/`mdb_copy -c`; Go reading `cpeer
   fill` data sets; `MDB_CURRENT` replacements against C's
-  `mdb_cursor_del` + `mdb_cursor_put` (the `cr` op, #38; also on a 2 KiB
+  `mdb_cursor_del` + `mdb_cursor_put` (the `cr` op, row 38; also on a 2 KiB
   0.9 file, which the harness can start both sides from) and C-made files
   with a DUPSORT item on overflow pages, changed by Go and audited by C;
   plain copies with a real lock file (after a failed meta sync, by another
@@ -299,15 +299,15 @@ counts of the API's hot paths are pinned by `lmdb/alloc_test.go`.
   its compacting copy refused such pages as corrupt. rlmdb fixed the same
   in d039bf9 and 8dcdb22, and the port now follows its code (one
   `leaf2Count` with C's wrapping 16-bit arithmetic, SIZELEFT of a
-  `P_LEAF2` page modulo 2^16, `copyUsed`; rlmdb `KNOWN_C_BUGS.md` #37 for
+  `P_LEAF2` page modulo 2^16, `copyUsed`; rlmdb `KNOWN_C_BUGS.md` row 37 for
   C 1.0's assertion).
 * MDB_CURRENT with an item too big for a node on a DUPSORT key's only
-  item (rlmdb `KNOWN_C_BUGS.md` #38, found by this port's FuzzWriteModel):
+  item (rlmdb `KNOWN_C_BUGS.md` row 38, found by this port's FuzzWriteModel):
   implemented from rlmdb's decision first, aligned with its fix (`dc90f21`)
   in the sync to `3df6995`. The writer never creates an F_BIGDATA node in
   a DUPSORT database: such an MDB_CURRENT is caught right after the
   positioning and runs as mdb_cursor_del + mdb_cursor_put
-  (`replaceCurrent`, which the #15 route shares; the transaction fails if
+  (`replaceCurrent`, which the row 15 route shares; the transaction fails if
   the put after the delete fails), and so does a put of an item the
   duplicate order calls equal that does not fit (in an MDB_MULTIPLE batch
   the batch goes on); the test is mdb_node_add's (`overflowsNode`). A
@@ -316,22 +316,31 @@ counts of the API's hot paths are pinned by `lmdb/alloc_test.go`.
   sub-DB root is built (an item longer than the maximum key size is
   MDB_CORRUPTED).
 * MDB_CURRENT on a duplicate in a sub-DB that C leaves in a leaf searches
-  do not look in (found by this port's FuzzWriteModel; C 0.9, C 1.0 and
-  rlmdb alike; no rlmdb ledger row yet). C keeps the new item in the old
-  one's leaf at its index: the first item of a leaf other than the
-  leftmost, replaced by one of another size that sorts before the branch
-  key above the leaf (0.9's ITS#8447 path, without fix_parent), or the
-  last item of a leaf other than the rightmost, replaced by one of any
-  size at or after the next leaf's branch key, which a delete of that
-  leaf's first item leaves behind (0.9 and 1.0). MDB_GET_BOTH then does
-  not find the item, and later puts land out of order. Exactly these
-  replacements are caught right after the positioning and run as
-  mdb_cursor_del + mdb_cursor_put (`currentDupOutsideLeaf`, then
-  `replaceCurrent`, as for #38); the files are C's for those two calls
-  (`TestDifferential*CurrentDupOutsideLeaf`).
+  do not look in (rlmdb `KNOWN_C_BUGS.md` row 56, found by this port's
+  FuzzWriteModel; C 0.9 and C 1.0 alike). Fixed in this port first
+  (229ea68), then in rlmdb (`b778cca`, after the pinned `3df6995`), and
+  aligned with rlmdb's fix. C keeps the new item in the old one's leaf at
+  its index: the first item of a leaf other than the leftmost, replaced by
+  one of another size that sorts before the branch key above the leaf
+  (0.9's ITS#8447 path, without fix_parent), or the last item of a leaf
+  other than the rightmost, replaced by one of any size at or after the
+  next leaf's branch key, which a delete of that leaf's first item leaves
+  behind (0.9 and 1.0, MDB_DUPFIXED too). MDB_GET_BOTH then does not find
+  the item, and later puts land out of order. Exactly these replacements
+  are caught right after the row 38 check, before the spill check and the
+  page touch, and run as mdb_cursor_del + mdb_cursor_put
+  (`currentDupOutsideLeaf`, then `replaceCurrent`); the branch keys are
+  compared as searches compare them (`CompareInPage`). As in rlmdb this
+  includes MDB_MULTIPLE with one item (C has the same bug there), which
+  then reports one item stored; two or more items are C's in-place
+  replacement. The files are C's for those two calls
+  (`TestDifferential*CurrentDupOutsideLeaf`, the other cursor on the
+  replaced item where it stays in place;
+  `TestCgoCurrentMultipleOutsideLeaf` for MDB_MULTIPLE against C 0.9
+  through `tests/cgolmdb`).
 * A failed sync after the meta page write (macOS: the `F_FULLFSYNC` after
   the `O_DSYNC` write; stage 4 review, round 2, P2-4; rlmdb
-  `KNOWN_C_BUGS.md` #41) is handled as C handles a failed meta page write:
+  `KNOWN_C_BUGS.md` row 41) is handled as C handles a failed meta page write:
   the old txnid is written back and the environment is fatal (`MDB_PANIC`
   for later transactions and copies). C 0.9.36 and 1.0 return the sync's
   error and keep the page there; rlmdb did the same until `bf3a0c0`, whose
@@ -353,14 +362,14 @@ counts of the API's hot paths are pinned by `lmdb/alloc_test.go`.
   of every other file stay byte-identical to `mdb_copy`'s.
 * A compacting copy stops with MDB_CORRUPTED as soon as it would hold more
   pages than the source snapshot (`copyWriter.limit`, rlmdb `5d8bc38`,
-  `KNOWN_C_BUGS.md` #44): C's mdb_env_cwalk writes the shared or cyclic
+  `KNOWN_C_BUGS.md` row 44): C's mdb_env_cwalk writes the shared or cyclic
   pages of a damaged tree once per path to them, without bound.
-* rlmdb's ledger rows #39 to #44, here: #39 (OpenBSD's `msync` of a range
-  that does not start on an OS page) is the BSD port's; #40 (the robust
+* rlmdb's ledger rows 39 to 44, here: row 39 (OpenBSD's `msync` of a range
+  that does not start on an OS page) is the BSD port's; row 40 (the robust
   mutex repair validates the meta pages) holds here as in rlmdb
   (`pickMetaIn` validates both pages, and a failed repair leaves the
-  mutex unrecoverable, `internal/lockfile` `TestWriterRepairFailure`); #41
-  and #44 as above; #42 (`OpenProcess` with `SYNCHRONIZE`) and #43 (the
+  mutex unrecoverable, `internal/lockfile` `TestWriterRepairFailure`); rows 41
+  and 44 as above; row 42 (`OpenProcess` with `SYNCHRONIZE`) and row 43 (the
   Windows lock-file size in 64 bits) are the Windows port's, which follows
   both (`internal/lockfile/filelock_windows.go`).
 * Every KNOWN_C_BUGS.md decision of rlmdb is kept as rlmdb implements it
@@ -381,14 +390,14 @@ restructured history), oldest first:
 | `86a4d1b` | NO_LOCK: track read transactions in memory | the port did from the start (rule 2a); compared, see the NoLock row |
 | `d3d9239` | NO_LOCK handles of one file share the reader table and writer lock | ported (`registry.go`, `MemLock` shared, new-file set-up under the writer lock; tests) |
 | `d039bf9` | 1-byte `MDB_DUPFIXED` items; the interop page audit accepts them | ported: `leaf2Count`, `copyUsed`; gopeer's audit and data set; tests |
-| `5015941` | refuse a root split that would overflow the cursor stack (#36) | ported (`checkRootPush`, `splitPeer`; rlmdb's handbuilt test) |
-| `8dcdb22` | `P_LEAF2` free space wraps like C's 16-bit counters (#37) | ported (`sizeLeft`, `Page.SizeLeft`; the wrap test against `writeops10_ndebug`) |
+| `5015941` | refuse a root split that would overflow the cursor stack (row 36) | ported (`checkRootPush`, `splitPeer`; rlmdb's handbuilt test) |
+| `8dcdb22` | `P_LEAF2` free space wraps like C's 16-bit counters (row 37) | ported (`sizeLeft`, `Page.SizeLeft`; the wrap test against `writeops10_ndebug`) |
 | `1ade420` | a CursorId names its arena | no change needed: a `Cursor` holds its `*Txn`, the arena is never replaced and keeps its generations (test ported) |
 | `ade31f0` | NO_LOCK readers publish the committed txnid before copying the meta page | ported in stage 4 (`noLockSnapshot`); compared again, see the NoLock row |
 | `774f8d0` | rlmdb-capi: clear C comparators when an abort closes a handle | no change needed: comparators live in the DBI slot that every close clears (test ported); `lmdb` has no comparator API |
 | `e48ebe0` | `LockMap::read_bytes` dead code on Linux | not applicable |
 
-Also from rlmdb's decisions, then not yet a commit on its main: #38, which
+Also from rlmdb's decisions, then not yet a commit on its main: row 38, which
 landed in `dc90f21` (next section).
 
 ## Sync with rlmdb `e48ebe0..3df6995`
@@ -400,14 +409,14 @@ port's (`stage7-bsd`).
 | rlmdb | what | here |
 |---|---|---|
 | `9c854c2` | scripts: clippy in the Linux container too | not applicable |
-| `e4a5ad9` | FreeBSD, OpenBSD, NetBSD and DragonFly with C's lock primitives (#39) | BSD port |
+| `e4a5ad9` | FreeBSD, OpenBSD, NetBSD and DragonFly with C's lock primitives (row 39) | BSD port |
 | `bfef7e6` | CI and docs for the BSDs | BSD port |
-| `12a6731` | the OpenBSD `msync` row is #39 | ledger numbering only (#39: BSD port) |
+| `12a6731` | the OpenBSD `msync` row is number 39 | ledger numbering only (row 39: BSD port) |
 | `ce88ec6` | the shared C-oracle build directory is locked and rebuilt when stale | not applicable: the tests here take built oracles (`RLMDB_DIR`, `RLMDB_BIN`, `LMDB_ORACLE_BIN`) and build none into a shared directory |
-| `bf3a0c0` | a failed sync after the meta write is fatal and restores the old txnid; a plain copy never emits a meta newer than its snapshot (#41) | the port had both since stage 4; compared: a copy whose own meta page does not hold the snapshot no longer fails (ledger); rlmdb's tests ported (`Env.FailNextMetaSync`, `TestMetaWriteFailureIsFatal` with another `NoLock` handle, `TestFailedFullFsyncIsFatal` on macOS, `tests/engine` `TestCopyAfterFailedMetaSync` and `TestPlainCopyHidesANewerMeta` with a real lock file and C's `mdb_copy`) |
-| `ee87eb1` | ledger #40: the robust-mutex repair validates the meta pages | the port does the same (ledger); no change |
+| `bf3a0c0` | a failed sync after the meta write is fatal and restores the old txnid; a plain copy never emits a meta newer than its snapshot (row 41) | the port had both since stage 4; compared: a copy whose own meta page does not hold the snapshot no longer fails (ledger); rlmdb's tests ported (`Env.FailNextMetaSync`, `TestMetaWriteFailureIsFatal` with another `NoLock` handle, `TestFailedFullFsyncIsFatal` on macOS, `tests/engine` `TestCopyAfterFailedMetaSync` and `TestPlainCopyHidesANewerMeta` with a real lock file and C's `mdb_copy`) |
+| `ee87eb1` | ledger row 40: the robust-mutex repair validates the meta pages | the port does the same (ledger); no change |
 | `3811bea` | retry a torn meta copy when the published txnid moved | ported: both reader paths, at most 16 failed copies (`maxTornCopies`; the NoLock path retried without bound, the lock-file path not at all); rlmdb's three tests (`torncopy_test.go`, through `testHookSnapshotMeta`) |
-| `dc90f21` | MDB_CURRENT never stores a DUPSORT value on overflow pages; repair files where C did (#38) | compared with the port's version and aligned (ledger: the check before the spill and touch, mdb_node_add's test, the MDB_MULTIPLE batch going on, the overflow pages freed before the sub-DB root is allocated, the maximum-size check, 16-bit `mp_upper` of a `P_LEAF2` sub-DB root); tests ported (`TestDifferential*CurrentSingleItem` with the `cr` op, `TestSingleItemOnOverflowPages*`, `TestDifferential10DupfixedItemsOverAQuarterPage` with 64 KiB pages, `TestDupsortCurrentReplacesThroughASubDB`); `pagecmp` leaves out 0.9's uninitialised `mp_pad` of ordinary pages (rlmdb's `canonical09`) |
+| `dc90f21` | MDB_CURRENT never stores a DUPSORT value on overflow pages; repair files where C did (row 38) | compared with the port's version and aligned (ledger: the check before the spill and touch, mdb_node_add's test, the MDB_MULTIPLE batch going on, the overflow pages freed before the sub-DB root is allocated, the maximum-size check, 16-bit `mp_upper` of a `P_LEAF2` sub-DB root); tests ported (`TestDifferential*CurrentSingleItem` with the `cr` op, `TestSingleItemOnOverflowPages*`, `TestDifferential10DupfixedItemsOverAQuarterPage` with 64 KiB pages, `TestDupsortCurrentReplacesThroughASubDB`); `pagecmp` leaves out 0.9's uninitialised `mp_pad` of ordinary pages (rlmdb's `canonical09`) |
 | `9155a5d` | the NO_LOCK snapshot stress test reserves a 1 GiB map | ported together with the test (`TestNoLockReadersPinTheSnapshotTheyRead`), which came with `ade31f0` and was not ported then |
 | `2e5101f` | tests and the C page audit no longer assume a little-endian host | mirrored: `pagecmp` reads `mn_lo`/`mn_hi` in host order, the literal `mdb_cmp_cint` loops of both byte orders, the meta tests' field pokes, a byte-swapped magic is MDB_INVALID; the C page audit is rlmdb's (`cpeer check-freelist`, built from its sources). The s390x run found one engine bug here: `Page.OverflowPages` combined `mp_lower`/`mp_upper` as on little-endian hosts |
 | `8230c7c` | `scripts/linux-test.sh`: `LINUX_TEST_TARGET` runs the suites cross-built under QEMU | here `LINUX_TEST_PLATFORM=linux/s390x` (image `golang:1.25-trixie`) runs everything under QEMU; `LMDB_TEST_NO_ROBUST_MUTEX` for its `INTEROP_NO_ROBUST_MUTEX` |
@@ -418,8 +427,8 @@ port's (`stage7-bsd`).
 | `0092556` | the C cursor and write helpers read their scripts from stdin (FreeBSD `ARG_MAX`) | not applicable: `writeops` already reads stdin here, and the Go tests do not run `cursorops` |
 | `1009bbd` | FreeBSD tested in CI | BSD port |
 | `63b591c`, `b3ed51e`, `d27e68f`, `03fccb3`, `86563af`, `7dcf511`, `ea1bbdb` | MSVC builds of the C test programs, Windows CI, the mtest seed shim, the C library's DLL, rlmdb-tools' `atoi` and `maxreaders=-1` | Windows port / not applicable (no C API, no mtest, no C-tool clones here) |
-| `5d8bc38` | a compacting copy stops when it outgrows its source (#44) | ported (`copyWriter.limit`; rlmdb's hand-built test, `TestCompactingCopyOfSharedPagesStops`) |
-| `3df6995` | interop holds outlast slow scenarios; stale reader and #42 on Windows | the holds: `tests/lockfile` gives its C peers' `--until-stdin` holds 600 s (`holdSecs`); #42: Windows port |
+| `5d8bc38` | a compacting copy stops when it outgrows its source (row 44) | ported (`copyWriter.limit`; rlmdb's hand-built test, `TestCompactingCopyOfSharedPagesStops`) |
+| `3df6995` | interop holds outlast slow scenarios; stale reader and row 42 on Windows | the holds: `tests/lockfile` gives its C peers' `--until-stdin` holds 600 s (`holdSecs`); row 42: Windows port |
 
 ## Windows: rlmdb's Windows commits (up to `3df6995`)
 
@@ -435,10 +444,10 @@ comment, `os/windows.rs`).
 | `0bf0553` | the OS layer on 64-bit Windows | ported without cgo (`golang.org/x/sys/windows`, ntdll for `NtCreateSection`, `NtMapViewOfSection`, `NtExtendSection`): `sys.MapData` (0.9 extended to the map size and mapped whole; 1.0 reserved section, `DataMap.CommitPages` where pages are taken from the end of the map, section extended to the file size), `Env.renewShortMap` for read-only maps of the file as it was, the files with C's sharing, `FILE_FLAG_WRITE_THROUGH` meta handle, copy target, file identity, `IsMissing`, registry key of an unresolvable directory; the lock file (`MutexNames`, `MutexHash`, `LockFileEx`, named mutexes, abandoned mutexes as dead owners, no pid locks, `OpenProcess` liveness with `SYNCHRONIZE`, `mr_tid` a `DWORD` at 12, `mti_format` `0x1` and `0x08138002`); rlmdb's Windows unit tests (`*_windows_test.go`) and the Windows layout, computed on every host |
 | `24571fa` | rlmdb-capi, tools, tests and interop on Windows | the parts that apply: the C oracles built with MinGW-w64 as interop/build.rs builds them (`tests/cmd/build-c-oracles`), `.exe` names (`coracle.Exe`), `scripts/windows-test.sh`; test expectations that differ on Windows (lock byte not writable through another handle, owner-death tests); rlmdb-capi and rlmdb-tools: not applicable |
 | `bf7d115` | CI workflow and docs | docs here (`PLAN.md`, `README.md`, `AGENTS.md`, `lmdb/DEVIATIONS.md`); no CI in this repository |
-| `a933f11` | refer to `KNOWN_C_BUGS.md` #42 and #43 | the comments cite them |
+| `a933f11` | refer to `KNOWN_C_BUGS.md` rows 42 and 43 | the comments cite them |
 | `b3ed51e` | interop: argv[0] copies; CI temp directory on the local disk | not applicable (the harness is rlmdb's); run the tests with `TMP` on a local disk, as there |
-| `5d8bc38` | a compacting copy stops when it outgrows its source (#44) | not Windows-specific: the engine sync's |
-| `3df6995` | interop holds outlast slow scenarios; stale reader and #42 on Windows | rlmdb's interop harness (the Go peer runs in it as `Peer::External`, in rlmdb's main since `0f902b4`) |
+| `5d8bc38` | a compacting copy stops when it outgrows its source (row 44) | not Windows-specific: the engine sync's |
+| `3df6995` | interop holds outlast slow scenarios; stale reader and row 42 on Windows | rlmdb's interop harness (the Go peer runs in it as `Peer::External`, in rlmdb's main since `0f902b4`) |
 | `63b591c`, `d27e68f`, `03fccb3`, `86563af`, `7dcf511`, `ea1bbdb` | MSVC builds of the C test programs, the C library's DLL, rlmdb-tools' `atoi` per C runtime | not applicable (no MSVC build here: the oracles are built with MinGW-w64) |
 
 Divergences from rlmdb on Windows (none changes a file):
@@ -464,9 +473,9 @@ the file comments of `internal/lockfile/layout.go` (the per-BSD table),
 
 | rlmdb | what | here |
 |---|---|---|
-| `e4a5ad9` | FreeBSD, OpenBSD, NetBSD and DragonFly with C's lock primitives (#39) | ported: FreeBSD's robust mutexes (the cgo pair covers `linux \|\| freebsd`; `layout_freebsd.go`); named semaphores for 0.9 lock files on the other three (macOS's files shared: `sem.go`, `sem_cgo.go`, `-lrt` on NetBSD), NetBSD's 14-character names and 8-byte `dev_t` in the hashed struct (`semNamesV09`, `lockFileID`); the SysV set of 1.0 lock files (`SysVSemaphores`, `sysv.go`, `sysv_cgo.go`, `SysVKey` = rlmdb's `ftok_key`); the last user removes semaphores and the set (`removedByLastUser`); `MDB_FDATASYNC`, `MDB_DSYNC` and `madvise` per BSD; OpenBSD's `MDB_Invalidate` at rlmdb's three call sites (`Txn.invalidateMap`, `sys.DataMap.Invalidate`, widened to whole OS pages: #39); rlmdb's tests (layouts and lock formats of every platform, names, the SysV protocol on macOS, `ftok` against libc in `tests/lockfile`, `data_map_invalidate`); the C API link lines and the interop lock-line helper: not applicable |
+| `e4a5ad9` | FreeBSD, OpenBSD, NetBSD and DragonFly with C's lock primitives (row 39) | ported: FreeBSD's robust mutexes (the cgo pair covers `linux \|\| freebsd`; `layout_freebsd.go`); named semaphores for 0.9 lock files on the other three (macOS's files shared: `sem.go`, `sem_cgo.go`, `-lrt` on NetBSD), NetBSD's 14-character names and 8-byte `dev_t` in the hashed struct (`semNamesV09`, `lockFileID`); the SysV set of 1.0 lock files (`SysVSemaphores`, `sysv.go`, `sysv_cgo.go`, `SysVKey` = rlmdb's `ftok_key`); the last user removes semaphores and the set (`removedByLastUser`); `MDB_FDATASYNC`, `MDB_DSYNC` and `madvise` per BSD; OpenBSD's `MDB_Invalidate` at rlmdb's three call sites (`Txn.invalidateMap`, `sys.DataMap.Invalidate`, widened to whole OS pages: row 39); rlmdb's tests (layouts and lock formats of every platform, names, the SysV protocol on macOS, `ftok` against libc in `tests/lockfile`, `data_map_invalidate`); the C API link lines and the interop lock-line helper: not applicable |
 | `bfef7e6` | CI and docs for the BSDs | docs here (`PLAN.md` "The BSDs", `README.md`, `AGENTS.md`, `lmdb/DEVIATIONS.md`); no CI in this repository |
-| `12a6731` | the OpenBSD `msync` row is #39 | the comments cite #39 |
+| `12a6731` | the OpenBSD `msync` row is number 39 | the comments cite row 39 |
 | `1009bbd` | FreeBSD tested in rlmdb's CI | rlmdb's status; this port is tested on FreeBSD 15.1 and OpenBSD 7.9 arm64 (PLAN.md "The BSDs") |
 
 Divergences from rlmdb on the BSDs (none changes a file):

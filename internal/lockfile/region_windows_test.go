@@ -102,7 +102,7 @@ func TestByteLocksArePerHandle(t *testing.T) {
 
 // TestProcessLiveness is rlmdb's process_liveness: a process that has
 // exited is dead even while a handle to it is open (C would say alive,
-// rlmdb KNOWN_C_BUGS.md #42).
+// rlmdb KNOWN_C_BUGS.md row 42).
 func TestProcessLiveness(t *testing.T) {
 	if !pidAlive(0, int32(os.Getpid())) {
 		t.Fatal("this process is dead")

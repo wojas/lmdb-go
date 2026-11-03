@@ -154,7 +154,7 @@ func (c *Cursor) xc() *rcursor {
 
 // Count is mdb_cursor_count: the number of data items of the current key
 // (1 for a key without duplicates). MDB_INCOMPATIBLE unless DUPSORT;
-// MDB_NOTFOUND if the cursor is not on an item (KNOWN_C_BUGS.md #5).
+// MDB_NOTFOUND if the cursor is not on an item (KNOWN_C_BUGS.md row 5).
 func (c *Cursor) Count() (uint64, error) {
 	if c.closed {
 		return 0, syscall.EINVAL
@@ -259,8 +259,8 @@ func cursorGetInner(t *Txn, mc, mx *rcursor, dcmp format.Comparator, hasDcmp boo
 			k, _ = n.Key()
 		}
 		// The sub-cursor stays initialised when the cursor moves from a
-		// key with duplicates onto one without (KNOWN_C_BUGS.md #27): only
-		// fetch for a key with some. C tests C_EOF (#28): fetch on an item,
+		// key with duplicates onto one without (KNOWN_C_BUGS.md row 27): only
+		// fetch for a key with some. C tests C_EOF (row 28): fetch on an item,
 		// and past the end of the page only without C_EOF.
 		dups := currentHasDups(mc)
 		fetch := false
@@ -276,7 +276,7 @@ func cursorGetInner(t *Txn, mc, mx *rcursor, dcmp format.Comparator, hasDcmp boo
 			return k, d, nil
 		}
 		// Nothing to fetch: C returns success and leaves data untouched;
-		// here the data is empty (KNOWN_C_BUGS.md #8).
+		// here the data is empty (KNOWN_C_BUGS.md row 8).
 		return k, nil, nil
 	case format.NextMultiple:
 		if err := requireDupFixed(mc, mx); err != nil {
@@ -398,7 +398,7 @@ func cursorCount(mc, mx *rcursor) (uint64, error) {
 		mc.flags ^= cEOF
 	}
 	// C only checks the index under C_EOF and otherwise reads NODEPTR(mp,
-	// ki) unchecked (KNOWN_C_BUGS.md #5).
+	// ki) unchecked (KNOWN_C_BUGS.md row 5).
 	if mc.kiTop() >= mc.topPage().NumKeys() {
 		return 0, format.NotFound
 	}

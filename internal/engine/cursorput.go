@@ -156,10 +156,9 @@ func (t *Txn) currentSingleOverflows(mc cref, ksize, dsize int) (bool, error) {
 // replaceCurrent is MDB_CURRENT as lmdb.h describes it for an item of
 // another size: delete the item under mc, then put data under key through
 // mc (which ends on it), as mdb_cursor_del + mdb_cursor_put would. For the
-// replacements C gets wrong in place (KNOWN_C_BUGS.md #15, #38, and
-// currentDupOutsideLeaf). Once the delete is done a failed insert
-// leaves the transaction half changed, so it fails. rlmdb's
-// RwTxn::replace_current.
+// replacements C gets wrong in place (KNOWN_C_BUGS.md rows 15, 38 and 56).
+// Once the delete is done a failed insert leaves the transaction half
+// changed, so it fails. rlmdb's RwTxn::replace_current.
 func (t *Txn) replaceCurrent(mc cref, key []byte, data putData) error {
 	if err := t.delAt(mc, 0); err != nil {
 		return err
@@ -191,35 +190,41 @@ func (t *Txn) currentDupFits(mc cref, fp []byte, size int) bool {
 	return oldk == size || sizeLeft(l, fp)+format.Even(l.LeafSize(oldk, 0))+2 >= format.Even(l.LeafSize(size, 0)+2)
 }
 
-// currentDupOutsideLeaf: for MDB_CURRENT on a duplicate in a sub-DB,
-// would C's replacement leave the new item where searches cannot find it?
-// C keeps the new item in the old one's leaf, at the old one's index: in
-// place (an item of the same size, which fix_parent makes the branch key
-// above the leaf if it is the leaf's first), or, for one of another size,
-// by deleting the node and adding the new one there (new_ksize, ITS#8447,
-// without fix_parent). The branch keys around the leaf need not be its
-// items: deleting a leaf's first item leaves the key above it. So the new
+// currentDupOutsideLeaf: for MDB_CURRENT on a duplicate in a sub-DB tree,
+// would C's replacement leave the new item where searches do not look for
+// it (rlmdb KNOWN_C_BUGS.md row 56)? C keeps the new item in the old one's
+// leaf, at the old one's index (_mdb_cursor_put, current:): in place for
+// an item of the same size, then fix_parent, which makes it the branch key
+// above the leaf if it is the leaf's first; for one of another size (0.9's
+// ITS#8447 path, new_ksize) by mdb_node_del and mdb_node_add at the same
+// index, without fix_parent. The branch keys around a leaf need not be its
+// items (deleting a leaf's first item leaves the key above it), so the new
 // item can sort before the branch key above its leaf (the leaf's first
-// item, replaced by one of another size) or at or after the branch key of
-// the next leaf (the leaf's last item, any size). Searches then go to the
-// neighbouring leaf: MDB_GET_BOTH says MDB_NOTFOUND, and later puts of
-// items between the new one and that key land there, out of order.
-func (t *Txn) currentDupOutsideLeaf(mc cref, data putData) (bool, error) {
-	if data.count != 1 || len(data.bytes) != data.size {
+// item replaced by one of another size), or at or after the next leaf's
+// branch key (the leaf's last item, any size, MDB_DUPFIXED too). Searches
+// then go to the neighbouring leaf: MDB_GET_BOTH says MDB_NOTFOUND, and
+// later puts of items between the new one and that key land there, out of
+// order. The keys are compared as mdb_node_search compares them, with the
+// sub-DB's (duplicate) comparator. rlmdb's RwTxn::current_dup_outside_leaf.
+func (t *Txn) currentDupOutsideLeaf(mc cref, item []byte) (bool, error) {
+	if mc.sub {
 		return false, nil
 	}
 	main, err := t.topPage(mc)
 	if err != nil {
 		return false, err
 	}
+	if main.IsLeaf2() {
+		return false, nil
+	}
 	node, ok := main.Node(t.cur(mc).kiTop())
 	if !ok || !node.IsDupData() || !node.IsSubData() {
-		return false, nil
+		return false, nil // a single item or a sub-page: one leaf
 	}
 	mx := subRef(mc.slot)
 	x := t.cur(mx)
 	if !x.isInit() || x.subp || x.top == 0 {
-		return false, nil // a sub-page or a single leaf: no branch keys
+		return false, nil // a single leaf: no branch keys
 	}
 	leaf, err := t.topPage(mx)
 	if err != nil {
@@ -235,55 +240,66 @@ func (t *Txn) currentDupOutsideLeaf(mc cref, data putData) (bool, error) {
 		if !ok {
 			return false, format.Corrupted
 		}
-		if old.KeySize() != data.size {
+		if old.KeySize() != len(item) {
 			// The branch key above the leaf: slot 0 of a branch page has
-			// none, so it is the nearest one not on slot 0.
-			top := x.top - 1
-			for top > 0 && x.ki[top] == 0 {
-				top--
-			}
-			if x.ki[top] != 0 {
-				sep, err := t.branchKey(mx, top, int(x.ki[top]))
+			// none, so it is that of the nearest level not on slot 0 (as
+			// fix_parent finds it).
+			for level := x.top - 1; level >= 0; level-- {
+				if x.ki[level] == 0 {
+					continue
+				}
+				rc, err := t.cmpBranchKey(mx, level, int(x.ki[level]), item, cmp)
 				if err != nil {
 					return false, err
 				}
-				if cmp.Compare(data.bytes, sep) < 0 {
+				if rc < 0 {
 					return true, nil
 				}
+				break
 			}
 		}
 	}
 	if ki == nkeys-1 {
 		// The branch key of the next leaf: the nearest one right of the
-		// path.
-		for top := x.top - 1; top >= 0; top-- {
-			branch, err := t.pageOfLevel(mx, top)
+		// cursor's path.
+		for level := x.top - 1; level >= 0; level-- {
+			branch, err := t.pageOfLevel(mx, level)
 			if err != nil {
 				return false, err
 			}
-			if next := int(x.ki[top]) + 1; next < branch.NumKeys() {
-				sep, err := t.branchKey(mx, top, next)
+			if next := int(x.ki[level]) + 1; next < branch.NumKeys() {
+				rc, err := t.cmpBranchKey(mx, level, next, item, cmp)
 				if err != nil {
 					return false, err
 				}
-				return cmp.Compare(data.bytes, sep) >= 0, nil
+				return rc >= 0, nil
 			}
 		}
 	}
 	return false, nil
 }
 
-// branchKey is the key of node i of c's branch page at level.
-func (t *Txn) branchKey(c cref, level, i int) ([]byte, error) {
+// cmpBranchKey compares key with the key of node i of c's branch page at
+// level, as mdb_node_search does (the integer comparators read past a
+// shorter stored key, rlmdb KNOWN_C_BUGS.md row 7). rlmdb's
+// RwTxn::cmp_branch_key.
+func (t *Txn) cmpBranchKey(c cref, level, i int, key []byte, cmp format.Comparator) (int, error) {
 	branch, err := t.pageOfLevel(c, level)
 	if err != nil {
-		return nil, err
+		return 0, err
 	}
-	key, ok := branch.NodeKey(i)
-	if !ok || !branch.IsBranch() {
-		return nil, format.Corrupted
+	if !branch.IsBranch() {
+		return 0, format.Corrupted
 	}
-	return key, nil
+	node, ok := branch.Node(i)
+	if !ok {
+		return 0, format.Corrupted
+	}
+	k, ok := node.Key()
+	if !ok {
+		return 0, format.Corrupted
+	}
+	return cmp.CompareInPage(key, k, node.KeyTail()), nil
 }
 
 // putAt is _mdb_cursor_put: store key/data at cursor mc. Returns the
@@ -336,7 +352,7 @@ func (t *Txn) putAt0(mc cref, key []byte, data putData, flags uint32) (int, erro
 	dupsort := uint32(db.Flags)&format.DupSort != 0
 	if !t.cur(mc).isSub() && uint32(db.Flags)&format.DupFixed != 0 && !dupsort {
 		// DUPFIXED needs DUPSORT (lmdb.h); C builds P_LEAF2 pages with a
-		// key size of 0 and corrupts them (KNOWN_C_BUGS.md #17).
+		// key size of 0 and corrupts them (KNOWN_C_BUGS.md row 17).
 		return 0, format.Incompatible
 	}
 	if dupsort && (data.size == 0 || data.size > maxKey) {
@@ -369,20 +385,32 @@ func (t *Txn) putAt0(mc cref, key []byte, data putData, flags uint32) (int, erro
 			// duplicate put reads as inline data. Delete and insert
 			// instead, before anything else, as mdb_cursor_del and
 			// mdb_cursor_put would: the item goes to a sub-DB, as a new
-			// key's first item of that size does (KNOWN_C_BUGS.md #38).
+			// key's first item of that size does (KNOWN_C_BUGS.md row 38).
 			return 0, t.replaceCurrent(mc, key, data)
 		}
 	}
-	if dupsort && flags&(format.Current|format.AppendDup) == format.Current {
-		outside, err := t.currentDupOutsideLeaf(mc, data)
+	// C's sub-cursor put with MDB_CURRENT, of one item (MDB_MULTIPLE with
+	// one item too; not MDB_RESERVE, which has no bytes).
+	current := dupsort && flags&(format.Current|format.AppendDup) == format.Current
+	if current && data.count == 1 && len(data.bytes) >= data.size {
+		item := data.bytes[:data.size]
+		outside, err := t.currentDupOutsideLeaf(mc, item)
 		if err != nil {
 			return 0, err
 		}
 		if outside {
-			// C would keep the new item in a leaf where searches do not
-			// look for it: delete and insert instead, before anything
-			// else, as mdb_cursor_del and mdb_cursor_put would.
-			return 0, t.replaceCurrent(mc, key, data)
+			// C would keep the new duplicate in a leaf of the sub-DB where
+			// searches do not look for it: MDB_GET_BOTH would not find it,
+			// and later puts would land out of order. Delete and insert
+			// instead, before anything else, as mdb_cursor_del and
+			// mdb_cursor_put would (rlmdb KNOWN_C_BUGS.md row 56).
+			if err := t.replaceCurrent(mc, key, putBytes(item)); err != nil {
+				return 0, err
+			}
+			if flags&format.Multiple != 0 {
+				return 1, nil
+			}
+			return 0, nil
 		}
 	}
 	// Cursor is positioned, check for room in the dirty list.
@@ -460,7 +488,7 @@ func (t *Txn) putPosition(mc cref, key []byte, db *format.DB, flags uint32) (int
 			return 0, syscall.EINVAL
 		}
 		// C does not check that the cursor is on an item
-		// (KNOWN_C_BUGS.md #13).
+		// (KNOWN_C_BUGS.md row 13).
 		p, err := t.topPage(mc)
 		if err != nil {
 			return 0, err
@@ -541,7 +569,7 @@ func (t *Txn) putPosition(mc cref, key []byte, db *format.DB, flags uint32) (int
 
 // checkDupFixedSize: MDB_DUPFIXED items must all have one size. C copies
 // md_pad bytes regardless; a mismatch fails with MDB_BAD_VALSIZE before
-// anything changes (KNOWN_C_BUGS.md #12).
+// anything changes (KNOWN_C_BUGS.md row 12).
 func (t *Txn) checkDupFixedSize(mc cref, size int) error {
 	if t.cur(mc).isSub() {
 		return nil
@@ -660,7 +688,7 @@ func (t *Txn) putItem(mc cref, db *format.DB, key []byte, item nodeVal, flags *u
 					// comparator calls equal (a C-made F_BIGDATA item, or
 					// one of another size) that does not fit a node: C
 					// would leave it on overflow pages (KNOWN_C_BUGS.md
-					// #38). Delete and insert (putAt counts the item); an
+					// row 38). Delete and insert (putAt counts the item); an
 					// MDB_MULTIPLE batch goes on with its next item.
 					if err := t.replaceCurrent(mc, key, putBytes(item.bytes)); err != nil {
 						return false, nil, false, err
@@ -689,7 +717,7 @@ func (t *Txn) putItem(mc cref, db *format.DB, key []byte, item nodeVal, flags *u
 			}
 			if !reinsert {
 				// An item equal to the key's only one: C returns here even
-				// for MDB_MULTIPLE (KNOWN_C_BUGS.md #30: here the batch
+				// for MDB_MULTIPLE (KNOWN_C_BUGS.md row 30: here the batch
 				// goes on).
 				if *flags&format.Multiple != 0 {
 					return false, nil, false, nil
@@ -936,7 +964,7 @@ func (t *Txn) dupPrepare(mc cref, item nodeVal, flags *uint32, insertKey, bigNew
 		hasBig := false
 		if nflags&(format.FBigData|format.FDupData) == format.FBigData {
 			// A single item on overflow pages, which only C's MDB_CURRENT
-			// stores in a DUPSORT DB (KNOWN_C_BUGS.md #38). C reads the
+			// stores in a DUPSORT DB (KNOWN_C_BUGS.md row 38). C reads the
 			// overflow reference and what follows it in the page as the
 			// item; read the item.
 			if bigPgno, ok = n.OverflowPgno(); !ok {
@@ -1021,7 +1049,7 @@ func (t *Txn) dupPrepare(mc cref, item nodeVal, flags *uint32, insertKey, bigNew
 			if fits && !t.currentDupFits(mc, olddata, item.size) {
 				// C writes in place and, if the item does not fit, splits
 				// the sub-page as if it were a page; delete and insert
-				// instead (KNOWN_C_BUGS.md #15).
+				// instead (KNOWN_C_BUGS.md row 15).
 				return dupStep{kind: dupReplace}, nil
 			}
 			if !fits {
@@ -1208,7 +1236,7 @@ func (t *Txn) putSub0(mc cref, item nodeVal, flags uint32, dkey []byte, hasDkey 
 	var xflags uint32
 	if flags&(format.Current|format.AppendDup) == format.Current {
 		// The sub-cursor keeps its position; make sure its record is this
-		// key's (KNOWN_C_BUGS.md #14).
+		// key's (KNOWN_C_BUGS.md row 14).
 		if err := t.refreshXDB(mc); err != nil {
 			return nil, false, err
 		}

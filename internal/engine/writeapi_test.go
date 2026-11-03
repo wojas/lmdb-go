@@ -50,7 +50,7 @@ func TestValueSizeLimits(t *testing.T) {
 	expectErr(t, txn.Put(dups, []byte("k"), []byte{}, 0), format.BadValSize, "empty dup")
 	expectErr(t, txn.Put(dups, []byte("k"), bytes.Repeat([]byte{2}, 512), 0), format.BadValSize, "512-byte dup")
 	must(t, txn.Put(dups, []byte("k"), bytes.Repeat([]byte{2}, 511), 0))
-	// DUPFIXED: all items of a key have one size (KNOWN_C_BUGS.md #12).
+	// DUPFIXED: all items of a key have one size (KNOWN_C_BUGS.md row 12).
 	must(t, txn.Put(fixed, []byte("k"), []byte("abcd"), 0))
 	expectErr(t, txn.Put(fixed, []byte("k"), []byte("abcde"), 0), format.BadValSize, "longer dupfixed")
 	must(t, txn.Put(fixed, []byte("k"), []byte("abce"), 0))
@@ -129,7 +129,7 @@ func TestCursorCurrentRules(t *testing.T) {
 	expectErr(t, c.Put([]byte("a"), []byte("x"), format.Current), syscall.EINVAL, "current unpositioned")
 	_, _, err = c.Get([]byte("zz"), nil, format.SetKey)
 	expectErr(t, err, format.NotFound, "set zz")
-	// KNOWN_C_BUGS.md #13.
+	// KNOWN_C_BUGS.md row 13.
 	expectErr(t, c.Put([]byte("zz"), []byte("x"), format.Current), format.NotFound, "current past end")
 	if _, _, err := c.Get([]byte("b"), nil, format.SetKey); err != nil {
 		t.Fatal(err)
@@ -154,7 +154,7 @@ func TestCursorCurrentRules(t *testing.T) {
 }
 
 func TestCurrentDupThatDoesNotFitItsSubpage(t *testing.T) {
-	// KNOWN_C_BUGS.md #15.
+	// KNOWN_C_BUGS.md row 15.
 	env, _ := openTest(t, format.V09, Options{MaxDBs: 2})
 	txn := beginW(t, env)
 	db, _ := txn.OpenDBI([]byte("d"), format.Create|format.DupSort)

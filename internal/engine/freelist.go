@@ -362,7 +362,7 @@ func (t *Txn) ovpageFree(mc cref, pgno uint64) error {
 // freelistSave is mdb_freelist_save: write the free list of this
 // transaction and what is left of pghead into the free DB. Called by
 // commit. The cursor is tracked (C uses an untracked one,
-// KNOWN_C_BUGS.md #11).
+// KNOWN_C_BUGS.md row 11).
 func (t *Txn) freelistSave() error {
 	slot := t.openSlot(format.FreeDBI, true)
 	err := t.freelistSave0(mainRef(slot))

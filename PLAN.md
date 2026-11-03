@@ -181,9 +181,10 @@ snapshot needs more), the lock file locked with `LockFileEx` on byte 0,
 named mutexes `Global\MDBr…` / `Global\MDBw…` (version 1: names in the
 file; version 2: from the hash stored there, read, never recomputed),
 abandoned mutexes repaired as dead robust ones, no pid locks (reader
-liveness through `OpenProcess`, with rlmdb's fix #42), files opened with
-C's sharing. A write transaction keeps its OS thread (the mutexes belong
-to it, as on Linux). lmdb-go v1's `lmdb/error_windows.go` is kept.
+liveness through `OpenProcess`, with rlmdb's fix of KNOWN_C_BUGS.md row
+42), files opened with C's sharing. A write transaction keeps its OS
+thread (the mutexes belong to it, as on Linux). lmdb-go v1's
+`lmdb/error_windows.go` is kept.
 
 Status: tested on Windows 10 x86-64 with Go 1.25 and MinGW-w64 gcc
 (MSYS2): the root module with and without cgo, and the `tests` module
@@ -212,7 +213,7 @@ is Go: `MDB_FDATASYNC` (`fdatasync` on FreeBSD, `fsync` elsewhere),
 `MDB_DSYNC` (`O_SYNC` on DragonFly), and on OpenBSD, which has no unified
 buffer cache, `msync(MS_INVALIDATE)` of the map after each write to the
 data file (`sys.DataMap.Invalidate`, widened to whole OS pages: rlmdb
-ledger #39). The layouts are computed with C's formulas (rlmdb's numbers)
+ledger row 39). The layouts are computed with C's formulas (rlmdb's numbers)
 and tested on every host.
 
 Status: OpenBSD 7.9 arm64 is tested (Go 1.26, the base system's clang):

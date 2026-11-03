@@ -62,7 +62,7 @@ func (t *Txn) commit0() error {
 
 // updateDBRecords writes the record of each named DB this transaction
 // changed into the main DB. The cursor is tracked (C's is not,
-// KNOWN_C_BUGS.md #11).
+// KNOWN_C_BUGS.md row 11).
 func (t *Txn) updateDBRecords() error {
 	n := t.ndbs
 	if n <= format.CoreDBs {
@@ -224,7 +224,7 @@ var testHookMetaWrite func(e *Env, page int)
 // used. A failed sync after the write (macOS: the F_FULLFSYNC after the
 // O_DSYNC write) is the same failure: the new page is in the file but the
 // commit is not, so it gets the same treatment, where C returns the error
-// and leaves the page (rlmdb KNOWN_C_BUGS.md #41). The txnid is published
+// and leaves the page (rlmdb KNOWN_C_BUGS.md row 41). The txnid is published
 // only after both succeeded.
 func (t *Txn) writeMeta() error {
 	e := t.env
@@ -277,7 +277,7 @@ func (t *Txn) writeMeta() error {
 		// some old data back, to prevent it from being used. A failed sync
 		// is the same failure: the new meta page is on the file but not
 		// published, and a copy or a later open would take it (C returns
-		// the sync's error and keeps the page, #41; a failed msync with
+		// the sync's error and keeps the page, row 41; a failed msync with
 		// MDB_WRITEMAP is MDB_FATAL_ERROR there).
 		if haveOld {
 			meta.LastPgno, meta.TxnID = oldLast, oldTxnid

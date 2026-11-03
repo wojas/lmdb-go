@@ -233,7 +233,7 @@ func (r *Region) MaxReaders() uint32 { return r.maxReaders }
 // leaves a robust mutex permanently unusable (ENOTRECOVERABLE) rather than
 // letting a writer work on unrepaired state (a Windows mutex or a SysV
 // semaphore is released normally, as C releases it: rlmdb KNOWN_C_BUGS.md
-// #40).
+// row 40).
 func (r *Region) LockWriter(newestTxnid func() (uint64, error)) error {
 	runtime.LockOSThread()
 	st, err := r.locks.w.lock()

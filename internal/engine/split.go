@@ -605,7 +605,7 @@ func (t *Txn) splitPeer(s int, mc cref, dbi int, sub bool) (cref, bool) {
 // theory one of more than 2^31 pages).
 //
 // C has no such check and writes past the end of mc_pg and mc_ki (rlmdb
-// KNOWN_C_BUGS.md #36, split.rs check_root_push); the split fails instead,
+// KNOWN_C_BUGS.md row 36, split.rs check_root_push); the split fails instead,
 // before it changes anything, and with it the write transaction, as after
 // any error of mdb_page_split.
 func (t *Txn) checkRootPush(mc cref, mp uint64) error {

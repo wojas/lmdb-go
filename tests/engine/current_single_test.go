@@ -1,7 +1,7 @@
 package engine
 
 // MDB_CURRENT on a MDB_DUPSORT key's only item with an item that does not
-// fit a node with the key (rlmdb KNOWN_C_BUGS.md #38; rlmdb
+// fit a node with the key (rlmdb KNOWN_C_BUGS.md row 38; rlmdb
 // tests/common/differential.rs current_single_item_script and
 // single_item_on_overflow_pages, write_differential.rs
 // diff_current_single_item and c_single_item_on_overflow_pages,
@@ -62,7 +62,7 @@ func oracle09File(t testing.TB, ps int) *oracle {
 //
 // Where the new item does not fit a node, the op is "cr": C deletes the
 // item and puts the new one, which is what the Go writer's MDB_CURRENT
-// must write there (C's would store the item on overflow pages, #38).
+// must write there (C's would store the item on overflow pages, row 38).
 // Elsewhere both sides put with MDB_CURRENT: items that fit, and one byte
 // over maxkey (MDB_BAD_VALSIZE, nothing changed). The other cursor sits on
 // the same item (where the next key has a single item too) or on the key
@@ -150,7 +150,7 @@ func currentSingleItemScript(nodemax, maxkey int, evenKeys bool, klen int) []str
 			i := nextSingle()
 			// After the delete, the other cursor is on the next key: keep
 			// it off duplicates there (C's sub-cursor fixups after a
-			// delete are another matter, KNOWN_C_BUGS.md #18).
+			// delete are another matter, KNOWN_C_BUGS.md row 18).
 			same = same && i+1 < n && !dups[i+1]
 			if replace(i, length, same) {
 				routed = append(routed, [2]int{i, length})
@@ -318,7 +318,7 @@ type repairCase struct {
 	left  int
 }
 
-// singleItemOnOverflowPages (rlmdb KNOWN_C_BUGS.md #38): C's MDB_CURRENT
+// singleItemOnOverflowPages (rlmdb KNOWN_C_BUGS.md row 38): C's MDB_CURRENT
 // replacing a key's only item in a MDB_DUPSORT DB (dbflags) by one of n
 // bytes that does not fit a node with the key (of klen bytes) stores it on
 // overflow pages. The oracle's writeops builds that state, between two

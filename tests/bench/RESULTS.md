@@ -462,7 +462,7 @@ VM's disk), and, unlike on macOS and Linux, sequential appends (1.13) and
 DUPSORT puts (0.98 to 1.01) are close to C. Values of 4 KiB and more are
 written much faster (`put_4k` 0.39, `put_64k` 0.43 to 0.67); why was not
 measured (both invalidate the written range of the map after each write,
-ITS#10615 in C, rlmdb `KNOWN_C_BUGS.md` #39 in the port). `mixed` (the
+ITS#10615 in C, rlmdb `KNOWN_C_BUGS.md` row 39 in the port). `mixed` (the
 writer 1.26 and 0.61, the readers 0.23 and 0.67) has too few CPUs for its
 4 readers to be meaningful. A first
 attempt at this run stopped in its second round when the VM stopped

@@ -801,10 +801,20 @@ func (r *fzRun) opCurrent() {
 		}
 	}
 	reserve := !dupsort && sel&1 != 0
-	r.note("cursor put CURRENT db %d %s %s -> %s reserve %v", i, k, d, nd, reserve)
+	// MDB_MULTIPLE of the one item: the same replacement (rlmdb
+	// KNOWN_C_BUGS.md row 56), one item stored. Not on a key's only item,
+	// where C's sub-cursor put, which it never initialised, says EINVAL
+	// and fails the transaction.
+	multi := fzCfgs[i].flags&format.DupFixed != 0 && sel&2 != 0 && len(ds) > 1
+	r.note("cursor put CURRENT db %d %s %s -> %s reserve %v multiple %v", i, k, d, nd, reserve, multi)
 	c := r.cursor(i)
 	var err error
-	if reserve {
+	if multi {
+		var n int
+		if n, err = c.PutMulti(k, nd, len(nd), format.Current); err == nil && n != 1 {
+			r.fail("MULTIPLE CURRENT stored %d items", n)
+		}
+	} else if reserve {
 		var buf []byte
 		if buf, err = c.PutReserve(k, len(nd), format.Current); err == nil {
 			if len(buf) != len(nd) {

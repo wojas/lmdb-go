@@ -20,7 +20,7 @@ func implName() string { return "the Go implementation (" + lmdb.VersionString()
 const supportsFormat10 = true
 
 // readerMetaRace tells whether a read transaction can copy the roots of a
-// newer commit than the txnid it pins (rlmdb KNOWN_C_BUGS.md #31). The
+// newer commit than the txnid it pins (rlmdb KNOWN_C_BUGS.md row 31). The
 // port follows rlmdb, which re-checks the meta page: it cannot race.
 const readerMetaRace = false
 

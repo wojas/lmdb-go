@@ -147,7 +147,7 @@ func (t *Txn) delNodePayload(mc cref, flags uint32) (bool, error) {
 		if flags&format.NoDupData != 0 {
 			// C uses the sub-cursor's record as it is, which is stale if the
 			// sub-cursor was never set up for this key; read this node's
-			// (KNOWN_C_BUGS.md #14). cursorDel0 subtracts the final entry.
+			// (KNOWN_C_BUGS.md row 14). cursorDel0 subtracts the final entry.
 			if err := t.xcursorInit1(mc); err != nil {
 				return false, err
 			}
@@ -161,7 +161,7 @@ func (t *Txn) delNodePayload(mc cref, flags uint32) (bool, error) {
 				x.subp = true
 			}
 			// The sub-cursor keeps its position; make sure its record is
-			// this key's (KNOWN_C_BUGS.md #14).
+			// this key's (KNOWN_C_BUGS.md row 14).
 			if err := t.refreshXDB(mc); err != nil {
 				return false, err
 			}
@@ -315,7 +315,7 @@ func (t *Txn) cursorDel0Inner(mc cref) error {
 			}
 		}
 		// (C also skips cursors with C_EOF here; m3 is on an item now, and
-		// C_EOF may be left from before: KNOWN_C_BUGS.md #28.)
+		// C_EOF may be left from before: KNOWN_C_BUGS.md row 28.)
 		if sl := t.w.cursors.slot(s); !m3.sub && sl != nil && sl.hasX {
 			p, err := t.topPage(m3)
 			if err != nil {
@@ -328,7 +328,7 @@ func (t *Txn) cursorDel0Inner(mc cref) error {
 			// If this node has dupdata, it may need to be reinited because
 			// its data has moved. If the xcursor was not initd it must be
 			// reinited (a cursor the delete moved here starts at the first
-			// duplicate: KNOWN_C_BUGS.md #18).
+			// duplicate: KNOWN_C_BUGS.md row 18).
 			if n.Flags()&format.FDupData != 0 {
 				mx := subRef(s)
 				if moved || !t.cur(mx).isInit() {
@@ -344,7 +344,7 @@ func (t *Txn) cursorDel0Inner(mc cref) error {
 				}
 			}
 			// Its next MDB_NEXT must not skip the node's first duplicate
-			// (KNOWN_C_BUGS.md #29).
+			// (KNOWN_C_BUGS.md row 29).
 			if moved {
 				t.cur(subRef(s)).flags |= cDel
 			}
@@ -1057,7 +1057,7 @@ func (t *Txn) del0With(mc cref, key, data []byte, hasData bool, flags uint32) er
 // record from the main DB and close the handle (the main DB is only
 // emptied); otherwise reset its record to an empty tree. The handle is
 // closed for every transaction at once, as in C; a nested transaction that
-// aborts reopens it (KNOWN_C_BUGS.md #20).
+// aborts reopens it (KNOWN_C_BUGS.md row 20).
 func (t *Txn) mdbDrop(dbi int, del bool) error {
 	if dbi == format.MainDBI && t.l.DropsNamedDBsWithMain() {
 		// Named databases cannot coexist with these main-DB flags.

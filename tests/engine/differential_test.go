@@ -60,7 +60,7 @@ func oracle10(t testing.TB, ps int) *oracle {
 // oracle10NDebug is oracle10 with writeops10_ndebug, writeops against a
 // C 1.0 library built with -DNDEBUG (as release builds are), for scripts
 // on which the upstream build trips an assertion although C's arithmetic
-// is right (rlmdb KNOWN_C_BUGS.md #37).
+// is right (rlmdb KNOWN_C_BUGS.md row 37).
 func oracle10NDebug(t testing.TB, ps int) *oracle {
 	o := oracle10(t, ps)
 	o.writeops = tool(t, "writeops10_ndebug")
@@ -111,7 +111,7 @@ type profile struct {
 	nested       bool
 	drops        bool
 	// appenddupNodemax: no MDB_APPENDDUP put whose 1.0 leaf node exceeds
-	// it (KNOWN_C_BUGS.md #32, 1.0 small pages only).
+	// it (KNOWN_C_BUGS.md row 32, 1.0 small pages only).
 	appenddupNodemax int
 }
 
@@ -309,7 +309,7 @@ func (g *gen) next(prevOp, prevLine string, hasPrev bool, depth int) string {
 	}
 	op := genOp(r, p, g.ncur*(depth+1))
 	// MDB_CURRENT only on a cursor that is on an item (KNOWN_C_BUGS.md
-	// #13).
+	// row 13).
 	f := strings.Split(op, ":")
 	if f[0] == "cp" && f[4] == strconv.Itoa(int(format.Current)) {
 		if !(hasPrev && strings.Contains(prevLine, fmt.Sprintf("| c%s rc=0 ", f[1]))) {
@@ -407,7 +407,7 @@ func line(name string, rc int, cur []*eng.Cursor, dupsort bool) string {
 }
 
 // maskCounts removes the duplicate counts (" n=..") from a step's output:
-// C's cached counts go stale (KNOWN_C_BUGS.md #14), Go's do not; the page
+// C's cached counts go stale (KNOWN_C_BUGS.md row 14), Go's do not; the page
 // audit checks the counts in the records instead.
 func maskCounts(l string) string {
 	parts := strings.Split(l, " | ")
@@ -439,7 +439,7 @@ func countOf(l string, n int) (string, bool) {
 	return c, ok
 }
 
-// staleSubcursors: KNOWN_C_BUGS.md #18 (see the Rust harness).
+// staleSubcursors: KNOWN_C_BUGS.md row 18 (see the Rust harness).
 func staleSubcursors(op, cl, rl string) []int {
 	if !strings.HasPrefix(op, "cd:") && !strings.HasPrefix(op, "d:") {
 		return nil
@@ -465,7 +465,7 @@ func staleSubcursors(op, cl, rl string) []int {
 	return stale
 }
 
-// staleEOF: KNOWN_C_BUGS.md #28 (see the Rust harness).
+// staleEOF: KNOWN_C_BUGS.md row 28 (see the Rust harness).
 func staleEOF(op, prev, cl, rl string, hasPrev bool) (int, bool) {
 	f := strings.Split(op, ":")
 	if f[0] != "g" {
@@ -558,7 +558,7 @@ func (d *driver) compare(op, cl, rlRaw string) bool {
 	rl := maskCounts(rlRaw)
 	if d.g != nil {
 		// A cursor whose cached duplicate count C let go stale is put back
-		// on its item with MDB_GET_BOTH (KNOWN_C_BUGS.md #14).
+		// on its item with MDB_GET_BOTH (KNOWN_C_BUGS.md row 14).
 		for n := 0; n < len(strings.Split(cl, " | "))-1; n++ {
 			c1, _ := countOf(cl, n)
 			c2, _ := countOf(rlRaw, n)
@@ -704,8 +704,8 @@ func (d *driver) level(txn *eng.Txn, dbi *eng.DBI, depth int, cur *[]*eng.Cursor
 			c1, _ := countOf(d.prevC, n)
 			c2, _ := countOf(d.prevR, n)
 			if c1 != c2 {
-				// KNOWN_C_BUGS.md #14: C's cached count is stale; its delete
-				// would act on it.
+				// KNOWN_C_BUGS.md row 14: C's cached count is stale; its
+				// delete would act on it.
 				d.stopped = true
 				return "stop", ""
 			}
@@ -864,7 +864,7 @@ func runRound(t testing.TB, o *oracle, p *profile, ncur int, g *gen, nops int, l
 	if rc, out, errs := run(t, o.peer, "check-freelist", gdir); rc != 0 {
 		t.Fatalf("%s: check-freelist of Go:\n%s\n%s", tag, out, errs)
 	} else if rc, _, errs := run(t, o.peer, "check-freelist", cdir); rc != 0 {
-		// KNOWN_C_BUGS.md #14: C's MDB_NODUPDATA cursor delete subtracts a
+		// KNOWN_C_BUGS.md row 14: C's MDB_NODUPDATA cursor delete subtracts a
 		// stale count; only md_entries may be off, so files differ there.
 		t.Logf("NOTE: %s: C's page audit: %s", tag, strings.TrimSpace(errs))
 		return true

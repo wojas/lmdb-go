@@ -23,12 +23,12 @@
 //     process with PROCESS_QUERY_LIMITED_INFORMATION alone, so its
 //     WaitForSingleObject always fails and a process that exited while
 //     someone still holds a handle to it counts as alive; this asks for
-//     SYNCHRONIZE too, as rlmdb does (rlmdb KNOWN_C_BUGS.md #42).
+//     SYNCHRONIZE too, as rlmdb does (rlmdb KNOWN_C_BUGS.md row 42).
 //   - The lock file is opened with FILE_SHARE_READ | FILE_SHARE_WRITE, as
 //     mdb_fopen does (it cannot be deleted while open); the permission mode
 //     is ignored, as in C. A read-only file system is ERROR_WRITE_PROTECT.
 //   - The lock file's size is computed in 64 bits. C passes it through 32
-//     bits on Windows (rlmdb KNOWN_C_BUGS.md #43), which only matters for
+//     bits on Windows (rlmdb KNOWN_C_BUGS.md row 43), which only matters for
 //     lock files of 2 GiB and more (some 33 million readers).
 
 package lockfile

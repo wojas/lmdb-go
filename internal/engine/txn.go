@@ -18,7 +18,7 @@
 // Step 3 races with writers: a writer committing N+2 rewrites the meta
 // page our N uses. C accepts the torn read; here mti_txnid is re-checked
 // after the copy and the snapshot retried if it moved (KNOWN_C_BUGS.md
-// #31), so a process's snapshots never go back. The same holds for a copy
+// row 31), so a process's snapshots never go back. The same holds for a copy
 // that fails validation: only if mti_txnid moved can a commit have torn
 // it, and then the snapshot is retried too (a bounded number of times,
 // maxTornCopies); if it did not move, the page is bad and begin fails

@@ -9,7 +9,7 @@
 // the interop peer cpeer, the C tools mdb_stat, mdb_dump, mdb_load and
 // mdb_copy, layout_dump, the write-differential script runner writeops,
 // and writeops10_ndebug (writeops against a 1.0 library built with
-// -DNDEBUG, rlmdb KNOWN_C_BUGS.md #37). The output directory then serves
+// -DNDEBUG, rlmdb KNOWN_C_BUGS.md row 37). The output directory then serves
 // as LMDB_ORACLE_BIN (tests/lockfile) and RLMDB_BIN (tests/engine).
 //
 // Usage (in the tests module):
