@@ -418,6 +418,20 @@ counts of the API's hot paths are pinned by `lmdb/alloc_test.go`.
   (`format.MaxReadersLimit`: `SetMaxReaders` and `Open` beyond 1,048,576
   are EINVAL, before any file is created; an existing lock file with a
   larger table is attached to, as before).
+* Row 19, ahead of rlmdb `7c60f17`: a nested transaction's abort does not
+  look up the databases its parent has a view of under the same
+  registration (`Txn.hasView`: they exist in the state it reverts to), and
+  `mdb_dbi_open` with `MDB_CREATE` puts the record with the cursor its
+  lookup left positioned, as C does (`findOrCreateNamedDB`). Both matter
+  only in a main DB a caller put out of order (`MDB_CURRENT` with another
+  key, accepted as in C), where searches miss keys that are there: rlmdb
+  then closes the handle of a database the parent changed (its commit
+  fails with MDB_BAD_DBI, or a new database takes the slot, and the
+  changes are lost and their pages leak; found by `FuzzAPI`), and puts a
+  new database's record elsewhere than C. Here both write C's pages
+  (`tests/engine` `TestCgoUnsortedMainChildAbortAndOpen` against C 0.9;
+  the 1.0 format at engine level only: rlmdb's `writeops` works on one
+  database and cannot express it). Not in rlmdb (to be proposed there).
 * Every KNOWN_C_BUGS.md decision of rlmdb is kept as rlmdb implements it
   (the differential test exercises the cursor-state ones with rlmdb's
   repairs of C's side).

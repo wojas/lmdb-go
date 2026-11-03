@@ -687,8 +687,19 @@ func (t *Txn) findOrCreateNamedDB(key []byte, flags uint32) (format.DB, uint8, e
 	}
 	db = format.EmptyDB(uint16(flags & format.PersistentFlags))
 	slot := t.openSlot(format.MainDBI, true)
-	rec := db.Bytes()
-	_, err = t.putAt(mainRef(slot), key, putBytes(rec[:]), uint32(format.FSubData))
+	mc := mainRef(slot)
+	// C looks the name up and puts the record with one cursor
+	// (mdb_dbi_open): the put's mdb_cursor_set starts where the lookup left
+	// it, which for a positioned cursor first compares the key with the
+	// first and last key of its page. In a main DB in order that puts the
+	// record where a fresh search would; in one a caller put out of order
+	// (MDB_CURRENT with another key, accepted as in C) it can be elsewhere,
+	// and the port writes C's place.
+	_, err = t.seekKey(mc, t.dbOf(mc), t.cmpOf(mc), key)
+	if err == nil {
+		rec := db.Bytes()
+		_, err = t.putAt(mc, key, putBytes(rec[:]), uint32(format.FSubData))
+	}
 	t.closeSlot(slot)
 	if err != nil {
 		return db, 0, err

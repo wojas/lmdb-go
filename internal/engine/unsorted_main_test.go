@@ -4,7 +4,8 @@ package engine
 // and a key other than the item's replaces the item's key, without a check
 // in C, the port or rlmdb. Searches can then miss keys that are there. The
 // writer must not depend on such a search where C does not, so that it
-// writes what C writes. Found by FuzzAPI.
+// writes what C writes (tests/engine's TestCgoUnsortedMainChildAbortAndOpen
+// compares the pages with C 0.9's). Found by FuzzAPI.
 
 import (
 	"bytes"
@@ -66,5 +67,40 @@ func TestChildAbortKeepsParentViewsInUnsortedMain(t *testing.T) {
 				mustAudit(t, env)
 			})
 		}
+	}
+}
+
+// A new database's record goes where C's mdb_dbi_open puts it: its put
+// starts from the cursor its lookup left positioned, and mdb_cursor_set
+// compares the name with the first key of the page, 89 8a 8b 8c, so "xa"
+// goes to the front. A fresh search turns right at "fixed" and puts it
+// last.
+func TestCreateInUnsortedMainWhereCPutsIt(t *testing.T) {
+	for _, f := range []format.Format{format.V09, format.V10} {
+		t.Run(f.String(), func(t *testing.T) {
+			env, _ := openTest(t, f, Options{MaxDBs: 8})
+			p, _ := unsortedMain(t, env, "fixed", "ints", "plain")
+			defer p.Abort()
+			_, err := p.OpenDBI([]byte("xa"), format.Create)
+			must(t, err)
+			c, err := p.OpenCursor(MainDBI)
+			must(t, err)
+			defer c.Close()
+			var keys []string
+			for {
+				k, _, err := c.Get(nil, nil, format.Next)
+				if err == format.NotFound {
+					break
+				}
+				must(t, err)
+				// 1.0 stores a DB name with its terminating NUL.
+				keys = append(keys, fmt.Sprintf("%q", bytes.TrimSuffix(k, []byte{0})))
+			}
+			got := fmt.Sprint(keys)
+			want := `["xa" "\x89\x8a\x8b\x8c" "dups" "fixed" "ints" "plain"]`
+			if got != want {
+				t.Fatalf("main DB %s, want %s", got, want)
+			}
+		})
 	}
 }
