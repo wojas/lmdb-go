@@ -131,7 +131,7 @@ func (t *Txn) endNested(how int) {
 		// Reads now see the parent's state: drop our own pages first.
 		w.dirty.clear()
 		clear(w.spilled)
-		t.closeVanishedHandles(p.dbe(format.MainDBI).db)
+		t.closeVanishedHandles(p.dbe(format.MainDBI).db, p)
 	}
 	// The spare buffers go back first, so that the pages the parent drops
 	// below are recycled.

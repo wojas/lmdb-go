@@ -181,3 +181,23 @@ machine shared with other work):
   cursor's node. `FuzzWriteModel` does not check where such a cursor
   lands until a successful search or a write through it positions it
   again (`fzPos.lost`).
+* **A nested transaction's abort closed the handle of a database its
+  parent had changed** (found by `FuzzAPI` on OpenBSD, deterministic on
+  every platform; this port and rlmdb, not C). A cursor put with
+  `MDB_CURRENT` and a key other than the item's replaces the key (C does
+  not check, nor do rlmdb and this port), which can leave the main DB out
+  of order. The check for vanished handles after an abort (rlmdb
+  `KNOWN_C_BUGS.md` row 19; C closes only the handles of databases the
+  child created) looked the parent's databases up in that main DB, missed
+  one and closed its handle: the commit failed with `MDB_BAD_DBI`, or, once
+  a new database had taken the slot, lost the database's changes and
+  leaked its pages (`Env.Audit`: "page 14 of 24 is unaccounted for").
+  Fixed: a database the parent has a view of is not looked up. A new
+  database's record then still went elsewhere than C puts it (C's put
+  starts from the cursor its lookup left positioned); it now goes where
+  C's does (`internal/engine/PORTING.md`, ledger).
+  `TestChildAbortKeepsParentViewsInUnsortedMain`,
+  `TestCreateInUnsortedMainWhereCPutsIt` and `tests/engine`
+  `TestCgoUnsortedMainChildAbortAndOpen` (C 0.9's pages) cover it; the
+  inputs are in `FuzzAPI`'s corpus. After the fix `FuzzAPI` found nothing
+  in 10 minutes and `FuzzWriteModel` nothing in 5 (4 workers each).
