@@ -27,6 +27,7 @@ import (
 // the reader. Its reader's value and its next writer's txnid stay as they
 // were. Both files under another name, then the lock file alone.
 func TestSecondOpenUnderAnotherNameLeavesTheFirstAlone(t *testing.T) {
+	requireSharedLocks(t)
 	for _, c := range []struct {
 		f    format.Format
 		tool string

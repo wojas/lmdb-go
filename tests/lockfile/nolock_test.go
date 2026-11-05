@@ -16,9 +16,10 @@ import (
 // transactions, as MDB_NOLOCK requires of the caller) are seen by the next
 // Go read transaction, by a plain copy and by the next Go write
 // transaction, which builds on them (rlmdb's
-// no_lock_handle_sees_commits_of_another_process).
+// no_lock_handle_sees_commits_of_another_process). It runs in builds
+// without shared locking too: their programs can only use NoLock.
 func TestNoLockSeesCCommits(t *testing.T) {
-	for _, c := range sides(t) {
+	for _, c := range cSides(t) {
 		env, _ := c.newEnv(t)
 		genv, err := lmdb.NewEnv()
 		if err != nil {

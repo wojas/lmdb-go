@@ -26,9 +26,10 @@ semaphores on macOS, POSIX or SysV semaphores on OpenBSD, NetBSD and
 DragonFly) is Go.  The locks are libc objects, taken in package
 internal/lockfile: on Linux and the BSDs through cgo; on macOS through cgo in
 a cgo build (the default) and through libSystem directly in a build without
-cgo.  A Linux or BSD program built without cgo (CGO_ENABLED=0) can only open
-environments with the NoLock flag; Env.Open without it returns
-ErrNoSharedLocking.  SharedLockingAvailable tells which kind of build this is.
+cgo.  A Linux or BSD program built without cgo (CGO_ENABLED=0, Go's default
+when cross-compiling or without a C compiler) can only open environments
+with the NoLock flag; Env.Open without it returns ErrNoSharedLocking, which
+says what to do.  SharedLockingAvailable tells which kind of build this is.
 
 # LMDB versions
 

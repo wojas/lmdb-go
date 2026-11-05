@@ -61,9 +61,11 @@ differently from C is in `internal/engine/PORTING.md` and in rlmdb's
 * **Builds without cgo.** lmdb-go v1 did not build without cgo. Here only
   the writer and reader-table locks shared with other processes are libc
   objects (`internal/lockfile`). On Linux and the BSDs they are reached
-  through cgo: built with `CGO_ENABLED=0`, `Env.Open` without `NoLock`
+  through cgo: built without cgo (`CGO_ENABLED=0`, Go's default when
+  cross-compiling or without a C compiler), `Env.Open` without `NoLock`
   returns `ErrNoSharedLocking` before touching the file system; `NoLock`
-  environments work. On macOS a build without cgo calls the semaphores in
+  environments work, and so do the commands in `cmd/` only in a cgo build.
+  On macOS a build without cgo calls the semaphores in
   libSystem directly and works fully. Windows builds need no cgo at all
   (see Windows). `SharedLockingAvailable` says which kind of build is
   running.
@@ -78,7 +80,9 @@ differently from C is in `internal/engine/PORTING.md` and in rlmdb's
   goroutine with a write transaction of one handle must not begin one in
   another handle of the file, nor start a plain `Copy` of it: it would
   wait for itself, as with two write transactions of one handle (C does
-  not serialise the handles' writers at all).
+  not serialise the handles' writers at all). As in C, a `NoLock` handle
+  neither reads nor changes an existing lock file, and nothing coordinates
+  it with other processes.
 * **One open per data file with a lock file.** A second `Open` of a data
   file that a handle with a lock file has open fails with `EBUSY` (rlmdb;
   C allows it, unsafely: closing one handle drops the other's record

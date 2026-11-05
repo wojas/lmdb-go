@@ -37,6 +37,15 @@ func newEnv(t *testing.T, opt *lmdbtest.EnvOptions) (*Env, error) {
 	return NewEnv(env)
 }
 
+// newEnvAnyLocking is newEnv for a test that does not depend on the lock
+// file: with one where the build has shared locking, else with NoLock.
+func newEnvAnyLocking(t *testing.T) (*Env, error) {
+	if !lmdb.SharedLockingAvailable() {
+		return newEnv(t, optNoLock)
+	}
+	return newEnv(t, nil)
+}
+
 func TestNewEnv(t *testing.T) {
 	requireLockFile(t)
 	dir, err := ioutil.TempDir("", "lmdbsync-test-")
@@ -240,7 +249,7 @@ func TestNewEnv_noLock_arg(t *testing.T) {
 }
 
 func TestEnv_SetMapSize(t *testing.T) {
-	env, err := newEnv(t, nil)
+	env, err := newEnvAnyLocking(t)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -275,7 +284,7 @@ func TestEnv_SetMapSize(t *testing.T) {
 }
 
 func TestEnv_BeginTxn(t *testing.T) {
-	env, err := newEnv(t, nil)
+	env, err := newEnvAnyLocking(t)
 	if err != nil {
 		t.Fatal(err)
 	}

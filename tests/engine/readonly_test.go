@@ -90,6 +90,7 @@ func cDumpShows(t *testing.T, tool, src, value string) bool {
 // commit's meta page put back, as C leaves it after a failed F_FULLFSYNC
 // (row 41), the writer lock is free and still no reader of ours takes the page.
 func TestReadOnlyReaderSkipsUnpublishedFirstCommit(t *testing.T) {
+	requireSharedLocks(t)
 	for _, c := range []struct {
 		f    format.Format
 		tool string

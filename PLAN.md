@@ -282,13 +282,17 @@ as on FreeBSD and OpenBSD, with `-lrt` on NetBSD coming from
 
 ## Deferred decisions (owner, revisit before a release)
 
-* **Linux builds without cgo.** Go disables cgo by default when
-  cross-compiling or when no C compiler is found, so a plain
-  `GOOS=linux go build` from a Mac silently gets the `NoLock`-only build,
-  which fails only at `Env.Open` (the same holds for the BSDs). Option:
-  make Linux `!cgo` builds fail to compile unless they opt in with a tag
-  (e.g. `lmdb_nocgo`). Today: runtime error at `Open` without `NoLock`.
-  (macOS builds without cgo have shared locks, see below.)
+* **Linux and BSD builds without cgo: resolved (owner).** Go disables
+  cgo by default when cross-compiling or when no C compiler is found, so a
+  plain `GOOS=linux go build` from a Mac gets the `NoLock`-only build. It
+  stays a build that compiles and is usable with `NoLock` (no opt-in tag,
+  no compile-time error); `Env.Open` without `NoLock` returns
+  `ErrNoSharedLocking`, whose message says what to do. The root module
+  passes with `CGO_ENABLED=0` on Linux amd64 and arm64, FreeBSD and
+  OpenBSD arm64, and so does a program cross-compiled that way that runs
+  readers and a writer, several handles of one file, copies, and `Close`
+  with live transactions. (macOS builds without cgo have shared locks,
+  see below.)
 * **macOS locks without cgo: resolved (owner).** cgo stays the default on
   macOS (`darwin && cgo`: `sem_cgo.go`); a build without cgo
   (`darwin && !cgo`) calls the semaphores in libSystem directly

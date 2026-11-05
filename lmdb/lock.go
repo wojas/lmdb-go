@@ -18,17 +18,27 @@ import (
 var _ engine.LockRegion = (*lockfile.Region)(nil)
 
 // ErrNoSharedLocking is returned by Env.Open for an environment without the
-// NoLock flag in a Linux or BSD program built without cgo (CGO_ENABLED=0).
-// The writer lock and the reader-table lock that LMDB shares between
-// processes are libc objects: on Linux and FreeBSD pthread mutexes, on
-// OpenBSD, NetBSD and DragonFly POSIX and SysV semaphores, which this
-// package reaches through cgo, so that without cgo only environments opened
-// with NoLock, which have no lock file, can be used.  On macOS they are
-// POSIX semaphores, reached through cgo in a cgo build and through
-// libSystem directly in a build without cgo, and on Windows named kernel
-// mutexes, reached through the system's DLLs without cgo, so macOS and
-// Windows builds never return this error.
-var ErrNoSharedLocking = errors.New("lmdb: shared locking on Linux and the BSDs needs a cgo build (CGO_ENABLED=1); open the environment with NoLock or build with cgo")
+// NoLock flag in a Linux or BSD program built without cgo, before Open
+// touches the file system.  The writer lock and the reader-table lock that
+// LMDB shares between processes are libc objects: on Linux and FreeBSD
+// pthread mutexes, on OpenBSD, NetBSD and DragonFly POSIX and SysV
+// semaphores, which this package reaches through cgo.  Go builds without
+// cgo when cross-compiling, when it finds no C compiler, or with
+// CGO_ENABLED=0.  Such a program has two choices:
+//
+//   - build with cgo: CGO_ENABLED=1 and a C compiler for the target (CC).
+//     It is needed when other processes use the environment at the same
+//     time.
+//   - open the environment with NoLock, if no other process uses it while
+//     this one has it open, or none of them writes.  Within the process
+//     NoLock environments are safe (see NoLock in DEVIATIONS.md); nothing
+//     coordinates them with other processes.
+//
+// On macOS the locks are POSIX semaphores, reached through cgo in a cgo
+// build and through libSystem directly in a build without cgo, and on
+// Windows named kernel mutexes, reached through the system's DLLs without
+// cgo, so macOS and Windows builds never return this error.
+var ErrNoSharedLocking = errors.New("lmdb: lock files need cgo on Linux and the BSDs, and this program was built without it: rebuild it with CGO_ENABLED=1 and a C compiler, or open the environment with NoLock if no other process uses it at the same time")
 
 // errNoSharedLocks is what the lock file returns for ErrNoSharedLocking.
 var errNoSharedLocks = lockfile.ErrNoSharedLocks

@@ -29,7 +29,7 @@ import (
 // through cgo. Without cgo only environments without a lock file
 // (MDB_NOLOCK) can be used. (macOS and Windows builds have the locks with
 // and without cgo.)
-var ErrNoSharedLocks = errors.New("lockfile: shared locking on Linux and the BSDs needs a cgo build (CGO_ENABLED=1); without cgo use NoLock")
+var ErrNoSharedLocks = errors.New("lockfile: lock files on Linux and the BSDs need a cgo build (CGO_ENABLED=1)")
 
 // SharedLocksAvailable reports whether this build can take the shared
 // locks, i.e. whether Open can succeed: true on macOS and Windows, and on

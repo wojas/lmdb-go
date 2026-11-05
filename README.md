@@ -27,21 +27,35 @@ The module declares Go 1.22; development and testing use Go 1.25 to 1.27.
 cgo is used only for the two locks LMDB shares between processes, the writer
 lock and the reader-table lock: libc pthread mutexes on Linux and FreeBSD,
 POSIX named semaphores on macOS, POSIX named or SysV semaphores on OpenBSD,
-NetBSD and DragonFly. Everything else is Go. On Linux and the BSDs, shared
-locking needs cgo: a build without cgo (`CGO_ENABLED=0`) can only open
-environments with the `NoLock` flag; `Env.Open` without it returns
-`ErrNoSharedLocking`, and `SharedLockingAvailable` reports which kind of
-build is running. Go turns cgo off by default when cross-compiling or when
-no C compiler is found: such a Linux or BSD build compiles, but fails at
-`Env.Open`. On macOS, a cgo build (the
+NetBSD and DragonFly. Everything else is Go. On macOS, a cgo build (the
 default) takes the semaphores through cgo, and a build without cgo calls them
 in libSystem directly, as `golang.org/x/sys/unix` does for system calls; both
 work fully, so cross-compiling to macOS needs no C toolchain. On Windows the
 locks are named kernel mutexes, as in C LMDB there, reached through
 `golang.org/x/sys/windows`: no cgo at all.
 
+On Linux and the BSDs the locks need cgo. Go turns cgo off when
+cross-compiling or when it finds no C compiler; such a build (or one with
+`CGO_ENABLED=0`) compiles and runs, but opens only environments with the
+`NoLock` flag: `Env.Open` without it returns `ErrNoSharedLocking`, before it
+touches any file. `SharedLockingAvailable` reports which kind of build is
+running. Either:
+
+* build with cgo: `CGO_ENABLED=1` and a C compiler for the target (to
+  cross-compile, set `CC` to a cross compiler). This is needed when other
+  processes use the environment at the same time as this one: other
+  instances of the program, C programs, `mdb_stat`; or
+* open the environment with `NoLock`, if no other process uses it while
+  this one has it open, or none of them writes. Within the process `NoLock`
+  is safe here, unlike in C: write transactions are serialised and readers
+  are tracked, also across several `Env`s of one file (see
+  [DEVIATIONS.md](lmdb/DEVIATIONS.md)). Nothing coordinates it with other
+  processes: their writers would reuse pages its readers still read, and
+  two writers corrupt the file.
+
 The packages are those of lmdb-go: `lmdb`, `lmdbscan`, `exp/lmdbsync`, and the
-commands in `cmd/` and `exp/cmd/`. Read the API documentation with
+commands in `cmd/` and `exp/cmd/` (they use the lock file: on Linux and the
+BSDs, build them with cgo). Read the API documentation with
 `go doc ./lmdb`; it is lmdb-go v1's, with notes where behaviour changed.
 
 ## Compatibility
