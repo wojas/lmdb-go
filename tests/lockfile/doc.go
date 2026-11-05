@@ -27,5 +27,7 @@
 //
 // The Go processes here are cgo binaries (this test binary, re-executed as
 // a helper), like every program that opens an environment with a lock
-// file.
+// file on Linux and the BSDs; built without cgo there, only
+// TestNoLockSeesCCommits, whose Go side uses NoLock, runs, and the other
+// tests fail.
 package lockfiletest

@@ -37,6 +37,15 @@ func openLockFile(path string, mode os.FileMode, maxReaders uint32, readOnly boo
 	return r, nil
 }
 
+// requireSharedLocks skips a test that opens the lock file in a build
+// without shared locking (on Linux and the BSDs, one without cgo).
+func requireSharedLocks(t *testing.T) {
+	t.Helper()
+	if !lockfile.SharedLocksAvailable() {
+		t.Skip("needs the lock file: on Linux and the BSDs a cgo build")
+	}
+}
+
 // The environment variables that make this test binary a copy process
 // (copyHelper): the environment, its format and the directory to copy
 // it to.
@@ -148,6 +157,7 @@ func checkCopyKeys(t *testing.T, dir string, txnid uint64, n int) {
 // fails (MDB_PAGE_NOTFOUND). Once a commit has overwritten the page, the
 // copy is C's again.
 func TestPlainCopyHidesANewerMeta(t *testing.T) {
+	requireSharedLocks(t)
 	for _, c := range []struct {
 		f    format.Format
 		ps   int
@@ -327,6 +337,7 @@ func cCopyKeepsNewerMeta(t *testing.T, tool, dir string, ps int, txnid uint64, f
 // fix the file kept the newer page, and such a copy named pages it
 // lacked.)
 func TestCopyAfterFailedMetaSync(t *testing.T) {
+	requireSharedLocks(t)
 	for _, c := range []struct {
 		f    format.Format
 		tool string

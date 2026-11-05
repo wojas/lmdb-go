@@ -27,7 +27,7 @@ func (h *testHandler) HandleTxnErr(ctx context.Context, env *Env, err error) (co
 
 func TestHandlerChain(t *testing.T) {
 	ctx := context.Background()
-	env, err := newEnv(t, nil)
+	env, err := newEnvAnyLocking(t)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -62,7 +62,7 @@ func (*passthroughHandler) HandleTxnErr(ctx context.Context, env *Env, err error
 
 func TestMapFullHandler(t *testing.T) {
 	ctx := context.Background()
-	env, err := newEnv(t, nil)
+	env, err := newEnvAnyLocking(t)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -111,7 +111,7 @@ func TestMapFullHandler(t *testing.T) {
 
 func TestMapResizedHandler(t *testing.T) {
 	ctx := context.Background()
-	env, err := newEnv(t, nil)
+	env, err := newEnvAnyLocking(t)
 	if err != nil {
 		t.Fatal(err)
 	}

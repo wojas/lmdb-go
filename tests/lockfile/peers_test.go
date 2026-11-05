@@ -50,9 +50,12 @@ type cside struct {
 	otherLayout       *lockfile.Layout
 }
 
+// sides returns the C sides of the tests that open the lock file from Go:
+// they fail in a build without shared locking (on Linux and the BSDs, one
+// without cgo).
 func sides(t *testing.T) []cside {
 	t.Helper()
-	d := oracleDir(t)
+	s := cSides(t)
 	probe, err := lockfile.Open(filepath.Join(t.TempDir(), "lock.mdb"), 0o644, 1, false, lockfile.LockV09)
 	if errors.Is(err, lockfile.ErrNoSharedLocks) {
 		t.Fatal("tests/lockfile needs shared locking: on Linux a cgo build (CGO_ENABLED=1; cross-GOARCH builds default to 0)")
@@ -61,6 +64,14 @@ func sides(t *testing.T) []cside {
 		t.Fatal(err)
 	}
 	probe.Close()
+	return s
+}
+
+// cSides returns the C sides for a test whose Go side opens environments
+// with NoLock only, which any build can.
+func cSides(t *testing.T) []cside {
+	t.Helper()
+	d := oracleDir(t)
 	bin := func(name string) string { return filepath.Join(d, coracle.Exe(name)) }
 	return []cside{
 		{format.V09, lockfile.LockV09, bin("cpeer"), bin("mdb_stat"), bin("layout_dump"), lockfile.LockV10},
